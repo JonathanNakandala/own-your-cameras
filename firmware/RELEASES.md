@@ -68,5 +68,34 @@ live with each camera. No vendor library files or header downloads are involved.
 draft, then publishes the release. A `-SUFFIX` tag produces a prerelease. Releases are model-specific,
 so they do not set a repository-wide latest release. Manual runs build preview artifacts only.
 
+### Publish a release
+
+`MODEL` is `mi360` or `reolink-e1-zoom`. `PREV` is that model's latest tag
+(`git tag --list 'MODEL-v*' --sort=-v:refname | head -1`), `NEW` the next version (`MODEL-vX.Y.Z`, or
+`MODEL-vX.Y.Z-SUFFIX` for a prerelease).
+
+1. Merge to `main` and wait for a green `firmware.yml` run.
+2. Check that the model changed: `git log --oneline --first-parent PREV..main -- firmware/cameras/MODEL
+   firmware/crates firmware/abi firmware/scripts` is not empty.
+3. Tag the merge commit and push the tag:
+
+   ```sh
+   git tag -a NEW MERGE_COMMIT -m NEW
+   git push origin NEW
+   ```
+
+4. Wait for the release workflow (`gh run watch`). It publishes the release with the archive and its
+   `.sha256`. If it failed after creating the draft, delete the draft (`gh release delete NEW`) before
+   rerunning; never move a pushed tag.
+5. Add a short change list above the workflow's text, one line per user-visible change with its PR number:
+
+   ```sh
+   { printf '## Changes since PREV\n\n- CHANGE (#PR)\n\n'; gh release view NEW --json body -q .body; } > NOTES.md
+   gh release edit NEW --notes-file NOTES.md
+   ```
+
+   Find the PRs with `git log --first-parent --format='%s%n%b' PREV..NEW -- PATHS` (paths from step 2).
+   Keep `NOTES.md` out of the repository.
+
 Compilation/host checks do not qualify hardware. Keep image preservation checks and on-camera
 installation/media/control evidence separate from the release's model/source/build identity.
