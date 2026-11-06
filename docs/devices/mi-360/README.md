@@ -4,7 +4,8 @@
 
 [Build the SSH image](root-access.md) · [ESP32 programmer setup](spi-programmer.md) ·
 [SSH findings](#root-ssh) · [Boot and recovery limits](#boot-and-recovery) ·
-[Replacement firmware](../../../firmware/cameras/mi360/README.md)
+[Replacement firmware](../../../firmware/cameras/mi360/README.md) ·
+[Mic and speaker frequency response](../../shared/camera-audio-response.md)
 
 **Tested:** MJSXJ10CM, factory model `chuangmi.camera.046a01`, running
 `4.3.4_0376` on Ingenic T31 / SC2336 hardware. Other Mi 360 models and sensor

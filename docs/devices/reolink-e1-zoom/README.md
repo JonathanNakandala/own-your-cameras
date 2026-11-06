@@ -1,7 +1,8 @@
 # Reolink E1 Zoom — IPC_566SD664M5MP
 
 [Build and install key-only root SSH](root-access.md) ·
-[PAK, UBI and NAND reference](firmware-format.md)
+[PAK, UBI and NAND reference](firmware-format.md) ·
+[Mic and speaker frequency response](../../shared/camera-audio-response.md)
 
 Own firmware user-space built on this root access (local RTSP, two-way audio, PTZ,
 Home Assistant over MQTT): [Reolink replacement firmware](../../../firmware/cameras/reolink-e1-zoom/README.md).

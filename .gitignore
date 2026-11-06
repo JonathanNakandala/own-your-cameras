@@ -40,6 +40,9 @@ build/
 !/docs/devices/mi-360/board.png
 !/docs/devices/mi-360/programmer-setup.png
 
+# Generated measurement charts.
+!/docs/shared/camera-audio-response.png
+
 # Generated Reolink firmware and filesystem exports remain private.
 *.pak
 *.ubi
