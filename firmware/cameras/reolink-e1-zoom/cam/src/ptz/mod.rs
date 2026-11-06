@@ -6,10 +6,31 @@
 use std::time::Duration;
 
 pub mod fake;
+pub mod homing;
 pub mod i2c;
 mod motion;
 pub(crate) mod vendor_presets;
+pub use homing::Listener;
 pub use motion::Profile;
+
+/// How a home was done.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Homing {
+    /// Homed with the microphone listening. `heard[axis.index()]`: that axis was halted when it was heard
+    /// hitting its stop; otherwise it ran its full travel, as a timed home does.
+    ByEar { heard: [bool; 2] },
+    /// Axes not homed by ear were driven a full travel by time; the reason the microphone failed, if a
+    /// listener was present. Axes already homed by ear before it failed are not driven again.
+    Timed(Option<String>),
+}
+
+/// What homing one axis by ear came to.
+enum ByEar {
+    Heard,
+    FullTravel,
+    /// No usable microphone; the axis may be anywhere on its way.
+    Unusable(String),
+}
 
 /// 7-bit I2C address of the MS32006 on `/dev/i2c-2`.
 pub const ADDR: u16 = 0x10;
@@ -39,6 +60,11 @@ const PPS_CLOCK: u32 = 15_000_000;
 /// How much of the recorded motion a tap may look back into.
 const HISTORY: Duration = Duration::from_secs(10);
 const POLL: Duration = Duration::from_millis(10);
+/// Listening to the quiet head before homing an axis: up to `QUIET_LISTENS` × `QUIET_LISTEN`, until
+/// `QUIET_FRAMES` microphone frames (about 21 ms each) are in.
+const QUIET_LISTEN: Duration = Duration::from_millis(50);
+const QUIET_LISTENS: u32 = 10;
+const QUIET_FRAMES: usize = 8;
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum Error {
@@ -193,6 +219,8 @@ pub struct Ptz<B: Bus> {
     /// Where the head was during the last moves (gotos and hold chunks), for taps made on an older picture.
     history: std::collections::VecDeque<motion::Trajectory>,
     stop_owner: Option<crate::control_stop::Owner>,
+    /// Microphone levels for homing by ear; without them homing is timed.
+    ears: Option<Box<dyn Listener + Send>>,
 }
 
 impl<B: Bus> Ptz<B> {
@@ -206,7 +234,13 @@ impl<B: Bus> Ptz<B> {
             hold: [None; 2],
             chunk: [None; 2],
             stop_owner: None,
+            ears: None,
         }
+    }
+
+    /// Microphone levels for homing by ear from now on; `None` goes back to timed homing.
+    pub fn set_ears(&mut self, ears: Option<Box<dyn Listener + Send>>) {
+        self.ears = ears;
     }
 
     /// Profile for absolute moves and holds from now on; it takes effect at the next move.
@@ -335,12 +369,158 @@ impl<B: Bus> Ptz<B> {
 
     /// Drives both axes into their end stops; afterwards the position is `(0, 0)`.
     pub fn home(&mut self) -> Result<(), Error> {
+        let how = self.home_reporting()?;
+        eprintln!("ptz: homed: {how:?}");
+        Ok(())
+    }
+
+    /// [`Ptz::home`] that says how it homed. With a listener each axis (tilt, then pan) is driven toward its
+    /// stop and halted when the microphone hears it hit; an axis never heard runs its full travel. Without
+    /// a listener, or from the axis where the microphone fails, the rest is driven a full travel by time.
+    pub fn home_reporting(&mut self) -> Result<Homing, Error> {
         self.settle()?;
         self.history.clear();
         self.pos = None;
-        let plan = Axis::ALL.map(|a| Some((a.positive().flip(), a.max() + HOME_MARGIN)));
+        let mut left = Axis::ALL.to_vec();
+        let mut heard = [false; 2];
+        let mut why = None;
+        if let Some(mut ears) = self.ears.take() {
+            let r = self.home_by_ear(&mut *ears, &mut left, &mut heard);
+            self.ears = Some(ears);
+            match r {
+                Ok(None) => {
+                    self.pos = Some(Position { pan: 0, tilt: 0 });
+                    return Ok(Homing::ByEar { heard });
+                }
+                Ok(Some(reason)) => {
+                    eprintln!("ptz: homing by ear unavailable ({reason}); homing {left:?} by time");
+                    why = Some(reason);
+                }
+                Err(Error::Cancelled) => return Err(Error::Cancelled),
+                Err(primary) => {
+                    return match self.stop() {
+                        Ok(()) => Err(primary),
+                        Err(stop) => Err(Error::StopFailed {
+                            primary: Box::new(primary),
+                            stop: Box::new(stop),
+                        }),
+                    };
+                }
+            }
+        }
+        let plan = Axis::ALL.map(|a| {
+            left.contains(&a)
+                .then(|| (a.positive().flip(), a.max() + HOME_MARGIN))
+        });
         self.run(plan, Profile::homing())?;
         self.pos = Some(Position { pan: 0, tilt: 0 });
+        Ok(Homing::Timed(why))
+    }
+
+    /// Tilt, then pan, so a sound belongs to one motor; each homed axis leaves `left`. `Ok(None)`: both
+    /// axes are at their stops; `Ok(Some(reason))`: no usable microphone, the caller homes what is left by time.
+    fn home_by_ear(
+        &mut self,
+        ears: &mut dyn Listener,
+        left: &mut Vec<Axis>,
+        heard: &mut [bool; 2],
+    ) -> Result<Option<String>, Error> {
+        for axis in [Axis::Tilt, Axis::Pan] {
+            match self.home_axis_by_ear(axis, ears)? {
+                ByEar::Heard => heard[axis.index()] = true,
+                ByEar::FullTravel => {}
+                ByEar::Unusable(reason) => return Ok(Some(format!("{axis:?}: {reason}"))),
+            }
+            left.retain(|a| *a != axis);
+        }
+        Ok(None)
+    }
+
+    /// Listens to the quiet head, then drives `axis` toward its stop and halts it once the stall is heard.
+    /// When the stop is never heard (a loud room) the axis runs its full travel plus margin: it is at the
+    /// stop either way.
+    fn home_axis_by_ear(&mut self, axis: Axis, ears: &mut dyn Listener) -> Result<ByEar, Error> {
+        let toward_home = axis.positive().flip();
+        self.rate(axis, DEFAULT_PPS)?;
+        // Levels buffered before this axis started belong to whatever happened then.
+        if let Err(e) = ears.heard() {
+            return Ok(ByEar::Unusable(format!("no audio: {e}")));
+        }
+        let mut quiet = Vec::new();
+        for _ in 0..QUIET_LISTENS {
+            self.checkpoint()?;
+            self.bus.sleep(QUIET_LISTEN);
+            match ears.heard() {
+                Ok(l) => quiet.extend(l),
+                Err(e) => return Ok(ByEar::Unusable(format!("no audio: {e}"))),
+            }
+            if quiet.len() >= QUIET_FRAMES {
+                break;
+            }
+        }
+        let Some(mut detector) = homing::Detector::listening_to(&quiet) else {
+            return Ok(ByEar::Unusable(format!(
+                "microphone delivered {} frames in {} ms",
+                quiet.len(),
+                (QUIET_LISTEN * QUIET_LISTENS).as_millis()
+            )));
+        };
+        let started = std::time::Instant::now();
+        let mut left = axis.max() + HOME_MARGIN;
+        while left > 0 {
+            let n = left.min(MAX_CHUNK);
+            self.checkpoint()?;
+            self.kick(axis, toward_home, n)?;
+            left -= n;
+            let mut polls = (travel(n, DEFAULT_PPS) * 2 + Duration::from_secs(1)).as_millis()
+                as u64
+                / POLL.as_millis() as u64;
+            while self.is_busy(axis)? {
+                self.checkpoint()?;
+                let heard = match ears.heard() {
+                    Ok(l) => l,
+                    Err(e) => {
+                        self.halt(axis)?;
+                        return Ok(ByEar::Unusable(format!("audio lost while homing: {e}")));
+                    }
+                };
+                if detector.stalled(&heard) {
+                    self.halt(axis)?;
+                    eprintln!(
+                        "ptz: {axis:?} heard the stop after {} ms of driving (quiet {:.0} dBFS, motor {:.0})",
+                        started.elapsed().as_millis(),
+                        detector.quiet_dbfs,
+                        detector.motor_dbfs().unwrap_or(f32::NAN)
+                    );
+                    return Ok(ByEar::Heard);
+                }
+                if polls == 0 {
+                    return Err(Error::Timeout(axis));
+                }
+                polls -= 1;
+                self.bus.sleep(POLL);
+            }
+        }
+        eprintln!(
+            "ptz: {axis:?} ran its full travel without hearing the stop (quiet {:.0} dBFS, motor {:.0}; quiet frames {:?})",
+            detector.quiet_dbfs,
+            detector.motor_dbfs().unwrap_or(f32::NAN),
+            quiet.iter().map(|l| l.round()).collect::<Vec<_>>()
+        );
+        Ok(ByEar::FullTravel)
+    }
+
+    /// Halts one axis' pulses and waits for it to report idle.
+    fn halt(&mut self, axis: Axis) -> Result<(), Error> {
+        self.update(REG_CTRL, |v| v | axis.stop_bit())?;
+        let mut polls = 50;
+        while self.is_busy(axis)? {
+            if polls == 0 {
+                return Err(Error::Timeout(axis));
+            }
+            polls -= 1;
+            self.bus.sleep(POLL);
+        }
         Ok(())
     }
 
@@ -781,6 +961,116 @@ mod tests {
         assert_eq!(total(Axis::Tilt), TILT_MAX + HOME_MARGIN);
         // tilt's single chunk starts right after pan's first, before anything was waited for
         assert_eq!((moves[0].axis, moves[1].axis), (Axis::Pan, Axis::Tilt));
+    }
+
+    /// Steps driven toward the home stop on `axis` by every move the fake saw.
+    fn moved(p: &Ptz<FakeBus>, axis: Axis) -> u32 {
+        p.bus()
+            .moves()
+            .iter()
+            .filter(|m| m.axis == axis)
+            .map(|m| m.steps)
+            .sum()
+    }
+
+    fn eared(pan: u32, tilt: u32, ears: impl FnOnce(fake::Ears) -> fake::Ears) -> Ptz<FakeBus> {
+        let bus = FakeBus::new(pan, tilt);
+        let mic = ears(bus.ears());
+        let mut p = Ptz::new(bus);
+        p.init().unwrap();
+        p.set_ears(Some(Box::new(mic)));
+        p
+    }
+
+    /// Control-register writes that newly set an axis' stop bit: the halts homing by ear issues.
+    fn halts(p: &Ptz<FakeBus>, axis: Axis) -> usize {
+        let bit = axis.stop_bit();
+        p.bus()
+            .writes_to(0)
+            .windows(2)
+            .filter(|w| w[0] & bit == 0 && w[1] & bit != 0)
+            .count()
+    }
+
+    #[test]
+    fn homing_by_ear_halts_each_axis_when_the_stop_is_heard() {
+        let mut p = eared(3000, 500, |e| e);
+        assert_eq!(
+            p.home_reporting().unwrap(),
+            Homing::ByEar { heard: [true; 2] }
+        );
+        assert_eq!(p.bus().mech(), (0, 0));
+        assert_eq!(p.position(), Some(Position { pan: 0, tilt: 0 }));
+        assert_eq!(halts(&p, Axis::Tilt), 1);
+        assert_eq!(halts(&p, Axis::Pan), 1);
+        // tilt first, then pan: a sound belongs to one motor
+        let first_pan = p
+            .bus()
+            .kicks()
+            .iter()
+            .position(|a| *a == Axis::Pan)
+            .unwrap();
+        assert!(
+            p.bus().kicks()[..first_pan]
+                .iter()
+                .all(|a| *a == Axis::Tilt)
+        );
+    }
+
+    #[test]
+    fn homing_by_ear_from_the_stop_and_from_the_far_end_works() {
+        for (pan, tilt) in [(0, 0), (PAN_MAX, TILT_MAX), (PAN_MAX, 0), (0, TILT_MAX)] {
+            let mut p = eared(pan, tilt, |e| e);
+            assert_eq!(
+                p.home_reporting().unwrap(),
+                Homing::ByEar { heard: [true; 2] },
+                "from ({pan}, {tilt})"
+            );
+            assert_eq!(p.bus().mech(), (0, 0), "from ({pan}, {tilt})");
+        }
+    }
+
+    #[test]
+    fn a_room_too_loud_to_hear_the_stop_runs_the_full_travel_and_still_homes() {
+        let mut p = eared(3000, 500, |e| e.loud_room());
+        assert_eq!(
+            p.home_reporting().unwrap(),
+            Homing::ByEar { heard: [false; 2] }
+        );
+        assert_eq!(p.bus().mech(), (0, 0));
+        assert_eq!(halts(&p, Axis::Pan), 0);
+        assert!(moved(&p, Axis::Pan) >= PAN_MAX + HOME_MARGIN);
+    }
+
+    #[test]
+    fn no_audio_falls_back_to_homing_by_time() {
+        let mut p = eared(3000, 500, |e| e.deaf());
+        let how = p.home_reporting().unwrap();
+        assert!(matches!(how, Homing::Timed(Some(_))), "{how:?}");
+        assert_eq!(p.bus().mech(), (0, 0));
+        assert!(moved(&p, Axis::Pan) >= PAN_MAX + HOME_MARGIN);
+    }
+
+    #[test]
+    fn audio_lost_on_pan_homes_only_pan_by_time() {
+        let mut p = eared(3000, 500, |e| e.deaf_after(1));
+        let how = p.home_reporting().unwrap();
+        assert!(matches!(how, Homing::Timed(Some(_))), "{how:?}");
+        assert_eq!(p.bus().mech(), (0, 0));
+        // tilt was heard and halted, never kicked again by the timed fallback
+        assert_eq!(halts(&p, Axis::Tilt), 1);
+        assert_eq!(
+            p.bus().kicks().iter().filter(|a| **a == Axis::Tilt).count(),
+            1
+        );
+        assert!(moved(&p, Axis::Pan) >= PAN_MAX + HOME_MARGIN);
+    }
+
+    #[test]
+    fn without_ears_homing_is_timed_and_says_so() {
+        let mut p = ptz();
+        p.init().unwrap();
+        assert_eq!(p.home_reporting().unwrap(), Homing::Timed(None));
     }
 
     #[test]

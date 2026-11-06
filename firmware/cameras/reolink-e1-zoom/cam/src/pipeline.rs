@@ -85,6 +85,8 @@ pub trait Tuner {
     /// Polled once per media-loop iteration.
     fn next(&mut self) -> Option<MediaTuning>;
     fn report(&mut self, tuned: Tuned);
+    /// Every microphone capture frame's level (dBFS RMS), for homing by ear.
+    fn hear(&mut self, _dbfs: f32) {}
 }
 
 /// Stock values throughout, for the dump, the diagnostic serve and tests that do not tune.
@@ -703,6 +705,7 @@ where
                 let Some(f) = hw.audio_cap_recv()? else { break };
                 report.mic_frames += 1;
                 report.mic_samples += f.samples.len() as u64;
+                tuner.hear(crate::ptz::homing::level_dbfs(&f.samples));
                 on_audio(f);
             }
             // The talkback mixer emits a 20 ms block whenever its clock is due; take every due block.

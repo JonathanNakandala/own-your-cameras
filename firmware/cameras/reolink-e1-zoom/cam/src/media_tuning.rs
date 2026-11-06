@@ -21,19 +21,43 @@ struct State {
 }
 
 #[derive(Debug, Default)]
-pub struct Handoff(Mutex<State>);
+pub struct Handoff(Mutex<State>, Mutex<std::collections::VecDeque<f32>>);
+
+/// Microphone levels kept for homing by ear: about 2 s at one level per 21 ms capture frame.
+const LEVELS_KEPT: usize = 100;
+
+/// [`crate::ptz::Listener`] over the media thread's microphone levels.
+pub struct Ears(std::sync::Arc<Handoff>);
+
+impl crate::ptz::Listener for Ears {
+    fn heard(&mut self) -> Result<Vec<f32>, String> {
+        Ok(self.0.levels().drain(..).collect())
+    }
+}
 
 impl Handoff {
     /// `initial` is what the graph is built with (the persisted settings).
     pub fn new(initial: MediaTuning) -> Self {
-        Self(Mutex::new(State {
-            initial,
-            ..State::default()
-        }))
+        Self(
+            Mutex::new(State {
+                initial,
+                ..State::default()
+            }),
+            Mutex::new(std::collections::VecDeque::with_capacity(LEVELS_KEPT)),
+        )
     }
 
     fn state(&self) -> std::sync::MutexGuard<'_, State> {
         self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn levels(&self) -> std::sync::MutexGuard<'_, std::collections::VecDeque<f32>> {
+        self.1.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// What homing by ear listens to.
+    pub fn ears(self: &std::sync::Arc<Self>) -> Ears {
+        Ears(std::sync::Arc::clone(self))
     }
 
     pub fn request_audio(&self, t: Tuning) {
@@ -67,6 +91,15 @@ impl Handoff {
 }
 
 impl Tuner for &Handoff {
+    /// The newest [`LEVELS_KEPT`] levels wait for the listener.
+    fn hear(&mut self, dbfs: f32) {
+        let mut l = self.levels();
+        if l.len() >= LEVELS_KEPT {
+            l.pop_front();
+        }
+        l.push_back(dbfs);
+    }
+
     fn initial(&mut self) -> MediaTuning {
         self.state().initial
     }
@@ -147,5 +180,26 @@ mod tests {
         assert_eq!(h.applied().0, Some(Tuning::stock()));
         assert_eq!(h.take_refusals().len(), 1);
         assert!(h.take_refusals().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod ear_tests {
+    use super::*;
+    use crate::ptz::Listener;
+
+    #[test]
+    fn levels_are_heard_once_and_only_the_newest_are_kept() {
+        let h = std::sync::Arc::new(Handoff::new(MediaTuning::default()));
+        let mut ears = h.ears();
+        assert!(ears.heard().unwrap().is_empty());
+        let mut t = &*h;
+        for i in 0..(LEVELS_KEPT + 3) {
+            t.hear(i as f32);
+        }
+        let heard = ears.heard().unwrap();
+        assert_eq!(heard.len(), LEVELS_KEPT);
+        assert_eq!(heard[0], 3.0);
+        assert!(ears.heard().unwrap().is_empty());
     }
 }

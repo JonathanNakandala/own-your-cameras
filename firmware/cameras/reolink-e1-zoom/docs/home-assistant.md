@@ -49,8 +49,9 @@ and the daemon keeps them itself ([settings.md](settings.md)).
   section were rejected: the camera is one device. Discovery and states are sent again on reconnect and when Home Assistant announces
   `homeassistant/status = online`. With no presets configured, the preset select gets an empty config (removed).
 
-At startup the daemon homes pan/tilt and the lens once, switches the status LED on, then announces `online`. Until
-homing succeeds the pan/tilt position is unknown and its retained states are cleared.
+At startup the daemon homes pan/tilt and the lens once, goes to the `Default` preset if one exists (the Home
+button does the same; without one the head stays at the end stops), switches the status LED on, then announces
+`online`. Until homing succeeds the pan/tilt position is unknown and its retained states are cleared.
 
 ## Entities
 

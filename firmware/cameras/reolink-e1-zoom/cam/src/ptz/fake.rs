@@ -1,13 +1,18 @@
 //! Host fake of the MS32006: a register file plus a tiny model of the two motors and their end stops.
 //!
-//! A kick (`reg 9`) makes the axis report busy for [`BUSY_POLLS`] status reads, after which the move is
-//! applied to the mechanical position, clamped to `0..=max` like a head driven into its stop.
+//! A kick (`reg 9`) makes the axis report busy for [`BUSY_POLLS`] status reads plus one per
+//! [`STEPS_PER_POLL`] steps, moving the head a share each read, clamped to `0..=max` like a head driven into
+//! its stop.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use super::{Axis, Bus, Error, PAN_MAX, TILT_MAX};
 
 const BUSY_POLLS: u32 = 2;
+/// Extra status polls a move stays busy per this many steps.
+const STEPS_PER_POLL: u32 = 100;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Move {
@@ -38,6 +43,15 @@ pub struct FakeBus {
     sleeps: Vec<Duration>,
     stuck: bool,
     failing: bool,
+    /// What the motors are doing, for [`Ears`] that listen to this head.
+    motor: Arc<Motor>,
+}
+
+/// Per axis: pulses are being output; the head is pushing against its stop.
+#[derive(Debug, Default)]
+struct Motor {
+    running: [AtomicBool; 2],
+    grinding: [AtomicBool; 2],
 }
 
 impl FakeBus {
@@ -53,6 +67,17 @@ impl FakeBus {
             sleeps: Vec::new(),
             stuck: false,
             failing: false,
+            motor: Arc::new(Motor::default()),
+        }
+    }
+
+    /// A microphone in this head's body: one level per call, quiet, running or grinding.
+    pub fn ears(&self) -> Ears {
+        Ears {
+            motor: Arc::clone(&self.motor),
+            room_dbfs: -45.0,
+            grinding_calls: 0,
+            deaf_after: None,
         }
     }
 
@@ -112,14 +137,30 @@ impl FakeBus {
         let towards_positive = (axis.positive() == super::Dir::One) == dir_one;
         let signed = i64::from(steps);
         self.pending[i] = if towards_positive { signed } else { -signed };
-        self.busy[i] = BUSY_POLLS;
+        // Long moves take longer, so a head driven past its stop grinds for a while before the move ends.
+        self.busy[i] = BUSY_POLLS + steps / STEPS_PER_POLL;
+        self.motor.running[i].store(true, Ordering::Relaxed);
+        self.motor.grinding[i].store(false, Ordering::Relaxed);
     }
 
-    fn finish(&mut self, i: usize) {
+    /// Applies the running move's share for one status poll; a head that hits its stop grinds there.
+    fn advance(&mut self, i: usize) {
         let max = [PAN_MAX, TILT_MAX][i];
-        let to = i64::from(self.mech[i]) + self.pending[i];
-        self.mech[i] = to.clamp(0, i64::from(max)) as u32;
+        let share = self.pending[i] / i64::from(self.busy[i] + 1);
+        let to = i64::from(self.mech[i]) + share;
+        let clamped = to.clamp(0, i64::from(max));
+        self.mech[i] = clamped as u32;
+        self.pending[i] -= share;
+        if clamped != to {
+            self.motor.grinding[i].store(true, Ordering::Relaxed);
+        }
+    }
+
+    fn halt(&mut self, i: usize) {
+        self.busy[i] = 0;
         self.pending[i] = 0;
+        self.motor.running[i].store(false, Ordering::Relaxed);
+        self.motor.grinding[i].store(false, Ordering::Relaxed);
     }
 
     fn status(&mut self, axis: Axis) -> [u8; 2] {
@@ -129,11 +170,13 @@ impl FakeBus {
         }
         if self.busy[i] > 0 {
             self.busy[i] -= 1;
-            if self.busy[i] == 0 {
-                self.finish(i);
-            } else {
+            self.advance(i);
+            if self.busy[i] > 0 {
                 return [0x90, 0];
             }
+            self.pending[i] = 0;
+            self.motor.running[i].store(false, Ordering::Relaxed);
+            self.motor.grinding[i].store(false, Ordering::Relaxed);
         }
         [0x80, 0]
     }
@@ -177,8 +220,7 @@ impl Bus for FakeBus {
                     for axis in Axis::ALL {
                         // a set stop bit aborts a running move on that axis
                         if *v & axis.stop_bit() != 0 {
-                            self.busy[axis.index()] = 0;
-                            self.pending[axis.index()] = 0;
+                            self.halt(axis.index());
                         }
                     }
                 }
@@ -199,5 +241,58 @@ impl Bus for FakeBus {
 
     fn sleep(&mut self, d: Duration) {
         self.sleeps.push(d);
+    }
+}
+
+/// A microphone over a [`FakeBus`] head, with the levels measured on a tested camera: room −45 dBFS, a running motor
+/// −40, a motor grinding at its stop −28. Host tests only.
+pub struct Ears {
+    motor: Arc<Motor>,
+    room_dbfs: f32,
+    /// `heard` calls that reported a stall, for [`Ears::deaf_after`].
+    grinding_calls: u32,
+    deaf_after: Option<u32>,
+}
+
+impl Ears {
+    /// A room so loud the stall cannot be told from it.
+    pub fn loud_room(mut self) -> Self {
+        self.room_dbfs = -30.0;
+        self
+    }
+
+    /// No audio at all.
+    pub fn deaf(self) -> Self {
+        self.deaf_after(0)
+    }
+
+    /// Audio stops after `calls` `heard` calls that reported a stall (one call holds a whole detector
+    /// window, so 1 means: after the first axis was heard).
+    pub fn deaf_after(mut self, calls: u32) -> Self {
+        self.deaf_after = Some(calls);
+        self
+    }
+}
+
+impl super::homing::Listener for Ears {
+    fn heard(&mut self) -> Result<Vec<f32>, String> {
+        if self.deaf_after.is_some_and(|n| self.grinding_calls >= n) {
+            return Err("capture down".into());
+        }
+        let any = |flags: &[AtomicBool; 2]| flags.iter().any(|f| f.load(Ordering::Relaxed));
+        let motor = if any(&self.motor.grinding) {
+            self.grinding_calls += 1;
+            -28.0
+        } else if any(&self.motor.running) {
+            -40.0
+        } else {
+            -100.0
+        };
+        // A whole detector window per call: the fake's moves end in two polls, far sooner than real ones.
+        // The window and both rules are tested on real levels in `homing`.
+        Ok(vec![
+            self.room_dbfs.max(motor);
+            super::homing::RECENT_FRAMES
+        ])
     }
 }
