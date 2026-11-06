@@ -2,7 +2,7 @@
 //! Constants and speaker copy ownership: docs/hardware/audio.md. No common init/uninit here.
 use super::h;
 use super::{Sys, check, finish, region, valid_extent, valid_pointer};
-use crate::audio::{AacFrame, Aec, Anr, AudioCap, AudioOut, Tuning};
+use crate::audio::{Aec, Anr, AudioCap, AudioOut, PcmFrame, RATE, Tuning};
 use crate::{Error, Step};
 
 struct Api {
@@ -22,15 +22,6 @@ static CAP: Api = Api {
     start: h::hd_audiocap_start,
     stop: h::hd_audiocap_stop,
     set: h::hd_audiocap_set,
-};
-static ENC: Api = Api {
-    init: h::hd_audioenc_init,
-    uninit: h::hd_audioenc_uninit,
-    open: h::hd_audioenc_open,
-    close: h::hd_audioenc_close,
-    start: h::hd_audioenc_start,
-    stop: h::hd_audioenc_stop,
-    set: h::hd_audioenc_set,
 };
 static OUT: Api = Api {
     init: h::hd_audioout_init,
@@ -52,7 +43,6 @@ enum Release {
     Init(&'static Api),
     Path(&'static Api, h::HD_PATH_ID),
     Started(&'static Api, h::HD_PATH_ID),
-    Bind,
     Map(Mapping),
     Alloc(Mapping),
 }
@@ -63,7 +53,6 @@ impl Release {
             Self::Init(_) => "uninit",
             Self::Path(_, _) => "close",
             Self::Started(_, _) => "stop",
-            Self::Bind => "unbind",
             Self::Map(_) => "munmap",
             Self::Alloc(_) => "mem_free",
         }
@@ -76,7 +65,6 @@ pub(super) struct State {
     resources: Vec<Release>,
     ctrl: h::HD_PATH_ID,
     io: h::HD_PATH_ID,
-    enc: h::HD_PATH_ID,
     map: Option<Mapping>,
 }
 impl State {
@@ -133,7 +121,6 @@ impl State {
                     Release::Init(api) => (api.uninit)(),
                     Release::Path(api, path) => (api.close)(path),
                     Release::Started(api, path) => (api.stop)(path),
-                    Release::Bind => h::hd_audiocap_unbind(h::HD_AUDIOCAP_0_OUT_0),
                     Release::Map(m) => h::hd_common_mem_munmap(m.va.cast(), m.size as u32),
                     Release::Alloc(m) => h::hd_common_mem_free(m.phy as _, m.va.cast()),
                 }
@@ -199,16 +186,16 @@ impl AudioCap for Sys {
         let mut s = State::default();
         let result = (|| {
             s.init(&CAP, step)?;
-            s.init(&ENC, step)?;
             let ctrl = s.open(&CAP, 0, h::HD_AUDIOCAP_0_CTRL, step)?;
             let mut cfg = h::HD_AUDIOCAP_DEV_CONFIG::default();
+            // Raw 48 kHz capture, pulled from the capture unit itself: no audio encoder unit.
             cfg.in_max = h::HD_AUDIOCAP_IN {
-                sample_rate: 16000,
+                sample_rate: RATE,
                 sample_bit: 16,
                 mode: 1,
                 frame_sample: 1024,
             };
-            cfg.out_max.sample_rate = 16000;
+            cfg.out_max.sample_rate = RATE;
             cfg.frame_num_max = 10;
             // The envelope stays stock: a disabled maximum could forbid enabling later.
             cfg.aec_max = hd_aec(&Tuning::stock().aec);
@@ -239,45 +226,6 @@ impl AudioCap for Sys {
                 &mut hd_anr(&tuning.anr),
                 step,
             )?;
-            s.enc = s.open(&ENC, h::HD_AUDIOENC_0_IN_0, h::HD_AUDIOENC_0_OUT_0, step)?;
-            let mut ep = h::HD_AUDIOENC_PATH_CONFIG::default();
-            ep.max_mem = h::HD_AUDIOENC_MAXMEM {
-                codec_type: h::HD_AUDIO_CODEC_AAC,
-                sample_rate: 16000,
-                sample_bit: 16,
-                mode: 1,
-            };
-            set(&ENC, s.enc, h::HD_AUDIOENC_PARAM_PATH_CONFIG, &mut ep, step)?;
-            set(
-                &ENC,
-                s.enc,
-                h::HD_AUDIOENC_PARAM_IN,
-                &mut h::HD_AUDIOENC_IN {
-                    sample_rate: 16000,
-                    sample_bit: 16,
-                    mode: 1,
-                },
-                step,
-            )?;
-            set(
-                &ENC,
-                s.enc,
-                h::HD_AUDIOENC_PARAM_OUT,
-                &mut h::HD_AUDIOENC_OUT {
-                    codec_type: h::HD_AUDIO_CODEC_AAC,
-                    aac_adts: 0,
-                },
-                step,
-            )?;
-            // SAFETY: both endpoints are open and configured for identical 16 kHz mono PCM.
-            check(
-                step,
-                super::ioctl_capture::result(|| unsafe {
-                    h::hd_audiocap_bind(h::HD_AUDIOCAP_0_OUT_0, h::HD_AUDIOENC_0_IN_0)
-                }),
-            )?;
-            s.resources.push(Release::Bind);
-            s.start(&ENC, s.enc, step)?;
             s.start(&CAP, s.io, step)?;
             // Stock sets the volume last, on the started capture (item 0x19001 after the AEC/ANR sets and
             // the path start).
@@ -292,15 +240,16 @@ impl AudioCap for Sys {
                 step,
             )?;
 
-            let mut info = h::HD_AUDIOENC_BUFINFO::default();
+            // The ctrl path reports the page-aligned raw ring that every pulled frame lies in.
+            let mut info = h::HD_AUDIOCAP_BUFINFO::default();
             // SAFETY: exact BUFINFO id and output struct, filled before mapping.
             check(
                 step,
                 super::ioctl_capture::result(|| unsafe {
-                    h::hd_audioenc_get(
-                        s.enc,
-                        h::HD_AUDIOENC_PARAM_BUFINFO,
-                        (&mut info as *mut h::HD_AUDIOENC_BUFINFO).cast(),
+                    h::hd_audiocap_get(
+                        s.ctrl,
+                        h::HD_AUDIOCAP_PARAM_BUFINFO,
+                        (&mut info as *mut h::HD_AUDIOCAP_BUFINFO).cast(),
                     )
                 }),
             )?;
@@ -326,15 +275,15 @@ impl AudioCap for Sys {
         self.audio_cap = s;
         result
     }
-    fn audio_cap_recv(&mut self) -> Result<Option<AacFrame>, Error> {
+    fn audio_cap_recv(&mut self) -> Result<Option<PcmFrame>, Error> {
         self.forward(Step::AudioCapRecv)?;
         let step = Step::AudioCapRecv;
         let s = &self.audio_cap;
         let map = s.map.ok_or(Error { step, code: -22 })?;
-        let mut bs = h::HD_AUDIO_BS::default();
-        // SAFETY: valid descriptor; nonblocking pull on the running encoder owned by this state.
+        let mut frame = h::HD_AUDIO_FRAME::default();
+        // SAFETY: valid descriptor; nonblocking pull on the running capture path owned by this state.
         let rc = super::ioctl_capture::result(|| unsafe {
-            h::hd_audioenc_pull_out_buf(s.enc, &mut bs, 0)
+            h::hd_audiocap_pull_out_buf(s.io, &mut frame, 0)
         });
         if matches!(rc as i32, h::HD_ERR_TIMEDOUT | h::HD_ERR_UNDERRUN) {
             return Ok(None);
@@ -342,9 +291,19 @@ impl AudioCap for Sys {
         check(step, rc)?;
         let copied = (|| {
             let invalid = Error { step, code: -22 };
-            let range =
-                region(bs.phy_addr as usize, bs.size as usize, map.phy, map.size).ok_or(invalid)?;
-            if bs.acodec_format != h::HD_AUDIO_CODEC_AAC || bs.size > 8191 {
+            let range = region(
+                frame.phy_addr[0] as usize,
+                frame.size as usize,
+                map.phy,
+                map.size,
+            )
+            .ok_or(invalid)?;
+            if frame.sample_rate != RATE
+                || frame.bit_width != 16
+                || frame.sound_mode != 1
+                || !frame.size.is_multiple_of(2)
+                || frame.size > 8192
+            {
                 return Err(invalid);
             }
             // SAFETY: checked nonempty range in the live cached mapping; DMA wrote these bytes.
@@ -353,24 +312,28 @@ impl AudioCap for Sys {
             check(
                 step,
                 super::ioctl_capture::result(|| unsafe {
-                    h::hd_common_mem_flush_cache(ptr.cast(), bs.size)
+                    h::hd_common_mem_flush_cache(ptr.cast(), frame.size)
                 }),
             )?;
             // SAFETY: checked readable range; copy before releasing the pulled descriptor.
-            Ok(unsafe { std::slice::from_raw_parts(ptr, range.len()) }.to_vec())
+            let bytes = unsafe { std::slice::from_raw_parts(ptr, range.len()) };
+            Ok(bytes
+                .chunks_exact(2)
+                .map(|b| i16::from_le_bytes([b[0], b[1]]))
+                .collect::<Vec<_>>())
         })();
         // SAFETY: release the exact pulled descriptor even on bad bounds or cache failure.
         let release = check(
             step,
             super::ioctl_capture::result(|| unsafe {
-                h::hd_audioenc_release_out_buf(s.enc, &mut bs)
+                h::hd_audiocap_release_out_buf(s.io, &mut frame)
             }),
         );
         self.terminal |= release.is_err();
-        let data = finish(copied, release, "audioenc_release_out_buf")?;
-        Ok(Some(AacFrame {
-            pts_us: bs.timestamp,
-            data,
+        let samples = finish(copied, release, "audiocap_release_out_buf")?;
+        Ok(Some(PcmFrame {
+            pts_us: frame.timestamp,
+            samples,
         }))
     }
     fn audio_cap_stop(&mut self) -> Result<(), Error> {
@@ -393,13 +356,13 @@ impl AudioOut for Sys {
             let ctrl = s.open(&OUT, 0, h::HD_AUDIOOUT_0_CTRL, step)?;
             let mut cfg = h::HD_AUDIOOUT_DEV_CONFIG::default();
             cfg.out_max = h::HD_AUDIOOUT_OUT {
-                sample_rate: 16000,
+                sample_rate: RATE,
                 sample_bit: 16,
                 mode: 1,
             };
             cfg.frame_sample_max = 1024;
             cfg.frame_num_max = 8;
-            cfg.in_max.sample_rate = 16000;
+            cfg.in_max.sample_rate = RATE;
             set(&OUT, ctrl, h::HD_AUDIOOUT_PARAM_DEV_CONFIG, &mut cfg, step)?;
             set(
                 &OUT,
@@ -526,7 +489,7 @@ impl AudioOut for Sys {
         frame.phy_addr[0] = map.phy as _;
         frame.bit_width = 16;
         frame.sound_mode = 1;
-        frame.sample_rate = 16000;
+        frame.sample_rate = RATE;
         // SAFETY: frame points into HDAL physical memory. The exact kernel's wavstudio push copies into
         // its own playback ring synchronously (docs/hardware/audio.md); staging can be reused after this returns.
         let rc = super::ioctl_capture::result(|| unsafe {

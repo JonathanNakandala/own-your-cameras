@@ -4,6 +4,7 @@ repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$repo_dir"
 workspace_dir=$(CDPATH= cd -- ../.. && pwd)
 python3 "$workspace_dir/scripts/fetch-zig.py" >/dev/null
+python3 "$workspace_dir/scripts/fetch-opus.py" >/dev/null
 export PATH="$workspace_dir/.tools/zig:$PATH"
 MI360_ZIG_SHA256=$(python3 - "$workspace_dir/.tools/zig/zig" <<'PY'
 from pathlib import Path

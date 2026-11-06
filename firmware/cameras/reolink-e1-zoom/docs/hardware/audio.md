@@ -1,14 +1,17 @@
 # Audio: microphone, speaker and the amplifier
 
-`cam serve` captures 16 kHz mono AAC-LC from the microphone and plays signed 16-bit mono samples on the speaker,
-inside the video pipeline's HDAL session and common memory. Both RTSP paths share one microphone hub and one
-exclusive PCMU backchannel ([../architecture.md](../architecture.md#rtsp)). The RTSP server starts only after audio
+`cam serve` captures 48 kHz mono PCM from the microphone, encodes it to Opus, and plays 48 kHz signed 16-bit mono
+samples on the speaker (capture and playback share one codec clock: with the speaker at 16 kHz, a 48 kHz capture
+delivered frames at the 16 kHz rate [V]), inside the video pipeline's HDAL session and common memory. Both RTSP paths share one
+microphone encoder and one Opus backchannel mixer for up to four talkers
+([../architecture.md](../architecture.md#rtsp)). The RTSP server starts only after audio
 startup succeeds; shutdown stops audio before common memory is torn down, and a failed start releases everything it
 acquired. Tags as in [README.md](README.md#evidence-tags).
 
 ## Stock settings [D]
 
-Stock `device` at `0x8f0f4..0x8f194` opens capture at 16 kHz, 16 bit, mono, 1,024 samples, 10 frames.
+Stock `device` at `0x8f0f4..0x8f194` opens capture at 16 kHz, 16 bit, mono, 1,024 samples, 10 frames; `cam` uses
+48 kHz with the same frame size and count (the capture unit reports 8–48 kHz in `SYSCAPS`).
 ANR is `(enabled=1, suppress=30, HPF=160, bias=9)`. The AEC maximum settings are `(enabled=1, leak_enabled=0,
 leak_value=99, noise=-60, echo=-60, filter_length=1024, frame_size=128, notch_radius=992, loopback=left)`; stock
 also has a model-47 branch that picks noise −30, and the model predicate was not resolved, so `cam` uses the
@@ -19,14 +22,20 @@ kernel accepts these parameters [V]; that does not prove acoustic echo suppressi
 but capture is one channel (`mode=1`) with a zeroed `DRV_CONFIG`, so nothing is mixed in. The stock
 `DRV_CONFIG` contents were not recovered. Until a recording with the speaker playing shows the echo with AEC on
 and off, treat the microphone path as having no echo reference. No loopback route is added: an unverified one
-could change the frame layout the AAC encoder consumes.
+could change the raw capture frame layout. At 48 kHz the driver accepts AEC and ANR on or off and keeps
+delivering exactly 48,000 samples per second [V]; whether they process anything at that rate is not established.
 
 ## Capture
 
-Capture binds directly to `hd_audioenc` with `aac_adts=0`. Each raw access unit and its encoder PTS are copied
-once into the audio hub, and both RTSP paths packetize it as RFC 3640. The bitstream region is mapped once,
-cache-invalidated before reads and bounds-checked, and every pulled descriptor is released, also on the
-copy and cache failure paths.
+No audio encoder unit is opened: the 16 kHz `hd_audioenc` AAC path is gone. `hd_audiocap_pull_out_buf` on the
+capture i/o path returns raw frames of 1,024 samples (2,048 bytes) with a 48 kHz PTS. Their physical addresses are
+not page aligned, but all lie in one page-aligned ring that `hd_audiocap_get(ctrl, HD_AUDIOCAP_PARAM_BUFINFO)`
+reports (49,920 bytes on the tested camera) [V]. The ring is mapped once, each frame is bounds-checked against it,
+cache-invalidated before the copy, and every pulled descriptor is released, also on the copy and cache failure paths.
+
+The media thread regroups the frames into 20 ms (960-sample) frames and encodes each with libopus 1.5.2
+(48 kHz mono, `OPUS_APPLICATION_AUDIO`, complexity 5, 64 kbit/s, built with NEON). One encoder serves every
+listener; the audio hub fans the packets out, and the RTSP sender paces them at 20 ms.
 
 ## Speaker
 
@@ -36,13 +45,15 @@ reusable as soon as the push returns [D]: `isf_audout_inputport_push_imgbuf_to_d
 `0x1748`) calls `wavstudio_push_buf_to_queue`, which (`kflow_audiocap.ko` `0x37f0`) copies the bytes into its own
 ring at `0x3940` before returning. A full buffer counts as dropped samples; other failures propagate.
 
-Stock allocates 60 output frames (`device` `0x8fe68`); `cam` uses eight. Three frames dropped about 40 % of
-paced samples, eight dropped none on the same recording [V]. That is allocation capacity, not a measured
-playback latency.
+Stock allocates 60 output frames (`device` `0x8fe68`); `cam` uses eight. At 16 kHz, three frames dropped about
+40 % of paced samples and eight dropped none on the same recording [V]; at 48 kHz eight frames hold 170 ms, and
+tone and speech runs dropped none [V]. That is allocation capacity, not a measured playback latency.
 
-The hardware loop waits at most 10 ms for video, polls one AAC unit without waiting, and drains one fresh
-talkback packet per iteration in blocks of at most 1,024 samples. The RTSP side keeps a five-packet queue
-with 100 ms expiry, one exclusive talker, and clears it on disconnect.
+Each loop turn the hardware loop waits at most 10 ms for video, takes every pending capture frame, and takes every
+due 20 ms block (960 samples) from the talkback mixer, which emits blocks on its own real-time clock. The speaker
+gets whole 1,024-sample frames, the driver's `frame_sample_max`: pushing 960-sample blocks played with audible
+jitter [V]. A burst's last partial frame is padded with silence. Each burst logs
+`speaker: burst ended played_ms=… dropped_ms=…`.
 
 ### Amplifier: GPIO 234
 
@@ -87,25 +98,28 @@ holds the stock values (AEC and ANR on, mic 80 as stock sets it through ctrl ite
 
 `make device-serve CAMERA=<ssh host> AUTH=<file with user:password>` runs `cam serve --diagnostic` in RAM with the
 vendor stack stopped and reboots afterwards ([../development.md](../development.md)); the diagnostic serves on
-port 8554, the installed daemon on 554. While it runs, `ffprobe`
-both paths over TCP: H.264 plus AAC-LC, 16,000 Hz, one channel. Record the microphone:
+port 8554, the installed daemon on 554. The steps below need an ffmpeg built with libopus
+(`ffmpeg -hide_banner -encoders | grep libopus`). While it runs, `ffprobe` both paths over TCP: H.264 plus Opus,
+48,000 Hz. Record the microphone:
 
 ```sh
 ffmpeg -rtsp_transport tcp -i 'rtsp://USER:PASSWORD@CAMERA_IP:8554/Preview_01_sub' \
-  -map 0:a:0 -t 3 -c:a copy mic.aac
+  -map 0:a:0 -t 3 -c:a copy mic.opus
 ```
 
 Play a recording on the speaker through the backchannel (the tool reads the credentials from the file and
 never prints them):
 
 ```sh
-ffmpeg -i speech.wav -ar 8000 -ac 1 -f mulaw speech.pcmu
-python3 -I scripts/audio_backchannel.py --host CAMERA_IP --port 8554 --auth AUTH_FILE speech.pcmu
+ffmpeg -i speech.wav -ac 1 -ar 48000 -c:a libopus -b:a 64k speech.opus
+python3 -I scripts/audio_backchannel.py --host CAMERA_IP --port 8554 --auth AUTH_FILE speech.opus
 ```
 
-The sender negotiates DESCRIBE → SETUP of track 2 → PLAY, sends 20 ms PCMU RTP packets with TCP NODELAY, then
-TEARDOWN; it accepts either path. Sent bytes × 2 should equal the daemon's `speaker_samples`, with zero
-`speaker_dropped_samples` for a paced run.
+The sender negotiates DESCRIBE → SETUP of track 2 → PLAY, sends the file's Opus packets as RTP (PT 111, 48 kHz
+clock) in real time with TCP NODELAY, then TEARDOWN; it accepts either path. Run two senders at once to hear the
+mix. When the diagnostic ends, its `audio:` line reports `speaker_samples`: about the clip's seconds × 48,000,
+rounded up to a multiple of 1,024, with zero `speaker_dropped_samples` for a paced run. The `talk:` and `speaker:`
+lines show each session and burst.
 
-These checks establish microphone AAC on both paths and recorded audio reaching the speaker driver. They do not
+These checks establish microphone Opus on both paths and recorded audio reaching the speaker driver. They do not
 establish intelligibility, loudness or echo quality: listen through your own client for that.

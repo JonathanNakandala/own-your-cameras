@@ -20,11 +20,12 @@ From the repository root, with Python 3.12+, a host C compiler installed:
 ```sh
 rustup toolchain install 1.95.0 --component rustfmt --component clippy --component rust-src
 python3 firmware/scripts/fetch-zig.py
+python3 firmware/scripts/fetch-opus.py
 export PATH="$PWD/firmware/.tools/zig:$PATH"
 make gate
 ```
 
-The workspace pins Rust in `rust-toolchain.toml`. The Zig installer verifies official release hashes and writes only to `firmware/.tools/`.
+The workspace pins Rust in `rust-toolchain.toml`. The Zig and libopus installers verify release hashes and write only to `firmware/.tools/`.
 On macOS, `brew install llvm` supplies the ARM disassembler; on Debian/Ubuntu, install `clang llvm`.
 The gate checks local interface pins, compiles the production ABI assertions, and runs isolated
 host tests. It needs no camera, broker, Home Assistant, microphone, speaker or proprietary libraries.
@@ -41,13 +42,15 @@ manual workflow runs produce build previews. Private images are assembled locall
 ## Source layout
 
 - `crates/camera-control`: versioned motion and image-position request parsers; no hardware or clock.
-- `crates/camera-transport`: H.264 framing, RTSP authentication/RTP, AAC and PCMU audio, talkback and
-  the Mi360 MQTT adapter. Video and connection limits are supplied per camera instance.
+- `crates/camera-transport`: H.264 framing, RTSP authentication/RTP, Opus microphone framing and RTP,
+  the talkback mixer and the Mi360 MQTT adapter. Video and connection limits are supplied per camera instance.
+- `crates/camera-opus`: libopus 1.5.2 (`opus.json`, fetched by `scripts/fetch-opus.py`), built static with
+  the pinned Zig for each camera; the encoder and decoder behind the transport's codec traits.
 - `cameras/reolink-e1-zoom`: daemon, HDAL wrappers, Novatek hardware adapters, image and recovery tools.
 - `cameras/mi360`: daemon, IMP C bridges, T31 hardware adapters, network recovery and NOR image tools.
 
 The Reolink profile permits 7 MiB access units, 8 MiB shared retained video, 32 queued frames and eight
-connections. Mi360 uses 1 MiB access units, 2 MiB retained video, four queued frames, two connections
+connections. Mi360 uses 1 MiB access units, 2 MiB retained video, four queued frames, six connections
 and 96 KiB RTSP worker stacks. These are independent runtime policies, not Cargo feature switches.
 
 ## Contributing

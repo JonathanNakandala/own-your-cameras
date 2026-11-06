@@ -21,7 +21,7 @@ pub struct Control {
 pub struct Fake {
     /// When set, `videoenc_recv` also paces itself (1 ms of real time) and honors the knobs.
     pub control: Option<std::sync::Arc<Control>>,
-    pub audio_frames: std::collections::VecDeque<crate::audio::AacFrame>,
+    pub audio_frames: std::collections::VecDeque<crate::audio::PcmFrame>,
     pub speaker_pcm: Vec<i16>,
     pub speaker_full: bool,
     /// Every capture tuning the fake was started or tuned with, in order.
@@ -404,7 +404,7 @@ impl crate::AudioCap for Fake {
         self.tunings.push(*tuning);
         Ok(())
     }
-    fn audio_cap_recv(&mut self) -> Result<Option<crate::audio::AacFrame>, Error> {
+    fn audio_cap_recv(&mut self) -> Result<Option<crate::audio::PcmFrame>, Error> {
         self.enter(Step::AudioCapRecv)?;
         Ok(self.audio_frames.pop_front())
     }

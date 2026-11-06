@@ -11,9 +11,11 @@ fn fixture() -> Sys {
         d.video.pack_num = 1;
         d.video.video_pack[0].phy_addr = 0x1000;
         d.video.video_pack[0].size = 4;
-        d.audio.phy_addr = 0x1000;
+        d.audio.phy_addr[0] = 0x1000;
         d.audio.size = 4;
-        d.audio.acodec_format = h::HD_AUDIO_CODEC_AAC;
+        d.audio.sample_rate = 48_000;
+        d.audio.bit_width = 16;
+        d.audio.sound_mode = 1;
     });
     let mut sys = Sys::new().with_speaker_enable(|_| Ok(()));
     sys.common_init().unwrap();
@@ -122,9 +124,9 @@ fn audio_cache_error_survives_a_release_error_and_shutdown_completes() {
     sys.audio_cap_start(&crate::audio::Tuning::stock()).unwrap();
     DRIVER.with_borrow_mut(|d| {
         d.errors.insert("hd_common_mem_flush_cache", -77);
-        d.errors.insert("hd_audioenc_release_out_buf", -78);
+        d.errors.insert("hd_audiocap_release_out_buf", -78);
         d.errors.insert("hd_common_mem_munmap", -79);
-        d.errors.insert("hd_audioenc_stop", -80);
+        d.errors.insert("hd_audiocap_stop", -80);
     });
     assert_eq!(
         sys.audio_cap_recv(),
@@ -133,7 +135,7 @@ fn audio_cache_error_survives_a_release_error_and_shutdown_completes() {
             code: -77
         })
     );
-    DRIVER.with_borrow(|d| assert_eq!(d.calls.last(), Some(&"hd_audioenc_release_out_buf")));
+    DRIVER.with_borrow(|d| assert_eq!(d.calls.last(), Some(&"hd_audiocap_release_out_buf")));
     assert_eq!(
         sys.audio_cap_stop(),
         Err(Error {
@@ -156,7 +158,11 @@ fn repeated_audio_start_is_rejected_without_replacing_live_resources() {
     assert!(sys.audio_cap_start(&crate::audio::Tuning::stock()).is_err());
     assert!(sys.audio_out_start(100).is_err());
     assert_eq!(DRIVER.with_borrow(|d| d.calls.len()), before);
-    assert_eq!(sys.audio_cap_recv().unwrap().unwrap().data, [1, 2, 3, 4]);
+    // Little-endian 16-bit samples from the mapped raw ring.
+    assert_eq!(
+        sys.audio_cap_recv().unwrap().unwrap().samples,
+        [0x0201, 0x0403]
+    );
     assert!(sys.audio_out_push(&[123, -456]).unwrap());
     sys.audio_out_stop().unwrap();
     sys.audio_cap_stop().unwrap();
@@ -230,14 +236,14 @@ fn audio_rejects_invalid_descriptors_and_always_releases_them() {
         sys.audio_cap_start(&crate::audio::Tuning::stock()).unwrap();
         DRIVER.with_borrow_mut(|d| match case {
             0 => d.audio.size = 0,
-            1 => d.audio.phy_addr = 0xfff,
-            2 => d.audio.size = 5,
-            _ => d.audio.acodec_format = h::HD_AUDIO_CODEC_PCM,
+            1 => d.audio.phy_addr[0] = 0xfff,
+            2 => d.audio.size = 3,
+            _ => d.audio.sample_rate = 16_000,
         });
         assert!(sys.audio_cap_recv().is_err());
         DRIVER.with_borrow(|d| {
             assert!(!d.calls.contains(&"hd_common_mem_flush_cache"));
-            assert_eq!(d.calls.last(), Some(&"hd_audioenc_release_out_buf"));
+            assert_eq!(d.calls.last(), Some(&"hd_audiocap_release_out_buf"));
         });
         sys.audio_cap_stop().unwrap();
     }
@@ -500,7 +506,8 @@ fn every_audio_startup_failure_releases_its_successful_acquisitions() {
             DRIVER.with_borrow(|d| {
                 // The hardware boundary must balance every successful acquisition exactly
                 // once. The failed call itself never grants a resource.
-                for unit in ["audiocap", "audioenc", "audioout"] {
+                assert!(!d.calls.iter().any(|c| c.starts_with("hd_audioenc")));
+                for unit in ["audiocap", "audioout"] {
                     for (take, give) in [("init", "uninit"), ("open", "close"), ("start", "stop")] {
                         let take = format!("hd_{unit}_{take}");
                         let give = format!("hd_{unit}_{give}");
@@ -509,8 +516,6 @@ fn every_audio_startup_failure_releases_its_successful_acquisitions() {
                         assert_eq!(acquired, released, "{failed} at {index}: {take}/{give}");
                     }
                 }
-                let bound = d.calls[..index].contains(&"hd_audiocap_bind");
-                assert_eq!(d.calls[index + 1..].contains(&"hd_audiocap_unbind"), bound);
             });
             DRIVER.with_borrow_mut(|d| d.fail_at = None);
             // A clean atomic failure may retry audio within the still-owned common session.
@@ -605,10 +610,10 @@ fn nonblocking_media_statuses_and_real_errors_reach_the_safe_caller() {
         ("hd_videoenc_poll_list", -77),
         ("hd_videoenc_pull_out_buf", -77),
         ("hd_videoenc_release_out_buf", -77),
-        ("hd_audioenc_pull_out_buf", h::HD_ERR_TIMEDOUT),
-        ("hd_audioenc_pull_out_buf", h::HD_ERR_UNDERRUN),
-        ("hd_audioenc_pull_out_buf", -77),
-        ("hd_audioenc_release_out_buf", -77),
+        ("hd_audiocap_pull_out_buf", h::HD_ERR_TIMEDOUT),
+        ("hd_audiocap_pull_out_buf", h::HD_ERR_UNDERRUN),
+        ("hd_audiocap_pull_out_buf", -77),
+        ("hd_audiocap_release_out_buf", -77),
         ("hd_audioout_push_in_buf", h::HD_ERR_TIMEDOUT),
         ("hd_audioout_push_in_buf", h::HD_ERR_OVERRUN),
         ("hd_audioout_push_in_buf", -77),
@@ -634,7 +639,7 @@ fn nonblocking_media_statuses_and_real_errors_reach_the_safe_caller() {
                     function.ends_with("release_out_buf")
                 )
             });
-        } else if function.starts_with("hd_audioenc") {
+        } else if function.starts_with("hd_audiocap") {
             let result = sys.audio_cap_recv();
             if matches!(code, h::HD_ERR_TIMEDOUT | h::HD_ERR_UNDERRUN) {
                 assert!(result.unwrap().is_none());
@@ -643,7 +648,7 @@ fn nonblocking_media_statuses_and_real_errors_reach_the_safe_caller() {
             }
             DRIVER.with_borrow(|d| {
                 assert_eq!(
-                    d.calls.contains(&"hd_audioenc_release_out_buf"),
+                    d.calls.contains(&"hd_audiocap_release_out_buf"),
                     function.ends_with("release_out_buf")
                 )
             });
@@ -670,11 +675,7 @@ fn each_audio_cleanup_fault_blocks_both_audio_and_video_but_attempts_the_rest() 
         "hd_audioout_uninit",
         "hd_common_mem_munmap",
         "hd_audiocap_stop",
-        "hd_audioenc_stop",
-        "hd_audiocap_unbind",
-        "hd_audioenc_close",
         "hd_audiocap_close",
-        "hd_audioenc_uninit",
         "hd_audiocap_uninit",
     ] {
         let mut sys = fixture();
@@ -716,7 +717,7 @@ fn audio_start_rejects_a_swallowed_ioctl_failure_and_unwinds() {
     DRIVER.with_borrow(|d| {
         assert!(!d.calls.contains(&"hd_audiocap_start"));
         assert!(d.calls.contains(&"hd_audiocap_close"));
-        assert!(d.calls.contains(&"hd_audioenc_uninit"));
+        assert!(!d.calls.iter().any(|c| c.starts_with("hd_audioenc")));
         assert!(d.calls.contains(&"hd_audiocap_uninit"));
     });
 }
@@ -847,10 +848,10 @@ fn kernel_reported_empty_pull_is_not_an_unreported_syscall_failure() {
     let mut sys = fixture();
     sys.audio_cap_start(&crate::audio::Tuning::stock()).unwrap();
     DRIVER.with_borrow_mut(|d| {
-        d.swallowed_ioctl = Some("hd_audioenc_pull_out_buf");
+        d.swallowed_ioctl = Some("hd_audiocap_pull_out_buf");
         d.ioctl_command = Some(0xc018490c);
         d.errors
-            .insert("hd_audioenc_pull_out_buf", h::HD_ERR_UNDERRUN);
+            .insert("hd_audiocap_pull_out_buf", h::HD_ERR_UNDERRUN);
     });
     assert_eq!(sys.audio_cap_recv().unwrap(), None);
     // The same ioctl without a reported negative kernel status still fails closed.

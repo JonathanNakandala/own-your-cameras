@@ -1,7 +1,7 @@
 #!/usr/bin/env python3 -I
-"""Send an existing real recording to cam's PCMU backchannel; never open a microphone.
+"""Send an existing real recording to cam's Opus backchannel; never open a microphone.
 
-Convert a real recording first: ffmpeg -i speech.wav -ar 8000 -ac 1 -f mulaw speech.pcmu
+Convert a real recording first: ffmpeg -i speech.wav -ac 1 -ar 48000 -c:a libopus -b:a 64k speech.opus
 The camera must already be running cam serve. This tool changes nothing else.
 """
 import argparse
@@ -13,9 +13,43 @@ import struct
 import time
 
 
-def send_pcmu(host, port, path, data, credentials=None):
-    """Pace existing 8 kHz mono PCMU at 160 bytes/20 ms. Return packet count."""
-    if not data:
+def ogg_opus_packets(data):
+    """The audio packets of an Ogg Opus file (RFC 7845), without the OpusHead and OpusTags headers."""
+    packets, partial, offset = [], b'', 0
+    while offset < len(data):
+        if data[offset:offset + 4] != b'OggS' or len(data) < offset + 27:
+            raise ValueError('not an Ogg stream')
+        count = data[offset + 26]
+        lacing = data[offset + 27:offset + 27 + count]
+        body = offset + 27 + count
+        for size in lacing:
+            partial += data[body:body + size]
+            body += size
+            if size < 255:
+                packets.append(partial)
+                partial = b''
+        offset = body
+    if len(packets) < 2 or not packets[0].startswith(b'OpusHead') or not packets[1].startswith(b'OpusTags'):
+        raise ValueError('not an Ogg Opus stream')
+    return packets[2:]
+
+
+def duration(packet):
+    """Samples at 48 kHz in one Opus packet, from its TOC byte (RFC 6716 section 3.1)."""
+    config, code = packet[0] >> 3, packet[0] & 3
+    if config < 12:
+        frame = (480, 960, 1920, 2880)[config % 4]
+    elif config < 16:
+        frame = (480, 960)[config % 2]
+    else:
+        frame = (120, 240, 480, 960)[config % 4]
+    frames = 1 if code == 0 else 2 if code < 3 else packet[1] & 0x3f
+    return frame * frames
+
+
+def send_opus(host, port, path, packets, credentials=None):
+    """Pace existing Opus packets in real time on the backchannel (PT 111, 48 kHz clock). Return packet count."""
+    if not packets:
         raise ValueError('recording is empty')
     url = f'rtsp://{host}:{port}/{path}'
     with socket.create_connection((host, port), timeout=5) as sock, sock.makefile('rb') as stream:
@@ -77,18 +111,15 @@ def send_pcmu(host, port, path, data, credentials=None):
         session = headers['session'].split(';')[0]
         call('PLAY', url, f'Session: {session}\r\n')
         start = time.monotonic()
-        packets = 0
-        for offset in range(0, len(data), 160):
-            time.sleep(max(0, start + offset / 8000 - time.monotonic()))
-            payload = data[offset:offset + 160]
-            rtp = struct.pack('!BBHII', 0x80, 0, packets & 65535, offset & 0xffffffff, 31) + payload
+        clock = 0
+        for sequence, payload in enumerate(packets):
+            time.sleep(max(0, start + clock / 48000 - time.monotonic()))
+            rtp = struct.pack('!BBHII', 0x80, 111, sequence & 65535, clock & 0xffffffff, 31) + payload
             sock.sendall(b'$\x04' + struct.pack('!H', len(rtp)) + rtp)
-            packets += 1
-        # Let the last packet reach the hardware loop before releasing the speaker lease.
-        time.sleep(0.05)
+            clock += duration(payload)
         cseq += 1
         sock.sendall(f'TEARDOWN {url} RTSP/1.0\r\nCSeq: {cseq}\r\nSession: {session}\r\n\r\n'.encode())
-        return packets
+        return len(packets)
 
 
 def main():
@@ -97,12 +128,12 @@ def main():
     parser.add_argument('--port', type=int, default=554)
     parser.add_argument('--path', choices=['Preview_01_main', 'Preview_01_sub'], default='Preview_01_sub')
     parser.add_argument('--auth', type=Path, help='file containing existing user:password')
-    parser.add_argument('pcmu', type=Path, help='8 kHz mono PCMU from an existing real recording')
+    parser.add_argument('opus', type=Path, help='Ogg Opus file made from an existing real recording')
     args = parser.parse_args()
     credentials = tuple(args.auth.read_text().strip().split(':', 1)) if args.auth else None
-    data = args.pcmu.read_bytes()
-    packets = send_pcmu(args.host, args.port, args.path, data, credentials)
-    print(f'pcmu_packets={packets} pcmu_bytes={len(data)} seconds={len(data) / 8000:.3f}')
+    packets = ogg_opus_packets(args.opus.read_bytes())
+    sent = send_opus(args.host, args.port, args.path, packets, credentials)
+    print(f'opus_packets={sent} seconds={sum(map(duration, packets)) / 48000:.3f}')
 
 
 if __name__ == '__main__':

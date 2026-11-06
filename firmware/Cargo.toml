@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/camera-control", "crates/camera-transport", "cameras/mi360", "cameras/reolink-e1-zoom/cam", "cameras/reolink-e1-zoom/hdal", "cameras/reolink-e1-zoom/hdal-sys"]
+members = ["crates/camera-control", "crates/camera-opus", "crates/camera-transport", "cameras/mi360", "cameras/reolink-e1-zoom/cam", "cameras/reolink-e1-zoom/hdal", "cameras/reolink-e1-zoom/hdal-sys"]
 resolver = "3"
 
 [workspace.package]

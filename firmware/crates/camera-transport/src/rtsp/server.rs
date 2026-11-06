@@ -10,13 +10,14 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use super::audio::{AudioHub, AudioViewer, TalkLease, Talkback};
+use super::audio::{AudioHub, AudioViewer};
 use super::hub::{Hub, Viewer};
 use super::proto::{
     Credentials, Parsed, Request, Response, Transport, challenge, check_digest, parse_request,
     parse_transport, sdp,
 };
 use super::rtp::{Packetizer, timestamp};
+use super::talk::{TalkLease, Talkback};
 
 const SESSION_TIMEOUT_S: u64 = 60;
 /// Connection and worker-stack policy is independent for each listener.
@@ -30,8 +31,9 @@ impl ServerLimits {
         connections: 8,
         thread_stack_bytes: None,
     };
+    /// go2rtc, a direct listener and up to four direct talkers; talk-only connections hold no video queue.
     pub const MI360: Self = Self {
-        connections: 2,
+        connections: 6,
         thread_stack_bytes: Some(96 * 1024),
     };
     fn thread(self) -> std::thread::Builder {
@@ -58,9 +60,9 @@ pub struct Config {
     pub streams: Vec<(String, Arc<Hub>)>,
     /// `None` serves without authentication.
     pub creds: Option<Credentials>,
-    /// One 16 kHz mono AAC capture shared by main and sub; absent until hardware is ready.
+    /// One 48 kHz mono Opus capture shared by main and sub (track 1); absent until hardware is ready.
     pub audio: Option<Arc<AudioHub>>,
-    /// Bounded queue for decoded 16 kHz mono speaker samples.
+    /// Opus backchannel (track 2): up to four talkers mixed into mono samples at the camera's speaker rate.
     pub talk: Option<Arc<Talkback>>,
 }
 
@@ -288,8 +290,7 @@ fn audio_sender(
     if go.recv().is_err() {
         return;
     }
-    let mut pk = crate::microphone::Packetizer::new(ssrc, viewer.format);
-    let pacing = viewer.format == crate::microphone::Format::Pcmu8k;
+    let mut pk = crate::microphone::Packetizer::new(ssrc);
     let started = std::time::Instant::now();
     let mut pacer = crate::microphone::Pacer::default();
     while !stop.load(Ordering::Relaxed) {
@@ -298,27 +299,26 @@ fn audio_sender(
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
             Err(_) => return,
         };
-        let Some(packets) = pk.packets(frame.pts_us, &frame.data) else {
+        let Some(packet) = pk.packet(frame.pts_us, &frame.data) else {
             continue;
         };
-        for packet in packets {
-            if pacing {
-                let now = started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
-                let Some(due) = pacer.deadline(now, packet.len().saturating_sub(12)) else {
+        // Capture blocks (21.3 ms on the Reolink) yield frames unevenly; send them at a steady 20 ms.
+        {
+            let now = started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+            let Some(due) = pacer.deadline(now, crate::microphone::PACKET_US) else {
+                return;
+            };
+            loop {
+                if stop.load(Ordering::Relaxed) {
                     return;
-                };
-                loop {
-                    if stop.load(Ordering::Relaxed) {
-                        return;
-                    }
-                    let elapsed = started.elapsed().as_micros();
-                    if elapsed >= u128::from(due) {
-                        break;
-                    }
-                    std::thread::sleep(Duration::from_micros(
-                        (u128::from(due) - elapsed).min(5000) as u64,
-                    ));
                 }
+                let elapsed = started.elapsed().as_micros();
+                if elapsed >= u128::from(due) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_micros(
+                    (u128::from(due) - elapsed).min(5000) as u64
+                ));
             }
             if stop.load(Ordering::Relaxed) {
                 return;
@@ -476,8 +476,8 @@ fn handle(
             };
             let base = format!("{}/", req.uri.trim_end_matches('/'));
             let mut body = sdp(&params, &base);
-            if let Some(audio) = &cfg.audio {
-                body.push_str(&crate::microphone::sdp(audio.format()));
+            if cfg.audio.is_some() {
+                body.push_str(&crate::microphone::sdp());
             }
             if cfg.talk.is_some()
                 && req.header("Require").is_some_and(|v| {
@@ -486,7 +486,11 @@ fn handle(
                 })
             {
                 *backchannel = true;
-                body.push_str("m=audio 0 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000/1\r\na=control:trackID=2\r\na=sendonly\r\n");
+                body.push_str(&format!(
+                    "m=audio 0 RTP/AVP {pt}\r\na=rtpmap:{pt} opus/48000/2\r\na=fmtp:{pt} sprop-stereo=0\r\n\
+                     a=control:trackID=2\r\na=sendonly\r\n",
+                    pt = crate::opus::PAYLOAD_TYPE
+                ));
             }
             let r = Response::new(200)
                 .with("Content-Base", base.clone())

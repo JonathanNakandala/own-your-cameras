@@ -12,7 +12,7 @@ pub struct Driver {
     pub errors: std::collections::HashMap<&'static str, i32>,
     pub bytes: Vec<u8>,
     pub video: HD_VIDEOENC_BS,
-    pub audio: HD_AUDIO_BS,
+    pub audio: HD_AUDIO_FRAME,
     pub map_result: Option<usize>,
     pub phy: u32,
     pub size: u32,
@@ -51,7 +51,6 @@ macro_rules! stub {
         }
     };
 }
-stub!(hd_audiocap_bind(out_id: HD_OUT_ID, dest_in_id: HD_IN_ID) -> HD_RESULT);
 stub!(hd_audiocap_close(path_id: HD_PATH_ID) -> HD_RESULT);
 stub!(hd_audiocap_init() -> HD_RESULT);
 stub!(
@@ -60,22 +59,10 @@ stub!(
 stub!(
     hd_audiocap_set(path_id: HD_PATH_ID, id: HD_AUDIOCAP_PARAM_ID, p_param: *mut VOID) -> HD_RESULT
 );
+stub!(hd_audiocap_release_out_buf(path_id: HD_PATH_ID, p_audio_frame: *mut HD_AUDIO_FRAME) -> HD_RESULT);
 stub!(hd_audiocap_start(path_id: HD_PATH_ID) -> HD_RESULT);
 stub!(hd_audiocap_stop(path_id: HD_PATH_ID) -> HD_RESULT);
-stub!(hd_audiocap_unbind(out_id: HD_OUT_ID) -> HD_RESULT);
 stub!(hd_audiocap_uninit() -> HD_RESULT);
-stub!(hd_audioenc_close(path_id: HD_PATH_ID) -> HD_RESULT);
-stub!(hd_audioenc_init() -> HD_RESULT);
-stub!(
-    hd_audioenc_open(in_id: HD_IN_ID, out_id: HD_OUT_ID, p_path_id: *mut HD_PATH_ID) -> HD_RESULT
-);
-stub!(hd_audioenc_release_out_buf(path_id: HD_PATH_ID, p_audio_bs: *mut HD_AUDIO_BS) -> HD_RESULT);
-stub!(
-    hd_audioenc_set(path_id: HD_PATH_ID, id: HD_AUDIOENC_PARAM_ID, p_param: *mut VOID) -> HD_RESULT
-);
-stub!(hd_audioenc_start(path_id: HD_PATH_ID) -> HD_RESULT);
-stub!(hd_audioenc_stop(path_id: HD_PATH_ID) -> HD_RESULT);
-stub!(hd_audioenc_uninit() -> HD_RESULT);
 stub!(hd_audioout_close(path_id: HD_PATH_ID) -> HD_RESULT);
 stub!(hd_audioout_init() -> HD_RESULT);
 stub!(
@@ -172,12 +159,12 @@ pub unsafe extern "C" fn hd_videoenc_get(_: u32, _: u32, info: *mut ctypes::c_vo
     }
     rc
 }
-pub unsafe extern "C" fn hd_audioenc_get(_: u32, _: u32, info: *mut ctypes::c_void) -> i32 {
-    let rc = call("hd_audioenc_get");
+pub unsafe extern "C" fn hd_audiocap_get(_: u32, _: u32, info: *mut ctypes::c_void) -> i32 {
+    let rc = call("hd_audiocap_get");
     // SAFETY: Sys supplies the BUFINFO output allocation.
     unsafe {
         DRIVER.with_borrow(|d| {
-            let i = &mut *info.cast::<HD_AUDIOENC_BUFINFO>();
+            let i = &mut *info.cast::<HD_AUDIOCAP_BUFINFO>();
             i.buf_info.phy_addr = d.phy as _;
             i.buf_info.buf_size = d.size;
         });
@@ -204,12 +191,16 @@ pub unsafe extern "C" fn hd_videoenc_pull_out_buf(_: u32, bs: *mut HD_VIDEOENC_B
     }
     call("hd_videoenc_pull_out_buf")
 }
-pub unsafe extern "C" fn hd_audioenc_pull_out_buf(_: u32, bs: *mut HD_AUDIO_BS, _: i32) -> i32 {
+pub unsafe extern "C" fn hd_audiocap_pull_out_buf(
+    _: u32,
+    frame: *mut HD_AUDIO_FRAME,
+    _: i32,
+) -> i32 {
     // SAFETY: Sys supplies a writable descriptor.
     unsafe {
-        *bs = DRIVER.with_borrow(|d| d.audio);
+        *frame = DRIVER.with_borrow(|d| d.audio);
     }
-    call("hd_audioenc_pull_out_buf")
+    call("hd_audiocap_pull_out_buf")
 }
 pub unsafe extern "C" fn hd_common_mem_alloc(
     _: *mut ctypes::c_char,

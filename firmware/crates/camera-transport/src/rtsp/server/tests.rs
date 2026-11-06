@@ -38,7 +38,7 @@ fn start_mode(creds: Option<Credentials>, audio_enabled: bool) -> Fixture {
     let hub = Hub::new();
     hub.publish(true, 0, idr(10));
     let audio = AudioHub::new();
-    let talk = Talkback::new();
+    let talk = crate::rtsp::talk::fake::talkback();
     let cfg = Arc::new(Config {
         streams: vec![
             ("Preview_01_sub".into(), Arc::clone(&hub)),
@@ -159,11 +159,12 @@ fn stopping_the_server_closes_idle_connections_and_releases_the_speaker() {
         .code,
         200
     );
-    assert!(f.talk.claim().is_none());
+    assert_eq!(f.talk.talkers(), 1);
     f.stop.store(true, Ordering::Relaxed);
     f.worker.take().unwrap().join().unwrap().unwrap();
-    assert!(
-        f.talk.claim().is_some(),
+    assert_eq!(
+        f.talk.talkers(),
+        0,
         "serve returned with a live connection worker"
     );
     assert_eq!(c.r.read(&mut [0]).unwrap(), 0);
@@ -377,25 +378,26 @@ fn dropping_the_connection_unsubscribes_the_viewer() {
 }
 
 #[test]
-fn describe_offers_aac_and_only_negotiated_pcmu_backchannel_on_both_paths() {
+fn describe_offers_opus_and_only_negotiated_opus_backchannel_on_both_paths() {
     let f = start(None);
     let mut c = Client::connect(f.addr);
     for path in ["Preview_01_sub", "Preview_01_main"] {
         let url = format!("rtsp://127.0.0.1/{path}");
         let plain = c.call("DESCRIBE", &url, &[]);
         assert_eq!(plain.code, 200);
-        assert!(plain.body.contains("MPEG4-GENERIC/16000/1"));
-        assert!(plain.body.contains("config=1408"));
-        assert!(!plain.body.contains("PCMU"));
+        assert!(plain.body.contains(
+            "a=rtpmap:111 opus/48000/2\r\na=fmtp:111 sprop-stereo=0\r\na=control:trackID=1"
+        ));
+        assert!(!plain.body.contains("trackID=2"));
+        assert!(!plain.body.contains("MPEG4") && !plain.body.contains("PCMU"));
         let talk = c.call(
             "DESCRIBE",
             &url,
             &[("Require", "www.onvif.org/ver20/backchannel")],
         );
-        assert!(
-            talk.body
-                .contains("PCMU/8000/1\r\na=control:trackID=2\r\na=sendonly")
-        );
+        assert!(talk.body.contains(
+            "m=audio 0 RTP/AVP 111\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 sprop-stereo=0\r\na=control:trackID=2\r\na=sendonly"
+        ));
     }
 }
 
@@ -423,7 +425,8 @@ fn audio_setup_does_not_replace_video_and_both_arrive_after_play() {
         match channel {
             0 => seen[0] = true,
             2 => {
-                assert_eq!(&data[12..], &[0, 16, 0, 24, 1, 2, 3]);
+                assert_eq!(data[1], 0x80 | 111);
+                assert_eq!(&data[12..], &[1, 2, 3]);
                 seen[1] = true;
             }
             _ => panic!("unexpected channel {channel}"),
@@ -451,7 +454,7 @@ fn negotiated_backchannel_decodes_only_rtp_after_play() {
         &[("Require", "www.onvif.org/ver20/backchannel")],
     );
     assert_eq!(c.call("SETUP", &track, &transport).code, 200);
-    let packet = [0x80, 0, 0, 1, 0, 0, 0, 0, 1, 2, 3, 4, 0x80];
+    let packet = [0x80, 111, 0, 1, 0, 0, 0, 0, 1, 2, 3, 4, 0x80];
     let send = |c: &mut Client, channel: u8| {
         c.r.get_mut()
             .write_all(&[b'$', channel, 0, packet.len() as u8])
@@ -463,39 +466,43 @@ fn negotiated_backchannel_decodes_only_rtp_after_play() {
     assert!(f.talk.next_pcm(std::time::Instant::now()).is_none());
     assert_eq!(c.call("PLAY", URL, &[]).code, 200);
     send(&mut c, 5); // RTCP channel: must not reach the speaker.
-    send(&mut c, 4);
+    for _ in 0..5 {
+        send(&mut c, 4); // five 20 ms packets fill the 100 ms prebuffer
+    }
     assert_eq!(c.call("GET_PARAMETER", URL, &[]).code, 200);
-    // Full-scale PCMU, through the talk gain: positive and held under its -1 dBFS ceiling.
+    // The fake decoder's level 2048, through the start gain: raised and held under the -1 dBFS ceiling.
     let pcm = f.talk.next_pcm(std::time::Instant::now()).unwrap();
-    assert_eq!(pcm.len(), 2);
+    assert_eq!(pcm.len(), 320);
     assert!(
-        pcm.iter().all(|&s| (20_000..=29_196).contains(&s)),
+        pcm.iter().all(|&s| (6_000..=29_196).contains(&s)),
         "{pcm:?}"
     );
     assert_eq!(c.call("TEARDOWN", URL, &[]).code, 200);
 }
 
 #[test]
-fn a_second_talker_is_rejected_until_teardown() {
+fn a_fifth_talker_is_rejected_until_one_tears_down() {
     let f = start(None);
-    let mut one = Client::connect(f.addr);
-    let mut two = Client::connect(f.addr);
     let transport = [(
         "Transport",
         "RTP/AVP/TCP;unicast;interleaved=4-5;mode=record",
     )];
-    for c in [&mut one, &mut two] {
+    let track = format!("{URL}/trackID=2");
+    let mut clients: Vec<Client> = (0..5).map(|_| Client::connect(f.addr)).collect();
+    for c in &mut clients {
         c.call(
             "DESCRIBE",
             URL,
             &[("Require", "www.onvif.org/ver20/backchannel")],
         );
     }
-    let track = format!("{URL}/trackID=2");
-    assert_eq!(one.call("SETUP", &track, &transport).code, 200);
-    assert_eq!(two.call("SETUP", &track, &transport).code, 453);
-    assert_eq!(one.call("TEARDOWN", URL, &[]).code, 200);
-    assert_eq!(two.call("SETUP", &track, &transport).code, 200);
+    for c in &mut clients[..4] {
+        assert_eq!(c.call("SETUP", &track, &transport).code, 200);
+    }
+    assert_eq!(clients[4].call("SETUP", &track, &transport).code, 453);
+    assert_eq!(f.talk.talkers(), 4);
+    assert_eq!(clients[0].call("TEARDOWN", URL, &[]).code, 200);
+    assert_eq!(clients[4].call("SETUP", &track, &transport).code, 200);
 }
 
 #[test]
@@ -534,7 +541,12 @@ fn playing_another_path_does_not_activate_a_configured_backchannel() {
     );
     c.call("PLAY", main, &[]);
     c.r.get_mut()
-        .write_all(&[b'$', 4, 0, 13, 0x80, 0, 0, 1, 0, 0, 0, 0, 1, 2, 3, 4, 0x80])
+        .write_all(
+            &[
+                b'$', 4, 0, 13, 0x80, 111, 0, 1, 0, 0, 0, 0, 1, 2, 3, 4, 0x80,
+            ]
+            .repeat(2),
+        )
         .unwrap();
     c.call("GET_PARAMETER", main, &[]);
     assert!(f.talk.next_pcm(std::time::Instant::now()).is_none());
@@ -565,7 +577,7 @@ fn video_only_config_offers_no_audio_and_rejects_audio_setup() {
 }
 
 #[test]
-fn aac_is_delivered_over_udp_with_negotiated_payload_type() {
+fn opus_is_delivered_over_udp_with_its_dynamic_payload_type() {
     let f = start(None);
     let rx = UdpSocket::bind("127.0.0.1:0").unwrap();
     rx.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
@@ -587,9 +599,9 @@ fn aac_is_delivered_over_udp_with_negotiated_payload_type() {
     f.audio.publish(1_000_000, vec![1, 2, 3]);
     let mut b = [0u8; 1500];
     let n = rx.recv(&mut b).unwrap();
-    assert_eq!(b[1], 225);
-    assert_eq!(&b[4..8], &[0, 0, 0x3e, 0x80]);
-    assert_eq!(&b[12..n], &[0, 16, 0, 24, 1, 2, 3]);
+    assert_eq!(b[1], 0x80 | 111);
+    assert_eq!(u32::from_be_bytes(b[4..8].try_into().unwrap()), 48_000);
+    assert_eq!(&b[12..n], &[1, 2, 3]);
 }
 
 #[test]
@@ -618,11 +630,16 @@ fn unauthenticated_rtp_and_setup_never_claim_the_speaker() {
         401
     );
     c.r.get_mut()
-        .write_all(&[b'$', 4, 0, 13, 0x80, 0, 0, 1, 0, 0, 0, 0, 1, 2, 3, 4, 0x80])
+        .write_all(
+            &[
+                b'$', 4, 0, 13, 0x80, 111, 0, 1, 0, 0, 0, 0, 1, 2, 3, 4, 0x80,
+            ]
+            .repeat(2),
+        )
         .unwrap();
     c.call("OPTIONS", URL, &[]); // request handled after the RTP
     assert!(f.talk.next_pcm(std::time::Instant::now()).is_none());
-    assert!(f.talk.claim().is_some());
+    assert_eq!(f.talk.talkers(), 0);
 }
 
 #[test]
@@ -723,11 +740,11 @@ fn a_failed_sender_closes_the_connection_and_releases_the_speaker() {
         );
     }
     assert_eq!(c.call("PLAY", URL, &[]).code, 200);
-    assert!(f.talk.claim().is_none());
+    assert_eq!(f.talk.talkers(), 1);
     let deadline = std::time::Instant::now() + Duration::from_secs(6);
     while std::time::Instant::now() < deadline {
         f.hub.publish(true, 0, idr(512 * 1024));
-        if f.talk.claim().is_some() {
+        if f.talk.talkers() == 0 {
             assert_eq!(f.hub.viewers(), 0);
             return;
         }

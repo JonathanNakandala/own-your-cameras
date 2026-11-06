@@ -2,11 +2,16 @@
 //! AEC has a loopback source; stop both before common memory is released.
 use crate::Error;
 
+/// The codec rate of both directions. Capture and playback share one codec clock: with the speaker opened at
+/// 16 kHz, a 48 kHz capture delivers frames at the 16 kHz rate, so both run at 48 kHz.
+pub const RATE: u32 = 48_000;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AacFrame {
+pub struct PcmFrame {
+    /// Time of the first sample.
     pub pts_us: u64,
-    /// Raw AAC-LC access unit, 16 kHz mono, without ADTS.
-    pub data: Vec<u8>,
+    /// Signed 16-bit, [`RATE`] mono; 1,024 samples per driver frame.
+    pub samples: Vec<i16>,
 }
 
 /// Acoustic echo cancellation as `HD_AUDIOCAP_AEC` carries it, without the buffer-sizing fields
@@ -75,8 +80,8 @@ pub trait AudioCap {
     /// Atomic startup with `tuning` (speaker volume excepted): on failure release everything
     /// acquired by this call.
     fn audio_cap_start(&mut self, tuning: &Tuning) -> Result<(), Error>;
-    /// Nonblocking; copies and releases at most one access unit.
-    fn audio_cap_recv(&mut self) -> Result<Option<AacFrame>, Error>;
+    /// Nonblocking; copies and releases at most one raw capture frame.
+    fn audio_cap_recv(&mut self) -> Result<Option<PcmFrame>, Error>;
     /// Attempt every cleanup step even when one fails.
     fn audio_cap_stop(&mut self) -> Result<(), Error>;
 }
@@ -86,7 +91,7 @@ pub trait AudioOut {
     fn audio_out_start(&mut self, volume: u8) -> Result<(), Error>;
     /// Sets the playback gain (0..=100) on the running speaker.
     fn audio_out_volume(&mut self, volume: u8) -> Result<(), Error>;
-    /// Signed 16-bit, 16 kHz mono, at most 1,024 samples. Never waits for speaker space.
+    /// Signed 16-bit, [`RATE`] mono, at most 1,024 samples. Never waits for speaker space.
     /// `false` means the bounded hardware buffer is full and this block was dropped.
     fn audio_out_push(&mut self, pcm: &[i16]) -> Result<bool, Error>;
     fn audio_out_stop(&mut self) -> Result<(), Error>;

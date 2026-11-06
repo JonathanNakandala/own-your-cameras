@@ -44,6 +44,7 @@ jobs:
           rustup default 1.95.0
           rustup target add --toolchain 1.95.0 armv7-unknown-linux-gnueabihf
           python3 firmware/scripts/fetch-zig.py
+          python3 firmware/scripts/fetch-opus.py
           echo "$GITHUB_WORKSPACE/firmware/.tools/zig" >> "$GITHUB_PATH"
       - name: Host gate
         run: make gate

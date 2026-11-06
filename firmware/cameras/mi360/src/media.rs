@@ -108,8 +108,9 @@ pub struct EncodedFrame {
     pub timestamp_us: u64,
 }
 
+/// 40 ms of 48 kHz mono microphone samples.
 pub struct AudioFrame {
-    pub samples: [i16; 640],
+    pub samples: [i16; 1920],
     pub timestamp_us: u64,
 }
 
@@ -129,7 +130,9 @@ mod target {
     use std::rc::Rc;
 
     const VIDEO_CAPACITY: usize = 1024 * 1024;
-    const PCM_BYTES: usize = 1280;
+    /// 40 ms at 48 kHz (capture) and at 16 kHz (playback), PCM16 mono.
+    const CAPTURE_BYTES: usize = 3840;
+    const PLAY_BYTES: usize = 1280;
     const ERROR_CAPACITY: usize = 512;
 
     unsafe extern "C" {
@@ -188,8 +191,6 @@ mod target {
         fn t31_audio_open(
             handle: *mut *mut c_void,
             sdk: *mut c_void,
-            qualified_dsp: *mut c_void,
-            effects: u32,
             error: *mut c_char,
             cap: u32,
         ) -> c_int;
@@ -338,13 +339,11 @@ mod target {
                     return Err(media.audio_failure("cannot borrow the shared SDK handle".into()));
                 }
                 error.fill(0);
-                // Effects0 deliberately requires no additional DSP DSO/initialization.
+                // SAFETY: borrowed live SDK handle; the adapter writes only the NULL-initialised owner.
                 let code = unsafe {
                     t31_audio_open(
                         &mut media.audio,
                         sdk,
-                        std::ptr::null_mut(),
-                        0,
                         error.as_mut_ptr().cast(),
                         error.len() as u32,
                     )
@@ -457,7 +456,7 @@ mod target {
             if self.audio.is_null() {
                 return Ok(None);
             }
-            let mut pcm = [0_u8; PCM_BYTES];
+            let mut pcm = [0_u8; CAPTURE_BYTES];
             let mut length = 0_u32;
             let mut timestamp = 0_i64;
             let mut error = [0_u8; ERROR_CAPACITY];
@@ -479,14 +478,14 @@ mod target {
             if code != 0 {
                 return Err(self.audio_failure(diagnostic("audio next", code, &error)));
             }
-            if length as usize != PCM_BYTES || timestamp < 0 {
+            if length as usize != CAPTURE_BYTES || timestamp < 0 {
                 return Err(self.audio_failure("invalid copied PCM result".into()));
             }
             let stamp = timestamp as u64;
             if self.last_audio.is_some_and(|last| stamp < last) {
                 return Err(self.audio_failure("audio timestamp regressed".into()));
             }
-            let mut samples = [0_i16; 640];
+            let mut samples = [0_i16; CAPTURE_BYTES / 2];
             for (sample, bytes) in samples.iter_mut().zip(pcm.chunks_exact(2)) {
                 *sample = i16::from_le_bytes([bytes[0], bytes[1]]);
             }
@@ -512,7 +511,7 @@ mod target {
                     "audio was not opened",
                 ));
             }
-            let mut pcm = [0_u8; PCM_BYTES];
+            let mut pcm = [0_u8; PLAY_BYTES];
             for (bytes, sample) in pcm.chunks_exact_mut(2).zip(samples) {
                 bytes.copy_from_slice(&sample.to_le_bytes());
             }

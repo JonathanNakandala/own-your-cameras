@@ -1,0 +1,11 @@
+[package]
+name = "camera-opus"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+build = "build.rs"
+links = "opus"
+
+[dependencies]
+camera-transport = { path = "../camera-transport" }

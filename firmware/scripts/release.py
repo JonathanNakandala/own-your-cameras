@@ -137,6 +137,8 @@ def package(model, version, workers, writer, output, copyright_file, dropbear_so
     add('DROPBEAR-LICENSE', copyright_file)
     add('INSTALL.md', ROOT / 'firmware/releases' / (model + '.md.in'))
     add('MUSL-COPYRIGHT', ROOT / 'firmware/.tools/zig/lib/libc/musl/COPYRIGHT')
+    opus = 'opus-' + json.loads((ROOT / 'firmware/opus.json').read_text())['version']
+    add('licenses/' + opus + '/COPYING', ROOT / 'firmware/.tools' / opus / 'COPYING')
     notices, dependencies = rust_notices(model)
     for name, path in notices.items(): add(name, path)
     files['licenses/rust-dependencies.json'] = ((json.dumps(dependencies, indent=2) + '\n').encode(), 0o644)

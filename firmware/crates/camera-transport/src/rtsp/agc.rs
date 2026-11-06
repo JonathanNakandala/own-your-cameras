@@ -1,5 +1,6 @@
 //! Automatic gain for talkback: a phone or browser microphone arrives far below the level the speaker
-//! needs to fill a room, so speech is raised towards a loud target and a peak limiter keeps it clean.
+//! needs to fill a room, so each talker's speech is raised towards a loud target ([`TalkGain`]) and one
+//! peak limiter after the mix ([`Limiter`]) keeps the sum of all talkers clean.
 
 /// Speech level the gain aims for, in linear full-scale units (-12 dBFS).
 const TARGET_RMS: f32 = 0.251;
@@ -17,14 +18,13 @@ const FALL: f32 = 0.85;
 const RISE: f32 = 1.028;
 /// Peak ceiling after gain (-1 dBFS).
 const CEILING: f32 = 0.891;
-/// Limiter release per 16 kHz sample (50 ms time constant); its attack is instant.
-const RELEASE: f32 = 0.998_75;
+/// Limiter release time constant; its attack is instant.
+const RELEASE_S: f32 = 0.05;
 
 /// One talk session's gain state; a new session starts from `START_GAIN`.
 pub struct TalkGain {
     gain: f32,
     level: Option<f32>,
-    envelope: f32,
 }
 
 impl Default for TalkGain {
@@ -32,17 +32,17 @@ impl Default for TalkGain {
         Self {
             gain: START_GAIN,
             level: None,
-            envelope: 0.0,
         }
     }
 }
 
 impl TalkGain {
-    /// Scales one decoded packet in place. The gain follows the smoothed speech level, ramping across
-    /// the packet so a change never clicks; the limiter then holds every sample under the ceiling.
-    pub fn process(&mut self, pcm: &mut [i16]) {
+    /// Scales one decoded packet to full-scale units (1.0 = i16::MAX), unlimited: the sum of several talkers
+    /// is limited once, by [`Limiter`]. The gain follows the smoothed speech level, ramping across the packet so
+    /// a change never clicks.
+    pub fn process(&mut self, pcm: &[i16]) -> Vec<f32> {
         if pcm.is_empty() {
-            return;
+            return Vec::new();
         }
         let sum: f32 = pcm.iter().map(|&s| (f32::from(s) / 32768.0).powi(2)).sum();
         let rms = (sum / pcm.len() as f32).sqrt();
@@ -58,17 +58,43 @@ impl TalkGain {
             };
         }
         let step = (want - self.gain) / pcm.len() as f32;
-        for (i, s) in pcm.iter_mut().enumerate() {
-            let y = f32::from(*s) / 32768.0 * (self.gain + step * (i + 1) as f32);
-            self.envelope = y.abs().max(self.envelope * RELEASE);
-            let limited = if self.envelope > CEILING {
-                y * CEILING / self.envelope
-            } else {
-                y
-            };
-            *s = (limited * 32768.0) as i16;
-        }
+        let out = pcm
+            .iter()
+            .enumerate()
+            .map(|(i, s)| f32::from(*s) / 32768.0 * (self.gain + step * (i + 1) as f32))
+            .collect();
         self.gain = want;
+        out
+    }
+}
+
+/// Peak limiter for the mixed speaker signal: instant attack, 50 ms release, -1 dBFS ceiling.
+pub struct Limiter {
+    envelope: f32,
+    release: f32,
+}
+
+impl Limiter {
+    /// For samples at `rate` Hz.
+    pub fn new(rate: u32) -> Self {
+        Self {
+            envelope: 0.0,
+            release: (-1.0 / (RELEASE_S * rate as f32)).exp(),
+        }
+    }
+
+    pub fn process(&mut self, mix: &[f32]) -> Vec<i16> {
+        mix.iter()
+            .map(|&y| {
+                self.envelope = y.abs().max(self.envelope * self.release);
+                let limited = if self.envelope > CEILING {
+                    y * CEILING / self.envelope
+                } else {
+                    y
+                };
+                (limited * 32768.0) as i16
+            })
+            .collect()
     }
 }
 
@@ -93,13 +119,34 @@ mod tests {
         20.0 * (sum / pcm.len() as f32).sqrt().log10()
     }
 
+    /// One talker through its gain and the post-mix limiter, as the speaker hears it.
+    struct Chain {
+        gain: TalkGain,
+        limiter: Limiter,
+    }
+
+    impl Default for Chain {
+        fn default() -> Self {
+            Self {
+                gain: TalkGain::default(),
+                limiter: Limiter::new(16_000),
+            }
+        }
+    }
+
+    impl Chain {
+        fn process(&mut self, pcm: &mut Vec<i16>) {
+            *pcm = self.limiter.process(&self.gain.process(pcm));
+        }
+    }
+
     fn peak(pcm: &[i16]) -> f32 {
         pcm.iter().map(|s| f32::from(*s).abs()).fold(0.0, f32::max) / 32768.0
     }
 
     #[test]
     fn quiet_speech_is_raised_to_the_target_within_a_few_seconds() {
-        let (mut agc, mut phase) = (TalkGain::default(), 0);
+        let (mut agc, mut phase) = (Chain::default(), 0);
         let mut last = Vec::new();
         for _ in 0..200 {
             last = packet(-30.0, &mut phase);
@@ -111,7 +158,7 @@ mod tests {
 
     #[test]
     fn the_boost_stops_at_24_db() {
-        let (mut agc, mut phase) = (TalkGain::default(), 0);
+        let (mut agc, mut phase) = (Chain::default(), 0);
         let mut last = Vec::new();
         for _ in 0..400 {
             last = packet(-46.0, &mut phase);
@@ -123,7 +170,7 @@ mod tests {
 
     #[test]
     fn loud_input_is_never_amplified_and_never_passes_the_ceiling() {
-        let (mut agc, mut phase) = (TalkGain::default(), 0);
+        let (mut agc, mut phase) = (Chain::default(), 0);
         for _ in 0..100 {
             let mut p = packet(-3.0, &mut phase);
             agc.process(&mut p);
@@ -135,8 +182,20 @@ mod tests {
     }
 
     #[test]
+    fn two_loud_talkers_summed_never_pass_the_ceiling() {
+        let (mut a, mut b, mut phase) = (TalkGain::default(), TalkGain::default(), 0);
+        let mut limiter = Limiter::new(16_000);
+        for _ in 0..50 {
+            let x = a.process(&packet(-6.0, &mut phase));
+            let y = b.process(&packet(-6.0, &mut phase));
+            let mix: Vec<f32> = x.iter().zip(&y).map(|(x, y)| x + y).collect();
+            assert!(peak(&limiter.process(&mix)) <= CEILING + 1e-4);
+        }
+    }
+
+    #[test]
     fn the_first_packet_starts_boosted() {
-        let (mut agc, mut phase) = (TalkGain::default(), 0);
+        let (mut agc, mut phase) = (Chain::default(), 0);
         let mut p = packet(-30.0, &mut phase);
         agc.process(&mut p);
         let tail = rms_dbfs(&p[280..]);
@@ -145,27 +204,27 @@ mod tests {
 
     #[test]
     fn pauses_hold_the_gain_instead_of_pumping_up_room_noise() {
-        let (mut agc, mut phase) = (TalkGain::default(), 0);
+        let (mut agc, mut phase) = (Chain::default(), 0);
         for _ in 0..200 {
             agc.process(&mut packet(-60.0, &mut phase));
         }
-        assert_eq!(agc.gain, START_GAIN);
+        assert_eq!(agc.gain.gain, START_GAIN);
     }
 
     #[test]
     fn a_shout_after_quiet_speech_is_limited_at_once_and_the_gain_falls() {
-        let (mut agc, mut phase) = (TalkGain::default(), 0);
+        let (mut agc, mut phase) = (Chain::default(), 0);
         for _ in 0..200 {
             agc.process(&mut packet(-40.0, &mut phase));
         }
-        let before = agc.gain;
+        let before = agc.gain.gain;
         let mut shout = packet(-6.0, &mut phase);
         agc.process(&mut shout);
         assert!(peak(&shout) <= CEILING + 1e-4, "{}", peak(&shout));
-        assert!(agc.gain < before);
+        assert!(agc.gain.gain < before);
         for _ in 0..50 {
             agc.process(&mut packet(-6.0, &mut phase));
         }
-        assert_eq!(agc.gain, 1.0);
+        assert_eq!(agc.gain.gain, 1.0);
     }
 }

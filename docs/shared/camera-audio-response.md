@@ -16,8 +16,10 @@ Values are relative to the 1 kHz level.
 | Microphone vs reference mic, 500 Hz up | within ±10 dB to ~8.5 kHz; −13 dB at 10 kHz, −24 dB at 16 kHz | within ±15 dB to ~11 kHz; −14 dB at 16 kHz, −33 dB at 20 kHz |
 | Speaker, within −20 dB | ~350 Hz–5.7 kHz; −39 dB at 8 kHz | ~500 Hz–6.4 kHz; −32 dB at 8 kHz |
 
-- Two-way audio over G.711 (PCMU) at 8 kHz is limited to 4 kHz by the codec, not by this hardware.
-- The microphones carry usable signal beyond 8 kHz; the speakers do not, so 16 kHz sampling covers them.
+- Two-way audio over G.711 (PCMU) at 8 kHz is limited to 4 kHz by the codec, not by this hardware. The firmware
+  therefore carries Opus at 48 kHz from the microphone and accepts Opus for the speaker.
+- The microphones carry usable signal beyond 8 kHz; the speakers do not, so 16 kHz sampling covers them. The Reolink
+  speaker still runs at 48 kHz because its capture and playback share one codec clock.
 - Neither speaker produces useful output below ~300 Hz.
 
 ## Method

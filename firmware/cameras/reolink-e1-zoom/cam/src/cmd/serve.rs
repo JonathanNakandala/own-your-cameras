@@ -104,8 +104,8 @@ impl OnHdal for Diagnostic {
         ) {
             Ok(r) => {
                 println!(
-                    "audio: aac_frames={} aac_bytes={} speaker_samples={} speaker_dropped_samples={}",
-                    r.aac_frames, r.aac_bytes, r.speaker_samples, r.speaker_dropped_samples
+                    "audio: mic_frames={} mic_samples={} speaker_samples={} speaker_dropped_samples={}",
+                    r.mic_frames, r.mic_samples, r.speaker_samples, r.speaker_dropped_samples
                 );
                 Ok(ExitCode::SUCCESS)
             }
@@ -136,7 +136,7 @@ pub fn diagnostic_with<
     use std::time::Instant;
 
     use crate::pipeline::{self, PipelineConfig};
-    use crate::rtsp::audio::{AudioHub, Talkback};
+    use crate::rtsp::audio::AudioHub;
     use crate::rtsp::hub::VideoHubs;
     use crate::rtsp::proto::Credentials;
     use crate::rtsp::server::{self, Config};
@@ -176,7 +176,8 @@ pub fn diagnostic_with<
     let listener = server::bind(port)?;
     let hubs = VideoHubs::new();
     let audio = AudioHub::new();
-    let talk = Talkback::new();
+    let talk = crate::rtsp::opus::talkback(hdal::audio::RATE);
+    let mut microphone = crate::rtsp::opus::microphone()?;
     let cfg = Arc::new(Config {
         streams: hubs.streams(),
         creds,
@@ -241,7 +242,7 @@ pub fn diagnostic_with<
                         return;
                     }
                 }
-                println!("serve: rtsp on :{port}, audio=AAC/PCMU");
+                println!("serve: rtsp on :{port}, audio=Opus");
                 if let Err(error) = workers
                     .borrow_mut()
                     .spawn("rtsp", move || server::serve(&listener, cfg, stop))
@@ -266,7 +267,11 @@ pub fn diagnostic_with<
             counters.frame(f.stream, f.data.len());
             hubs.publish(f.stream, f.key, f.pts_us, f.data);
         },
-        &mut |f| audio.publish(f.pts_us, f.data),
+        &mut |f| {
+            for (pts_us, packet) in microphone.push(f.pts_us, &f.samples) {
+                audio.publish(pts_us, packet);
+            }
+        },
         &mut || talk.next_pcm(Instant::now()),
         &mut &*media_tuning,
     );
@@ -335,8 +340,8 @@ impl OnHdal for Production {
         let code = match &outcome.result {
             Ok(report) => {
                 println!(
-                    "serve: stopped; aac_frames={} speaker_samples={}",
-                    report.aac_frames, report.speaker_samples
+                    "serve: stopped; mic_frames={} speaker_samples={}",
+                    report.mic_frames, report.speaker_samples
                 );
                 0
             }

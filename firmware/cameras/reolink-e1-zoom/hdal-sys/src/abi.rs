@@ -3142,6 +3142,8 @@ pub const HD_AUDIOCAP_PARAM_OUT_ANR: _HD_AUDIOCAP_PARAM_ID = 8;
 
 pub const HD_AUDIOCAP_PARAM_VOLUME: _HD_AUDIOCAP_PARAM_ID = 9;
 
+pub const HD_AUDIOCAP_PARAM_BUFINFO: _HD_AUDIOCAP_PARAM_ID = 10;
+
 pub type _HD_AUDIOCAP_PARAM_ID = crate::ctypes::c_uint;
 
 pub use self::_HD_AUDIOCAP_PARAM_ID as HD_AUDIOCAP_PARAM_ID;
@@ -3179,6 +3181,29 @@ unsafe extern "C" {
         path_id: HD_PATH_ID,
         id: HD_AUDIOCAP_PARAM_ID,
         p_param: *mut VOID,
+    ) -> HD_RESULT;
+}
+
+unsafe extern "C" {
+    pub fn hd_audiocap_get(
+        path_id: HD_PATH_ID,
+        id: HD_AUDIOCAP_PARAM_ID,
+        p_param: *mut VOID,
+    ) -> HD_RESULT;
+}
+
+unsafe extern "C" {
+    pub fn hd_audiocap_pull_out_buf(
+        path_id: HD_PATH_ID,
+        p_audio_frame: *mut HD_AUDIO_FRAME,
+        wait_ms: INT32,
+    ) -> HD_RESULT;
+}
+
+unsafe extern "C" {
+    pub fn hd_audiocap_release_out_buf(
+        path_id: HD_PATH_ID,
+        p_audio_frame: *mut HD_AUDIO_FRAME,
     ) -> HD_RESULT;
 }
 

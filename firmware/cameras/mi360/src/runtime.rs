@@ -3,7 +3,7 @@
 use crate::graph_settings::{self, GraphSettings};
 use crate::media::{RustVideoSpec, VideoMetadata};
 use crate::{board, config, media::Media, pointing, settings};
-use camera_transport::{AudioHub, Credentials, Talkback, VideoHubs, microphone, mqtt};
+use camera_transport::{AudioHub, Credentials, VideoHubs, mqtt};
 use std::collections::VecDeque;
 use std::io::{self, Write};
 use std::os::unix::fs::OpenOptionsExt;
@@ -479,6 +479,10 @@ fn hardware_loop(
             let requested = controls.speaker_requested.load(Ordering::Acquire);
             if requested != controls.speaker_enabled.load(Ordering::Acquire) {
                 board.speaker_gate(requested)?;
+                eprintln!(
+                    "speaker: amplifier {}",
+                    if requested { "on" } else { "off" }
+                );
                 controls.speaker_enabled.store(requested, Ordering::Release);
             }
             if let Some(cancel) = homing.as_ref() {
@@ -1059,8 +1063,10 @@ pub fn run(path: &str) -> io::Result<()> {
         graph_states(&publisher, graph, [None, None]);
     }
     let hubs = Arc::new(VideoHubs::with_limits(camera_transport::VideoLimits::MI360));
-    let microphone = AudioHub::with_format(microphone::Format::Pcmu8k);
-    let talk = Talkback::new();
+    let microphone = AudioHub::new();
+    let mut encoder = camera_opus::microphone()?;
+    // The Mi 360 speaker plays 16 kHz blocks; its microphone captures 48 kHz on a separate device.
+    let talk = camera_opus::talkback(16_000);
     let rtsp_cfg = Arc::new(camera_transport::Config {
         streams: hubs.streams(),
         creds: Some(Credentials {
@@ -1157,7 +1163,12 @@ pub fn run(path: &str) -> io::Result<()> {
     let mut cpu = Cpu::default();
     let mut qualified = false;
     let mut pcm = VecDeque::<i16>::with_capacity(1920);
-    let mut pcm_since = None;
+    // The AO device restarts (and drops audio) whenever its stream stops, so it is fed silence between bursts.
+    let mut next_silence = Instant::now();
+    let mut amplifier_on: Option<Instant> = None;
+    // Speaker-loop losses, logged once a talk burst has been quiet for a second.
+    let (mut spk_played, mut spk_expired, mut spk_overflow, mut spk_full) =
+        (0u64, 0u64, 0u64, 0u64);
     let mut last_talk = None;
     let mut next_orientation = Instant::now();
     let outcome = (|| -> io::Result<()> {
@@ -1298,42 +1309,78 @@ pub fn run(path: &str) -> io::Result<()> {
                     last_audio = Some(Instant::now());
                     progress.mark(&progress.audio);
                     audio_frames += 1;
-                    if let Some(encoded) = microphone::encode_pcm16k_mono(&frame.samples) {
-                        microphone.publish(frame.timestamp_us, encoded);
+                    for (pts_us, packet) in encoder.push(frame.timestamp_us, &frame.samples) {
+                        microphone.publish(pts_us, packet);
                     }
                 }
-                for _ in 0..5 {
+                // Take every mixer block that is due; keep at most 200 ms, dropping the oldest.
+                for _ in 0..8 {
                     let Some(samples) = talk.next_pcm(Instant::now()) else {
                         break;
                     };
-                    let now = Instant::now();
-                    if pcm.is_empty() {
-                        pcm_since = Some(now);
-                    }
-                    if pcm.len() + samples.len() <= 1920 {
-                        pcm.extend(samples);
-                        last_talk = Some(now);
-                    } else {
-                        pcm.clear();
-                        pcm_since = None;
-                        last_talk = None;
-                    }
+                    pcm.extend(samples);
+                    last_talk = Some(Instant::now());
+                    let excess = pcm.len().saturating_sub(3200);
+                    pcm.drain(..excess);
+                    spk_overflow += excess as u64;
                 }
-                if pcm_since.is_some_and(|at: Instant| at.elapsed() > Duration::from_millis(100)) {
+                let quiet = |ms| {
+                    last_talk.is_none_or(|at: Instant| at.elapsed() > Duration::from_millis(ms))
+                };
+                // A burst's last partial block would otherwise wait for samples that never come.
+                if !pcm.len().is_multiple_of(640) && quiet(40) {
+                    pcm.resize(pcm.len().next_multiple_of(640), 0);
+                }
+                // Audio the amplifier never got to play is stale, not merely late.
+                if !pcm.is_empty() && quiet(300) {
+                    spk_expired += pcm.len() as u64;
                     pcm.clear();
-                    pcm_since = None;
                 }
+                if spk_played + spk_expired + spk_overflow > 0
+                    && last_talk.is_none_or(|at: Instant| at.elapsed() > Duration::from_secs(1))
+                {
+                    eprintln!(
+                        "speaker: burst ended played_ms={} expired_ms={} overflow_ms={} full={}",
+                        spk_played / 16,
+                        spk_expired / 16,
+                        spk_overflow / 16,
+                        spk_full
+                    );
+                    (spk_played, spk_expired, spk_overflow, spk_full) = (0, 0, 0, 0);
+                }
+                // The amplifier stays on a second past the last talk, so pauses between words never toggle it.
                 controls.speaker_requested.store(
-                    last_talk.is_some_and(|at: Instant| at.elapsed() < Duration::from_millis(200)),
+                    last_talk.is_some_and(|at: Instant| at.elapsed() < Duration::from_secs(1)),
                     Ordering::Release,
                 );
-                if pcm.len() >= 640 && controls.speaker_enabled.load(Ordering::Acquire) {
+                let enabled = controls.speaker_enabled.load(Ordering::Acquire);
+                if enabled != amplifier_on.is_some() {
+                    amplifier_on = enabled.then(Instant::now);
+                }
+                // Audio starts 60 ms after the amplifier, so its switch-on transient never lands on speech.
+                let settled =
+                    amplifier_on.is_some_and(|at| at.elapsed() >= Duration::from_millis(60));
+                let now = Instant::now();
+                // Hand the hardware every full block: its queue, not this loop's cadence, paces playback.
+                while settled && pcm.len() >= 640 {
                     let block: Vec<i16> = pcm.iter().take(640).copied().collect();
-                    if media.play(&block)? {
-                        pcm.drain(..640);
-                        if pcm.is_empty() {
-                            pcm_since = None;
-                        }
+                    if !media.play(&block)? {
+                        spk_full += 1;
+                        break;
+                    }
+                    spk_played += 640;
+                    pcm.drain(..640);
+                    next_silence = next_silence.max(now) + Duration::from_millis(40);
+                }
+                // Between bursts (and while the amplifier settles) keep the AO stream running with silence,
+                // paced by the clock: at most one block ahead.
+                if pcm.len() < 640 || !settled {
+                    if now.saturating_duration_since(next_silence) > Duration::from_millis(100) {
+                        next_silence = now;
+                    }
+                    if now >= next_silence {
+                        let _ = media.play(&[0; 640])?;
+                        next_silence += Duration::from_millis(40);
                     }
                 }
             }

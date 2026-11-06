@@ -142,6 +142,7 @@ write). Run them only with the vendor stack stopped and reboot afterwards; they 
   `LL_CONFIG` and set `OUT_CROP`; videoenc get/set `SYSCAPS`, set `RATE_CONTROL`; audioout get `OUT`/`IN`; the
   stamp, mask, mosaic and pattern ids (`_hd_osg_*`); videocap's ctrl-path `PATH_CONFIG`. Code that uses them
   re-checks on the camera: `hd_videocap_get(SYSINFO)` must report 2592×1944 at 30 fps.
-- The audio startup rows (audioenc ids 2–6, capture `DEV_CONFIG` 172 bytes and `DRV_CONFIG` 148 bytes) are in the
-  table and were exercised on the camera, but their directions, offsets and extents have no independent reading.
+- The audio startup rows (capture `DEV_CONFIG` 172 bytes, `DRV_CONFIG` 148 bytes and the ctrl-path `BUFINFO` get,
+  id 10) are in the table and were exercised on the camera, but their directions, offsets and extents have no
+  independent reading. The audio encoder unit is no longer used.
 - No allocation or cache failure was injected on the camera.

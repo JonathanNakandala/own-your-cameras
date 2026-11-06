@@ -2,7 +2,7 @@
 //! handoff/device, the HDAL backend, the clock, and the three service workers.
 use cam::mqtt::PipelineHealth;
 use cam::pipeline::PipelineConfig;
-use cam::rtsp::{audio::AudioHub, audio::Talkback, hub::VideoHubs, hub::Viewer};
+use cam::rtsp::{audio::AudioHub, hub::VideoHubs, hub::Viewer};
 use cam::runtime::production::{Outcome, Service, Services, Wiring, run};
 use cam::runtime::{Clock, Handoff, HealthObserver, Monotonic, Progress};
 use cam::wdt::WatchdogDevice;
@@ -296,7 +296,7 @@ impl Rig {
                 sub: Arc::clone(&self.hubs.sub),
             },
             audio: AudioHub::new(),
-            talk: Talkback::new(),
+            talk: cam::rtsp::opus::talkback(hdal::audio::RATE),
             pipeline: Arc::new(PipelineHealth::default()),
             media_tuning: Default::default(),
             counters: Default::default(),

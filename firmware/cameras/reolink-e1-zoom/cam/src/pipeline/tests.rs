@@ -238,19 +238,17 @@ fn stream_tears_down_when_a_receive_fails() {
 }
 
 #[test]
-fn audio_is_ready_before_advertising_and_publishes_real_encoder_pts() {
-    use crate::rtsp::audio::AudioHub;
-    use hdal::audio::AacFrame;
-    let hub = AudioHub::new();
-    let rx = hub.subscribe();
+fn audio_is_ready_before_advertising_and_delivers_real_capture_pts() {
+    use hdal::audio::PcmFrame;
     let mut hw = Fake::default();
-    hw.audio_frames.push_back(AacFrame {
+    hw.audio_frames.push_back(PcmFrame {
         pts_us: 64_000,
-        data: vec![0x21, 0x10, 0x04],
+        samples: vec![7; 1024],
     });
     let ready = std::cell::Cell::new(false);
     let mut polls = 0;
-    stream_with_audio(
+    let mut seen = Vec::new();
+    let report = stream_with_audio(
         &mut hw,
         &PipelineConfig::e1_zoom(),
         &mut || ready.set(true),
@@ -263,26 +261,24 @@ fn audio_is_ready_before_advertising_and_publishes_real_encoder_pts() {
             polls <= 2
         },
         &mut |_| {},
-        &mut |f| hub.publish(f.pts_us, f.data),
+        &mut |f| seen.push((f.pts_us, f.samples.len())),
         &mut || None,
         &mut Untuned,
     )
     .unwrap();
     assert!(ready.get());
-    let f = rx.next(std::time::Duration::ZERO).unwrap();
-    assert_eq!(
-        (f.pts_us, f.data.as_slice()),
-        (64_000, &[0x21, 0x10, 0x04][..])
-    );
+    assert_eq!(seen, [(64_000, 1024)]);
+    assert_eq!((report.mic_frames, report.mic_samples), (1, 1024));
     assert_eq!(hw.calls.last(), Some(&"common_uninit"));
 }
 
 #[test]
-fn audio_reports_successful_speaker_samples_and_full_buffer_drops() {
+fn the_speaker_gets_whole_driver_frames_and_a_full_buffer_drops_only_old_samples() {
+    // Four 320-sample mixer blocks in one turn: one whole 1,024-sample frame goes out, 256 wait.
     let mut hw = Fake::default();
     let ready = std::cell::Cell::new(false);
     let mut polls = 0;
-    let mut pcm = Some(vec![1i16; 320]);
+    let mut blocks = 4;
     let report = stream_with_audio(
         &mut hw,
         &PipelineConfig::e1_zoom(),
@@ -297,12 +293,18 @@ fn audio_reports_successful_speaker_samples_and_full_buffer_drops() {
         },
         &mut |_| {},
         &mut |_| {},
-        &mut || pcm.take(),
+        &mut || {
+            (blocks > 0).then(|| {
+                blocks -= 1;
+                vec![1i16; 320]
+            })
+        },
         &mut Untuned,
     )
     .unwrap();
-    assert_eq!(report.speaker_samples, 320);
-    assert_eq!(hw.speaker_pcm.len(), 320);
+    assert_eq!(report.speaker_samples, 1024);
+    assert_eq!(hw.speaker_pcm.len(), 1024);
+    // A refusing driver: what waits is capped at 200 ms, the oldest samples are dropped.
     let mut hw = Fake::default();
     hw.speaker_full = true;
     ready.set(false);
@@ -317,18 +319,16 @@ fn audio_reports_successful_speaker_samples_and_full_buffer_drops() {
                 return true;
             }
             polls += 1;
-            polls == 1
+            polls <= 5
         },
         &mut |_| {},
         &mut |_| {},
-        &mut || Some(vec![1; 320]),
+        &mut || Some(vec![1; 960]),
         &mut Untuned,
     )
     .unwrap();
-    assert_eq!(
-        (report.speaker_samples, report.speaker_dropped_samples),
-        (0, 320)
-    );
+    assert_eq!(report.speaker_samples, 0);
+    assert_eq!(report.speaker_dropped_samples, 5 * 10 * 960 - 9600);
     assert!(hw.speaker_pcm.is_empty());
 }
 

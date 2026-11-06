@@ -102,11 +102,11 @@ The OS05A10 runs at its full 2592×1944, 30 fps, over MIPI into `hd_videocap` (w
 | sub | `Preview_01_sub` | 640×480, 10 fps, 512 kbit/s, 1 s GOP | fixed |
 
 The main stream's parameters are settings ([settings.md](settings.md)); a change restarts only the main path, and a
-change that starves either stream is rolled back after 2 s. Audio capture binds the microphone to the AAC encoder
-(16 kHz mono AAC-LC), and the speaker output takes 16 kHz signed 16-bit samples decoded from the backchannel
-([hardware/audio.md](hardware/audio.md)). All of it shares one HDAL session and the `nvtmpp` memory pool
-([hdal-abi.md](hdal-abi.md#memory)). The main thread loop waits up to 10 ms for video, polls one AAC unit and feeds
-one talkback block per turn.
+change that starves either stream is rolled back after 2 s. Audio capture pulls raw 48 kHz mono PCM from the
+capture unit and encodes it to Opus in software (libopus), and the speaker output takes 48 kHz signed 16-bit samples
+mixed from the backchannels ([hardware/audio.md](hardware/audio.md)). All of it shares one HDAL session and the
+`nvtmpp` memory pool ([hdal-abi.md](hdal-abi.md#memory)). The main thread loop waits up to 10 ms for video, polls
+every pending capture frame and every due mixed speaker block per turn.
 
 ## RTSP
 
@@ -114,16 +114,24 @@ one talkback block per turn.
 digest authentication with the single `user:password` in `/mnt/para/cam-rtsp.auth`, RTP interleaved on the TCP
 connection or over UDP to the client's ports, at most eight connections and 60 s session timeout.
 
-Each path offers H.264 video and AAC audio (RFC 3640). A client that sends `Require:
-www.onvif.org/ver20/backchannel`, as go2rtc does for two-way audio, also gets a third, `sendonly` PCMU 8 kHz track
-to talk on; the daemon decodes it to 16 kHz for the speaker. One client at a time may talk; its packets go through
-a five-packet queue with 100 ms expiry, cleared on disconnect.
+Each path offers H.264 video (track 0) and Opus audio (track 1, RFC 7587: PT 111, `opus/48000/2`,
+`sprop-stereo=0`, 48 kHz mono, 64 kbit/s, one 20 ms frame per packet). A client that sends `Require:
+www.onvif.org/ver20/backchannel`, as go2rtc does for two-way audio, also gets a `sendonly` Opus track 2 to talk on
+(TCP interleaved only). Up to four clients may talk at once; a fifth SETUP of track 2 gets 453. Each talker has its
+own decoder (at the speaker rate, 48 kHz here) and gain; a mixer sums the talkers on its own 20 ms output clock,
+joins a talker after 100 ms of buffered audio (on the tested cameras Wi-Fi delivery stalled for more than 40 ms now
+and then), caps each
+talker at 200 ms, starts each burst 40 ms ahead so the speaker hardware keeps a lead, and plays out what a talker
+already sent after it disconnects; that session keeps its talker slot until then, at most 200 ms
+(`camera_transport::rtsp::talk`). Each finished session logs one line:
+`talk: session ended received_ms=… played_ms=… underruns=… rebuffers=… overflow_ms=…`.
 
 A phone or browser microphone reaches the backchannel far below the level the speaker needs to fill a room, while
-the speaker hardware already runs at the vendor's full volume. Each decoded packet therefore passes an automatic
-gain (`cam::rtsp::agc`): it follows the smoothed speech level towards -12 dBFS, boosts at most +24 dB, starts a
-session at +12 dB, rises about 6 dB per second, falls about 1.4 dB per packet for loud input and holds during pauses
-below -50 dBFS; an instant-attack limiter with 50 ms release keeps every sample under -1 dBFS.
+the speaker hardware already runs at the vendor's full volume. Each talker's decoded packets therefore pass an
+automatic gain (`camera_transport::rtsp::agc`): it follows the smoothed speech level towards -12 dBFS, boosts at
+most +24 dB, starts a session at +12 dB, rises about 6 dB per second, falls about 1.4 dB per packet for loud input
+and holds during pauses below -50 dBFS. One instant-attack limiter with 50 ms release after the mix keeps every
+sample under -1 dBFS.
 
 ## MQTT
 

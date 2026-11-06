@@ -4,6 +4,11 @@ Release recipes use the workspace `Cargo.lock`. Dependency updates must pass hos
 platform's native build, image-size and device acceptance checks; the MIPS/uClibc target has a custom
 startup/linker boundary.
 
+libopus is the upstream 1.5.2 release tarball, pinned by SHA-256 in `opus.json` and unpacked by
+`scripts/fetch-opus.py` into the ignored `.tools/` directory (BSD-3-Clause). `crates/camera-opus` compiles
+it with the pinned Zig as a float build: NEON intrinsics for the Reolink Cortex-A9, plain MIPS32r2 for the
+Mi360, native for host tests. No DNN/DRED code is built.
+
 Tokio is locked to patched 1.51.6 for
 [RUSTSEC-2026-0386](https://rustsec.org/advisories/RUSTSEC-2026-0386.html). Its mio dependency requires
 libc bindings at least 0.2.183; the workspace uses 0.2.188, for the shared transport and Mi360 application. The later pin includes the upstream fix for

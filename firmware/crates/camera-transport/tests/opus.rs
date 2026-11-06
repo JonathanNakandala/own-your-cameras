@@ -1,7 +1,5 @@
 //! Actual loopback wire check; isolated protocol fixtures never reach a camera.
-use camera_transport::{
-    AudioHub, Config, Hub, ServerLimits, microphone::Format, serve_with_limits,
-};
+use camera_transport::{AudioHub, Config, Hub, ServerLimits, serve_with_limits};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{
@@ -31,7 +29,7 @@ fn response(reader: &mut BufReader<TcpStream>) -> (String, String) {
 }
 
 #[test]
-fn configured_pcmu_microphone_is_advertised_and_transmitted_with_its_real_codec() {
+fn the_opus_microphone_is_advertised_and_transmitted_paced_on_the_mi360_limits() {
     let hub = Hub::new();
     hub.publish(
         true,
@@ -40,7 +38,7 @@ fn configured_pcmu_microphone_is_advertised_and_transmitted_with_its_real_codec(
             0, 0, 0, 1, 0x67, 0x4d, 0, 0x1f, 0xac, 0, 0, 0, 1, 0x68, 0xee, 0x3c, 0, 0, 0, 1, 0x65,
         ],
     );
-    let audio = AudioHub::with_format(Format::Pcmu8k);
+    let audio = AudioHub::new();
     let cfg = Arc::new(Config {
         streams: vec![("Preview_01_main".into(), hub)],
         creds: None,
@@ -63,21 +61,31 @@ fn configured_pcmu_microphone_is_advertised_and_transmitted_with_its_real_codec(
     write!(socket, "DESCRIBE {uri} RTSP/1.0\r\nCSeq: 1\r\n\r\n").unwrap();
     let (header, sdp) = response(&mut reader);
     assert!(header.starts_with("RTSP/1.0 200"));
-    assert!(sdp.contains("a=rtpmap:0 PCMU/8000/1"));
+    assert!(sdp.contains("a=rtpmap:111 opus/48000/2"));
     assert!(!sdp.contains("MPEG4"));
     write!(socket, "SETUP {uri}/trackID=1 RTSP/1.0\r\nCSeq: 2\r\nTransport: RTP/AVP/TCP;unicast;interleaved=2-3\r\n\r\n").unwrap();
     assert!(response(&mut reader).0.starts_with("RTSP/1.0 200"));
     write!(socket, "PLAY {uri} RTSP/1.0\r\nCSeq: 3\r\n\r\n").unwrap();
     assert!(response(&mut reader).0.starts_with("RTSP/1.0 200"));
+    // Two frames published at once leave 20 ms apart.
     audio.publish(1_000_000, vec![0xff, 0x80, 0]);
-    let mut prefix = [0; 4];
-    reader.read_exact(&mut prefix).unwrap();
-    assert_eq!(prefix, [b'$', 2, 0, 15]);
-    let mut rtp = [0; 15];
-    reader.read_exact(&mut rtp).unwrap();
-    assert_eq!(rtp[1], 0x80);
-    assert_eq!(u32::from_be_bytes(rtp[4..8].try_into().unwrap()), 8000);
-    assert_eq!(&rtp[12..], &[0xff, 0x80, 0]);
+    audio.publish(1_020_000, vec![0xfe]);
+    let mut read = |len: usize| {
+        let mut prefix = [0; 4];
+        reader.read_exact(&mut prefix).unwrap();
+        assert_eq!(prefix, [b'$', 2, 0, 12 + len as u8]);
+        let mut rtp = vec![0; 12 + len];
+        reader.read_exact(&mut rtp).unwrap();
+        (std::time::Instant::now(), rtp)
+    };
+    let (first_at, first) = read(3);
+    assert_eq!(first[1], 0x80 | 111);
+    assert_eq!(u32::from_be_bytes(first[4..8].try_into().unwrap()), 48_000);
+    assert_eq!(&first[12..], &[0xff, 0x80, 0]);
+    let (second_at, second) = read(1);
+    assert_eq!(second[1], 111);
+    assert_eq!(u32::from_be_bytes(second[4..8].try_into().unwrap()), 48_960);
+    assert!(second_at - first_at >= Duration::from_millis(15));
     stop.store(true, Ordering::Relaxed);
     worker.join().unwrap();
 }

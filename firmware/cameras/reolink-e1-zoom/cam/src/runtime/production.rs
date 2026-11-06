@@ -32,7 +32,7 @@ use crate::ownership::RUNTIME_LOCK;
 use crate::pipeline::{self, AudioReport, PipelineConfig};
 use crate::preflight;
 use crate::rtsp::server as rtsp_server;
-use crate::rtsp::{audio::AudioHub, audio::Talkback, hub::VideoHubs};
+use crate::rtsp::{audio::AudioHub, hub::VideoHubs, talk::Talkback};
 use crate::runtime::s00::S00Handoff;
 use crate::runtime::workers::Workers;
 use crate::runtime::{
@@ -287,7 +287,7 @@ pub fn start<B>(
 
     let hubs = VideoHubs::new();
     let audio = AudioHub::new();
-    let talk = Talkback::new();
+    let talk = crate::rtsp::opus::talkback(hdal::audio::RATE);
     let pipeline = Arc::new(PipelineHealth::default());
     let rtsp_config = Arc::new(rtsp_server::Config {
         streams: hubs.streams(),
@@ -536,7 +536,13 @@ where
         errors: RefCell::new(Vec::new()),
     };
     let mut media_result = None;
-    if run.spawn("network", &beats, services.network) {
+    // One encoder, on the media thread: every RTSP listener shares its packets through `audio`.
+    let mut microphone = crate::rtsp::opus::microphone()
+        .map_err(|error| run.fail(error))
+        .ok();
+    if let Some(microphone) = microphone.as_mut()
+        && run.spawn("network", &beats, services.network)
+    {
         let Services { rtsp, mqtt, .. } = services;
         let (mut rtsp, mut mqtt) = (Some(rtsp), Some(mqtt));
         let result = pipeline::stream_with_audio(
@@ -579,7 +585,11 @@ where
                 counters.frame(frame.stream, frame.data.len());
                 hubs.publish(frame.stream, frame.key, frame.pts_us, frame.data);
             },
-            &mut |frame| audio.publish(frame.pts_us, frame.data),
+            &mut |frame| {
+                for (pts_us, packet) in microphone.push(frame.pts_us, &frame.samples) {
+                    audio.publish(pts_us, packet);
+                }
+            },
             &mut || talk.next_pcm(std::time::Instant::now()),
             &mut &*media_tuning,
         );

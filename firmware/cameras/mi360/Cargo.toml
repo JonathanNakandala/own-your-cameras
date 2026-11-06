@@ -13,6 +13,7 @@ imp-video = []
 libc = "=0.2.188"
 sha2 = "=0.10.9"
 camera-transport = { path = "../../crates/camera-transport" }
+camera-opus = { path = "../../crates/camera-opus" }
 serde = { version = "=1.0.228", features = ["derive"] }
 toml = "=0.8.23"
 serde_json = "=1.0.145"

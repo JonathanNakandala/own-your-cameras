@@ -6,6 +6,7 @@ SDK_HEADERS := $(abspath $(MI360)/sdk)
 headers:
 	$(PYTHON) $(MI360)/scripts/headers.py --out "$(SDK_HEADERS)"
 fast: headers
+	$(PYTHON) -B scripts/fetch-opus.py
 	$(PYTHON) -B scripts/test_link_stubs.py
 	$(PYTHON) -B scripts/test_release.py
 	cargo test --workspace --locked

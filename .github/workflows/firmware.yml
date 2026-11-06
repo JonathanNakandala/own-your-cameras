@@ -24,6 +24,7 @@ jobs:
       - name: Pinned cross compiler
         run: |
           python3 firmware/scripts/fetch-zig.py
+          python3 firmware/scripts/fetch-opus.py
           echo "$GITHUB_WORKSPACE/firmware/.tools/zig" >> "$GITHUB_PATH"
       - name: Host gate
         run: make gate

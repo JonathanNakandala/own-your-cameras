@@ -542,17 +542,26 @@ fn retune_audio<B: hdal::AudioCap + hdal::AudioOut>(
     Ok(applied)
 }
 
+/// Samples per speaker push: the driver's frame size (`frame_sample_max`).
+const SPEAKER_FRAME: usize = 1024;
+/// Samples waiting for a full hardware buffer, at most (200 ms at 48 kHz).
+const SPEAKER_BACKLOG: usize = 9600;
+
+/// Capture frames and speaker blocks taken per loop turn at most (the capture ring holds ten frames).
+const AUDIO_BLOCKS_PER_TURN: usize = 10;
+
 /// Successful submissions are counters, not evidence of physical audibility or echo cancellation.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct AudioReport {
-    pub aac_frames: u64,
-    pub aac_bytes: u64,
+    pub mic_frames: u64,
+    pub mic_samples: u64,
     pub speaker_samples: u64,
     pub speaker_dropped_samples: u64,
 }
 
 /// Starts real audio before `on_ready` can advertise it. Hardware polling is bounded to 10 ms for
-/// video and one nonblocking AAC receive per iteration, keeping talkback inside its 100 ms limit.
+/// video and nonblocking raw microphone receives (until the ring is empty) per iteration, so talkback stays
+/// inside its 200 ms cap.
 /// `keep_going` is also checked before each startup operation and before `on_ready`.
 /// `on_stopping` must stop and join every service that can access hardware. It runs on normal exit,
 /// startup failure and receive/push failure, before any audio/video teardown, even if `on_ready` was
@@ -570,7 +579,7 @@ pub fn stream_with_audio<B>(
     on_stopping: &mut dyn FnMut(),
     keep_going: &mut dyn FnMut() -> bool,
     on_video: &mut dyn FnMut(EncFrame),
-    on_audio: &mut dyn FnMut(hdal::audio::AacFrame),
+    on_audio: &mut dyn FnMut(hdal::audio::PcmFrame),
     next_pcm: &mut dyn FnMut() -> Option<Vec<i16>>,
     tuner: &mut dyn Tuner,
 ) -> Result<AudioReport, PipelineError>
@@ -579,6 +588,8 @@ where
 {
     let mut g = Graph::default();
     let mut report = AudioReport::default();
+    let mut speaker: Vec<i16> = Vec::with_capacity(SPEAKER_BACKLOG + SPEAKER_FRAME);
+    let (mut speaker_last, mut burst_pushed, mut burst_dropped) = (0u64, 0u64, 0u64);
     let (mut cap, mut out) = (false, false);
     let initial = tuner.initial();
     let ran = (|| {
@@ -686,19 +697,49 @@ where
                     });
                 }
             }
-            if let Some(f) = hw.audio_cap_recv()? {
-                report.aac_frames += 1;
-                report.aac_bytes += f.data.len() as u64;
+            // Raw frames arrive every 21.3 ms, faster than a loop turn can take: drain what the driver's
+            // ten-frame ring holds, or it overruns and drops whole stretches of microphone audio.
+            for _ in 0..AUDIO_BLOCKS_PER_TURN {
+                let Some(f) = hw.audio_cap_recv()? else { break };
+                report.mic_frames += 1;
+                report.mic_samples += f.samples.len() as u64;
                 on_audio(f);
             }
-            if let Some(pcm) = next_pcm() {
-                for block in pcm.chunks(1024) {
-                    if hw.audio_out_push(block)? {
-                        report.speaker_samples += block.len() as u64;
-                    } else {
-                        report.speaker_dropped_samples += block.len() as u64;
-                    }
+            // The talkback mixer emits a 20 ms block whenever its clock is due; take every due block.
+            for _ in 0..AUDIO_BLOCKS_PER_TURN {
+                let Some(pcm) = next_pcm() else { break };
+                speaker.extend(pcm);
+                speaker_last = hw.now_ms();
+            }
+            // The driver plays whole 1,024-sample frames: shorter pushes lose samples at every frame
+            // boundary. A burst's last partial frame is padded once the mixer has gone quiet.
+            if !speaker.len().is_multiple_of(SPEAKER_FRAME)
+                && hw.now_ms().saturating_sub(speaker_last) > 40
+            {
+                speaker.resize(speaker.len().next_multiple_of(SPEAKER_FRAME), 0);
+            }
+            while speaker.len() >= SPEAKER_FRAME {
+                if !hw.audio_out_push(&speaker[..SPEAKER_FRAME])? {
+                    break;
                 }
+                report.speaker_samples += SPEAKER_FRAME as u64;
+                burst_pushed += SPEAKER_FRAME as u64;
+                speaker.drain(..SPEAKER_FRAME);
+            }
+            // A full hardware buffer keeps at most 200 ms waiting; older samples are dropped.
+            let excess = speaker.len().saturating_sub(SPEAKER_BACKLOG);
+            if excess > 0 {
+                speaker.drain(..excess);
+                report.speaker_dropped_samples += excess as u64;
+                burst_dropped += excess as u64;
+            }
+            if burst_pushed + burst_dropped > 0 && hw.now_ms().saturating_sub(speaker_last) > 1000 {
+                eprintln!(
+                    "speaker: burst ended played_ms={} dropped_ms={}",
+                    burst_pushed / 48,
+                    burst_dropped / 48
+                );
+                (burst_pushed, burst_dropped) = (0, 0);
             }
         }
         Ok(())

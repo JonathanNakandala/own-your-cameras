@@ -16,6 +16,7 @@ SESSION = CAMERA=$(CAMERA) scripts/device-session
 .PHONY: check test-scripts compiler build udiv-guard device-test device-probe device-dump device-serve device-zoom device-ir tools
 compiler:
 	python3 ../../scripts/fetch-zig.py
+	python3 ../../scripts/fetch-opus.py
 test-scripts:
 	python3 -I -m unittest discover -s scripts
 

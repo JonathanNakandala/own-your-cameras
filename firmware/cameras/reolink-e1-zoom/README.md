@@ -21,8 +21,8 @@ streams:
     - rtsp://USER:PASSWORD@CAMERA_IP:554/Preview_01_sub
 ```
 
-Main video defaults to 1920×1440; sub video is 640×480. Both include 16 kHz AAC audio.
-go2rtc handles the PCMU talkback channel. Connect Home Assistant to your MQTT broker to discover
+Main video defaults to 1920×1440; sub video is 640×480. Both include Opus audio (48 kHz mono) and an
+Opus talkback channel that go2rtc uses; up to four clients can talk at once. Connect Home Assistant to your MQTT broker to discover
 controls and settings; see [configuration and entities](docs/home-assistant.md).
 
 ## Recover

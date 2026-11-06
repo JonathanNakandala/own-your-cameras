@@ -50,10 +50,20 @@ also depends on the viewing client. Open-loop pointing is approximate, not angul
 
 ## Audio and recovery limits
 
-Microphone capture and negotiated PCMU talkback transport have been exercised on the qualified
-hardware. Driver delivery does not establish speaker loudness or acoustic echo cancellation; those
-remain attended acceptance checks. Optional SDK AEC interfaces do not imply production acoustic
-qualification. Host tests never open a microphone or produce sound.
+The microphone is captured at 48 kHz (IMP AI device 1, 40 ms frames of 1,920 samples) and encoded to
+Opus (libopus 1.5.2, 64 kbit/s); the speaker plays 16 kHz (IMP AO device 0, 640-sample blocks), which
+covers its output: within −20 dB of 1 kHz from ~500 Hz to 6.4 kHz, −32 dB at 8 kHz
+([measurements](../../../../docs/shared/camera-audio-response.md)). The two devices
+run at different rates without affecting each other. No SDK effects (NS, AGC, AEC) are used.
+
+The AO device restarts, and loses audio, whenever its stream stops, so the daemon feeds it silence
+between talk bursts, paced by the clock. The speaker amplifier switches on when talk starts and off
+one second after it ends; audio starts 60 ms after switch-on so the switching transient never lands
+on speech. A burst's losses are logged as `speaker: burst ended played_ms=… expired_ms=…
+overflow_ms=… full=…`. Talkback is Opus on track 2, up to four talkers mixed on the camera, the
+same transport as the Reolink E1 Zoom. Driver delivery does not establish speaker loudness or
+acoustic echo cancellation; those remain attended acceptance checks. Host tests never open a
+microphone or produce sound.
 
 The camera has a single shared boot environment. A userspace boot-attempt budget can recover from a
 daemon failure only while the kernel and SSH/network recovery can boot. It cannot repair a corrupt
