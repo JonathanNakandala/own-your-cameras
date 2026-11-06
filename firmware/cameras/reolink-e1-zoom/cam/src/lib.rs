@@ -33,6 +33,8 @@ pub mod zoom;
 // Plumbing.
 mod annexb;
 mod cpu;
+#[cfg(target_arch = "arm")]
+mod eac;
 pub mod files;
 mod hardware_fd;
 pub mod logcap;

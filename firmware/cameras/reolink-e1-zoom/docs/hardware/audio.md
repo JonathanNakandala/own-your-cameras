@@ -81,10 +81,30 @@ holds the stock values (AEC and ANR on, mic 80 as stock sets it through ctrl ite
   speaker keep running. The same settings then change the capture by up to 23 dB (ANR on −38.9 vs off −24.6 dBFS
   RMS) [V]. The room was not acoustically controlled: this shows the settings take effect, not good values.
 - Speaker volume is a live ctrl-path set on the running output, no restart.
-- **Mic and speaker volume are accepted but change nothing measurable** [V]. A camera recording replayed at
-  +12 dB through the backchannel and recorded from `Preview_01_sub` (peaks −4…−6 dBFS, no clipping) gave
-  −23.1…−24.6 dBFS for mic 100 and 30, and −24.4/−24.5 dBFS for speaker 100 and 40, whether the capture volume
-  was set before or after the i/o path opened.
+- **With the codec's ALC on, HDAL's mic volume and the speaker volume change nothing measurable** [V]. A camera
+  recording replayed at +12 dB through the backchannel and recorded from `Preview_01_sub` (peaks −4…−6 dBFS, no
+  clipping) gave −23.1…−24.6 dBFS for HDAL mic volume 100 and 30, and −24.4/−24.5 dBFS for speaker 100 and 40.
+- **The codec runs ALC and a noise gate.** Every capture start leaves the embedded codec (EAC, physical
+  `0xF0640000`) with `0x30` bit 0 (ALC) and bit 1 (noise gate) set. Field names and layout come from disassembly
+  of the vendor kernel's `eac_get_ad_config` and `nvt_audio.ko`'s `eac_dump_info`. A write takes effect after
+  `1` is written to the load latch `0x04` (`eac_set_load`). That these two explain the flat level is inferred
+  from the names and the measurements below.
+- **`cam` clears both bits after each capture start and sets the analog PGA from `mic_volume`** (`hdal::codec`,
+  `cam/src/eac.rs`). 0…100 maps linearly over the 5-bit PGA (`0x20` bits 0–4 and 8–12). Stock runs PGA 14;
+  `Tuning::stock()`'s mic 80 is PGA 25. Measured with a −20 dBFS tone from the camera's own speaker, ALC and gate
+  off, one run each [V]:
+
+  | Setting | Tone in the mic |
+  |---|---|
+  | PGA 10 / 14 / 18 | −13.5 / −7.8 / −2.5 dBFS (about 1.4 dB a step) |
+  | Boost (`0x10` bits 4–5) 1 instead of stock 2 | 11.6 dB lower; `cam` leaves boost at stock |
+  | Quiet room, gate on → off (ALC on) | −41.2 → −28.9 dBFS RMS |
+  | Quiet room, ALC on → off (gate off) | −28.9 → −55.6 dBFS RMS |
+
+  Default `mic_volume` is 100 (PGA 31), chosen by ear. If `/dev/mem` cannot be written, `cam` logs `mic gain:`
+  and runs with the codec as stock leaves it.
+- HDAL's capture volume (ctrl item `0x19001`) scales the capture once the ALC is off: at 70 the tone came out
+  2.9 dB lower than at 100 (one run each). `cam` keeps it at 100 so `mic_volume` is one gain.
 - A start the driver refuses falls back to the previous tuning, and the state reports what runs. If that also
   fails, capture is down and it is a media error. At boot a refused persisted tuning is retried once with
   `Tuning::stock()`.

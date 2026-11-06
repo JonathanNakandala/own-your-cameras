@@ -271,17 +271,26 @@ fn on_hdal(body: impl OnHdal) -> Result<ExitCode, CliError> {
     body.run(camera_hdal())
 }
 
-/// The camera's `libhdal.so`, with the speaker amplifier switched by its GPIO.
+/// The camera's `libhdal.so`, with the speaker amplifier switched by its GPIO and the codec's record gain
+/// set through `/dev/mem` (best effort).
 #[cfg(target_arch = "arm")]
 pub fn camera_hdal() -> hdal::sys::Sys {
     use crate::ir::sysfs::{GPIO_ROOT, Gpio, SPEAKER_ENABLE_GPIO};
     let gpio = Gpio::new(GPIO_ROOT);
-    hdal::sys::Sys::new().with_speaker_enable(move |on| {
-        gpio.set(SPEAKER_ENABLE_GPIO, on).map_err(|error| {
-            eprintln!("speaker amplifier: {error}");
-            -5
+    hdal::sys::Sys::new()
+        .with_speaker_enable(move |on| {
+            gpio.set(SPEAKER_ENABLE_GPIO, on).map_err(|error| {
+                eprintln!("speaker amplifier: {error}");
+                -5
+            })
         })
-    })
+        // Without `/dev/mem` the microphone keeps the codec's stock ALC and noise gate rather than going down.
+        .with_mic_gain(|volume| {
+            if let Err(error) = crate::eac::set_record_gain(volume) {
+                eprintln!("mic gain: {error}; codec left as stock");
+            }
+            Ok(())
+        })
 }
 
 #[cfg(not(target_arch = "arm"))]

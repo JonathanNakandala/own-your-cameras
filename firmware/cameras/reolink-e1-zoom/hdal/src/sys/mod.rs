@@ -49,6 +49,7 @@ pub struct Sys {
     audio_cap: audio::State,
     audio_out: audio::State,
     speaker_enable: Option<audio::SpeakerEnable>,
+    mic_gain: Option<audio::MicGain>,
     t0: std::time::Instant,
     cap_fps: u32,
     maps: Vec<EncMap>,
@@ -64,6 +65,7 @@ impl Sys {
             audio_cap: Default::default(),
             audio_out: Default::default(),
             speaker_enable: None,
+            mic_gain: None,
             t0: std::time::Instant::now(),
             cap_fps: 30,
             maps: Vec::new(),
@@ -77,6 +79,16 @@ impl Sys {
         enable: impl FnMut(bool) -> Result<(), i32> + Send + 'static,
     ) -> Self {
         self.speaker_enable = Some(Box::new(enable));
+        self
+    }
+
+    /// The codec's record gain below HDAL ([`crate::codec`]), supplied by camera wiring and given
+    /// `mic_volume` after every capture start. Errors are negative errno values.
+    pub fn with_mic_gain(
+        mut self,
+        gain: impl FnMut(u8) -> Result<(), i32> + Send + 'static,
+    ) -> Self {
+        self.mic_gain = Some(Box::new(gain));
         self
     }
 }

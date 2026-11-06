@@ -47,6 +47,7 @@ enum Release {
     Alloc(Mapping),
 }
 pub(super) type SpeakerEnable = Box<dyn FnMut(bool) -> Result<(), i32> + Send>;
+pub(super) type MicGain = Box<dyn FnMut(u8) -> Result<(), i32> + Send>;
 impl Release {
     fn name(&self) -> &'static str {
         match self {
@@ -173,6 +174,8 @@ fn hd_anr(a: &Anr) -> h::HD_AUDIOCAP_ANR {
         bias_sensitive: a.bias_sensitive,
     }
 }
+/// HDAL capture volume, fixed: see `audio_cap_start`.
+const HDAL_MIC_VOLUME: u8 = 100;
 fn volume(v: u8) -> u32 {
     u32::from(v.min(100))
 }
@@ -228,17 +231,23 @@ impl AudioCap for Sys {
             )?;
             s.start(&CAP, s.io, step)?;
             // Stock sets the volume last, on the started capture (item 0x19001 after the AEC/ANR sets and
-            // the path start).
+            // the path start). Without the codec's ALC it scales the capture too; `mic_volume` drives the
+            // analog PGA instead, so this stays at the 100 the level was chosen with.
             // Ctrl-path VOLUME reads one word (libhdal hd_audiocap_set @ 0xdddc, kflow item 0x19001).
             set(
                 &CAP,
                 s.ctrl,
                 h::HD_AUDIOCAP_PARAM_VOLUME,
                 &mut h::HD_AUDIOCAP_VOLUME {
-                    volume: volume(tuning.mic_volume),
+                    volume: volume(HDAL_MIC_VOLUME),
                 },
                 step,
             )?;
+            // HDAL's volume does not reach the codec, and the start re-enables the codec's ALC and noise
+            // gate: set the fixed analog gain last.
+            if let Some(gain) = self.mic_gain.as_mut() {
+                gain(tuning.mic_volume).map_err(|code| Error { step, code })?;
+            }
 
             // The ctrl path reports the page-aligned raw ring that every pulled frame lies in.
             let mut info = h::HD_AUDIOCAP_BUFINFO::default();

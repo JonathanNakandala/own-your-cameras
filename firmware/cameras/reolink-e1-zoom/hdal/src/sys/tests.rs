@@ -878,3 +878,49 @@ fn speaker_volume_needs_a_running_speaker() {
     });
     sys.audio_out_stop().unwrap();
 }
+
+#[test]
+fn capture_start_hands_the_mic_volume_to_the_codec_gain_after_the_hdal_volume() {
+    use std::sync::{Arc, Mutex};
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let recorded = seen.clone();
+    let mut sys = fixture().with_mic_gain(move |volume| {
+        let hdal_volume = DRIVER.with_borrow(|d| d.cap_volume);
+        recorded.lock().unwrap().push((volume, hdal_volume));
+        Ok(())
+    });
+    let mut tuning = crate::audio::Tuning::stock();
+    tuning.mic_volume = 70;
+    sys.audio_cap_start(&tuning).unwrap();
+    sys.audio_cap_stop().unwrap();
+    DRIVER.with_borrow_mut(|d| d.cap_volume = None);
+    sys.audio_cap_start(&tuning).unwrap();
+    assert_eq!(
+        *seen.lock().unwrap(),
+        [(70, Some(100)), (70, Some(100))],
+        "every start, after the HDAL volume"
+    );
+}
+
+#[test]
+fn a_refused_codec_gain_fails_the_capture_start_and_releases_it() {
+    let mut sys = fixture().with_mic_gain(|_| Err(-13));
+    let err = sys
+        .audio_cap_start(&crate::audio::Tuning::stock())
+        .unwrap_err();
+    assert_eq!(err.code, -13);
+    assert!(sys.audio_cap_recv().is_err());
+    DRIVER.with_borrow(|d| {
+        assert!(d.calls.contains(&"hd_audiocap_stop"));
+        assert!(d.calls.contains(&"hd_audiocap_uninit"));
+    });
+}
+
+#[test]
+fn hdal_capture_volume_stays_at_100_whatever_the_mic_volume() {
+    let mut sys = fixture().with_mic_gain(|_| Ok(()));
+    let mut tuning = crate::audio::Tuning::stock();
+    tuning.mic_volume = 30;
+    sys.audio_cap_start(&tuning).unwrap();
+    DRIVER.with_borrow(|d| assert_eq!(d.cap_volume, Some(100)));
+}

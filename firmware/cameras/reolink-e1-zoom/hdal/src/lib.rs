@@ -5,6 +5,7 @@
 //! `device` runs. Callers stop the vendor stack first and reboot afterwards.
 
 pub mod audio;
+pub mod codec;
 pub use audio::{AudioCap, AudioOut};
 pub mod enc;
 #[cfg(any(test, feature = "fake"))]

@@ -16,6 +16,8 @@ pub struct Driver {
     pub map_result: Option<usize>,
     pub phy: u32,
     pub size: u32,
+    /// The last `HD_AUDIOCAP_PARAM_VOLUME` set.
+    pub cap_volume: Option<u32>,
 }
 thread_local! { pub static DRIVER: RefCell<Driver> = RefCell::new(Driver::default()); }
 pub fn call(name: &'static str) -> i32 {
@@ -56,9 +58,19 @@ stub!(hd_audiocap_init() -> HD_RESULT);
 stub!(
     hd_audiocap_open(in_id: HD_IN_ID, out_id: HD_OUT_ID, p_path_id: *mut HD_PATH_ID) -> HD_RESULT
 );
-stub!(
-    hd_audiocap_set(path_id: HD_PATH_ID, id: HD_AUDIOCAP_PARAM_ID, p_param: *mut VOID) -> HD_RESULT
-);
+pub unsafe extern "C" fn hd_audiocap_set(
+    _: HD_PATH_ID,
+    id: HD_AUDIOCAP_PARAM_ID,
+    p_param: *mut VOID,
+) -> HD_RESULT {
+    let rc = call("hd_audiocap_set");
+    if id == HD_AUDIOCAP_PARAM_VOLUME {
+        // SAFETY: Sys passes an HD_AUDIOCAP_VOLUME for the VOLUME id.
+        let volume = unsafe { (*p_param.cast::<HD_AUDIOCAP_VOLUME>()).volume };
+        DRIVER.with_borrow_mut(|d| d.cap_volume = Some(volume));
+    }
+    rc as HD_RESULT
+}
 stub!(hd_audiocap_release_out_buf(path_id: HD_PATH_ID, p_audio_frame: *mut HD_AUDIO_FRAME) -> HD_RESULT);
 stub!(hd_audiocap_start(path_id: HD_PATH_ID) -> HD_RESULT);
 stub!(hd_audiocap_stop(path_id: HD_PATH_ID) -> HD_RESULT);
