@@ -72,9 +72,28 @@ The two axes run independently: the driver starts both before it waits for eithe
   machine @ 0xfb64c), and so do we.
 - Directions [V, from frames]: pan x grows with direction bit **0**, so the pan stop is at x = 0 with direction
   bit **1**; tilt y grows with direction bit **1**, the tilt stop is at y = 0 with bit **0**.
-- `home`: pan 7360+100 steps with bit 1, tilt 1240+100 steps with bit 0, both at once. Afterwards the driver's
+- **Homing by ear** (`cam::ptz::homing`): only the daemon (`cam serve`) does it, because only it captures
+  audio; `cam ptz` always homes by time.
+  - Tilt, then pan (a sound then belongs to one motor). Each axis listens to the quiet head (8 capture frames,
+    at most 500 ms), then is driven toward its stop at 600 pps.
+  - The axis halts when the median level of the last 32 capture frames (≈0.7 s) is ≥ quiet + 11 dB (rule A,
+    off when "quiet" reads above −40 dBFS) or ≥ running motor + 4 dB (rule B; the motor level is frames 15–47
+    after the kick).
+  - A stop never heard: that axis runs its full travel. No audio: the axes not yet homed are homed by time.
+  - Worst case about 16 s (tilt 1340 + pan 7460 steps at 600 pps, plus listening), against 12 s timed.
+  - Daemon stderr says which: `ptz: Tilt heard the stop after N ms of driving (quiet … dBFS, motor …)`,
+    `ptz: Pan ran its full travel without hearing the stop (…)`, `ptz: homing by ear unavailable (…)`, then
+    `ptz: homed: ByEar { heard: [true, true] }` (pan, then tilt; `false`: that axis ran its full travel) or
+    `ptz: homed: Timed(…)`.
+  - Measured on one camera [V; AEC off, ANR off, `mic_volume` 100, the daemon's defaults, other audio
+    settings untested; levels in `cam/src/ptz/homing_levels.rs`]:
+    quiet −46 dBFS; pan runs at −41 and stalls at −27; tilt runs at −39…−38 and stalls at −33, 2 dB from
+    rule A on either side. Once, at a cold boot, "quiet" read −29 dBFS; rule B still heard the stop.
+  - Not handled: a sound of its own that lasts ≥0.7 s and is 11 dB above the quiet room (speech, a TV,
+    talkback on the speaker) halts the axis early, and the head then thinks it is at the stop.
+- Timed `home`: pan 7360+100 steps with bit 1, tilt 1240+100 steps with bit 0, both at once. Afterwards the driver's
   position is (0, 0). `goto(x, y)` then moves the difference. The driver keeps the position only inside one
-  process: every `cam ptz` invocation that moves homes first (12 s from anywhere).
+  process: every `cam ptz` invocation that moves homes first, by time (12 s from anywhere).
 - Check against the vendor: homing, then pan x = 6195 and tilt y = 650, gives the pose the vendor stack ends in at
   boot (`default_x=6195`, `default_y=650` in `/mnt/para/0_ptz.cfg`), frame for frame.
   The same manual register sequence was used for that frame as `cam ptz move 6195 650` runs.

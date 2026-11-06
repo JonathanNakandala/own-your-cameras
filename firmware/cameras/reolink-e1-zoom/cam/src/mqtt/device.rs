@@ -86,6 +86,7 @@ impl<B: Bus, I: Isp, H: Hw, O: Platform> Device<B, I, H, O> {
         lens.configure(&rows, zf.backlash)
             .map_err(|e| e.to_string())?;
         ptz.init().map_err(|e| e.to_string())?;
+        ptz.set_ears(Some(Box::new(media.ears())));
         ptz.home().map_err(|e| e.to_string())?;
         lens.init_with(Duration::from_secs(30), &mut || {
             ptz.checkpoint()
@@ -150,9 +151,31 @@ impl<B: Bus, I: Isp, H: Hw, O: Platform> Device<B, I, H, O> {
         for r in &device.refused {
             eprintln!("settings: {r}");
         }
+        if let Err(e) = device.go_default() {
+            eprintln!("ptz: could not go to the Default preset after homing: {e}");
+        }
         device.af.request(Trigger::Startup, Duration::ZERO);
         device.af_shown = device.af.state().to_string();
         Ok(device)
+    }
+
+    /// Ends a home at the `Default` preset (pan, tilt and zoom), so the pose after a start or a Home is always
+    /// the same one. Without a `Default` preset the head stays at the stop.
+    fn go_default(&mut self) -> Result<(), String> {
+        let Some(p) = self.presets.get("Default") else {
+            return Ok(());
+        };
+        let target = crate::ptz::Position {
+            pan: p.pan,
+            tilt: p.tilt,
+        };
+        self.ptz
+            .goto_at(target, Some(self.now))
+            .map_err(|e| e.to_string())?;
+        self.moved(Some((p.pan, p.tilt)), self.now)?;
+        self.zoom(p.zoom)?;
+        self.preset = Some("Default".to_owned());
+        Ok(())
     }
 
     /// Zooms with the park focus for `n`, then asks autofocus to refine it.
@@ -738,6 +761,7 @@ impl<B: Bus + Send, I: Isp + Send, H: Hw + Send, O: Platform> Hardware for Devic
                 self.end_zoom_hold()?;
                 self.ptz.home().map_err(|e| e.to_string())?;
                 self.preset = None;
+                self.go_default()?;
             }
             Command::Refocus => self.af.request(Trigger::Button, self.now),
             Command::CalibrateFocus => {}
