@@ -172,7 +172,7 @@ static struct {
  int(*isp_type)(int),(*sensor_register)(int),(*sensor_unregister)(int),(*isp_mem)(int),(*isp_wdr)(int,unsigned *),(*isp_pub)(int,v3_isp_dev *),(*isp_init)(int),(*isp_run)(int),(*isp_exit)(int);
  int(*vpss_create)(int,v3_vpss_grp *),(*vpss_start)(int),(*vpss_stop)(int),(*vpss_destroy)(int),(*vpss_set)(int,int,v3_vpss_chn *),(*vpss_mode)(int,int,v3_vpss_mode *),(*vpss_enable)(int,int),(*vpss_disable)(int,int);
  int(*bind)(v3_sys_bind *,v3_sys_bind *),(*unbind)(v3_sys_bind *,v3_sys_bind *);
- int(*venc_create)(int,v3_venc_chn *),(*venc_start)(int),(*venc_stop)(int),(*venc_destroy)(int),(*venc_query)(int,v3_venc_stat *),(*venc_get)(int,v3_venc_strm *,unsigned),(*venc_release)(int,v3_venc_strm *);
+ int(*venc_create)(int,v3_venc_chn *),(*venc_start)(int),(*venc_stop)(int),(*venc_destroy)(int),(*venc_query)(int,v3_venc_stat *),(*venc_get)(int,v3_venc_strm *,unsigned),(*venc_release)(int,v3_venc_strm *),(*venc_getfd)(int);
  int(*ai_set)(int,const struct aio_attr *),(*ai_enable)(int),(*ai_disable)(int),(*ai_chn_enable)(int,int),(*ai_chn_disable)(int,int),(*ai_get_param)(int,int,unsigned *),(*ai_set_param)(int,int,const unsigned *);
  int(*sensor_read)(unsigned,unsigned *),(*sensor_write)(unsigned,unsigned);
  unsigned *capture_mode;void **isp_inner;int(*isp_saturation)(void *,int);int(*isp_set_key)(void *,int,unsigned *);
@@ -194,6 +194,7 @@ static int load(const char *d){char q[192];snprintf(q,sizeof q,"%s/libnative_med
  RESOLVE(isp_type,"ISP_Set_Sensor_Type");RESOLVE(sensor_register,"sensor_register_callback_ar0237");RESOLVE(sensor_unregister,"sensor_unregister_callback_ar0237");RESOLVE(isp_mem,"HI_MPI_ISP_MemInit");RESOLVE(isp_wdr,"HI_MPI_ISP_SetWDRMode");RESOLVE(isp_pub,"HI_MPI_ISP_SetPubAttr");RESOLVE(isp_init,"HI_MPI_ISP_Init");RESOLVE(isp_run,"HI_MPI_ISP_Run");RESOLVE(isp_exit,"HI_MPI_ISP_Exit");
  RESOLVE(vpss_create,"HI_MPI_VPSS_CreateGrp");RESOLVE(vpss_start,"HI_MPI_VPSS_StartGrp");RESOLVE(vpss_stop,"HI_MPI_VPSS_StopGrp");RESOLVE(vpss_destroy,"HI_MPI_VPSS_DestroyGrp");RESOLVE(vpss_set,"HI_MPI_VPSS_SetChnAttr");RESOLVE(vpss_mode,"HI_MPI_VPSS_SetChnMode");RESOLVE(vpss_enable,"HI_MPI_VPSS_EnableChn");RESOLVE(vpss_disable,"HI_MPI_VPSS_DisableChn");
  RESOLVE(bind,"HI_MPI_SYS_Bind");RESOLVE(unbind,"HI_MPI_SYS_UnBind");RESOLVE(venc_create,"HI_MPI_VENC_CreateChn");RESOLVE(venc_start,"HI_MPI_VENC_StartRecvPic");RESOLVE(venc_stop,"HI_MPI_VENC_StopRecvPic");RESOLVE(venc_destroy,"HI_MPI_VENC_DestroyChn");RESOLVE(venc_query,"HI_MPI_VENC_Query");RESOLVE(venc_get,"HI_MPI_VENC_GetStream");RESOLVE(venc_release,"HI_MPI_VENC_ReleaseStream");
+ *(void **)(&a.venc_getfd)=dlsym(h,"HI_MPI_VENC_GetFd"); /* optional: without it the caller polls */
  RESOLVE(capture_mode,"Capture_Mode");RESOLVE(isp_inner,"isplib_inner_param");RESOLVE(isp_saturation,"ISP_Set_Saturation");RESOLVE(isp_set_key,"ISP_SetKeyParam");RESOLVE(isp_preinit,"ISP_PreInit");RESOLVE(isp_register_cb,"ISP_Register_CallBackFunc");RESOLVE(isp_get_mem,"ISP_GetMemSize");RESOLVE(isp_create,"ISP_Create");
  RESOLVE(ao_set,"HI_MPI_AO_SetPubAttr");RESOLVE(ao_enable,"HI_MPI_AO_Enable");RESOLVE(ao_chn_enable,"HI_MPI_AO_EnableChn");RESOLVE(ao_send,"HI_MPI_AO_SendFrame");RESOLVE(ao_disable,"HI_MPI_AO_Disable");RESOLVE(ao_chn_disable,"HI_MPI_AO_DisableChn");
  RESOLVE(isp_fn[0],"ISP_Set_Brightness");RESOLVE(isp_fn[1],"ISP_Set_Contrast");RESOLVE(isp_fn[2],"ISP_Set_Saturation");RESOLVE(isp_fn[3],"ISP_Set_Sharpeness");RESOLVE(isp_fn[4],"ISP_Set_Spatial_Denoise_Strength");RESOLVE(isp_fn[5],"ISP_Set_Anti_Fog_En");RESOLVE(isp_fn[6],"ISP_Set_Anti_Fog_Strength");RESOLVE(isp_fn[7],"ISP_Set_Anti_Flicker_Mode");RESOLVE(isp_fn[8],"ISP_Set_Awb_Mode");
@@ -253,17 +254,20 @@ int gm_start(const char *dir){
  unsigned depth=0;STEP("ai_get_param",a.ai_get_param(0,0,&depth));depth=2;STEP("ai_set_param",a.ai_set_param(0,0,&depth));
  return 0;
 }
-/* One access unit into buf. 0 ok, 1 nothing ready, negative error (stop). */
-int gm_video_chn(int c,unsigned char *buf,unsigned cap,unsigned *len,u64 *pts){
+/* The channel's stream descriptor (readable when an access unit is ready), or -1 if the library has none. */
+int gm_video_fd(int c){if(uncertain||!a.venc_getfd)return -1;int fd=a.venc_getfd(c);return fd<0?-1:fd;}
+/* One access unit into buf. 0 ok, 1 nothing ready, negative error (stop). *key: an IDR slice is among the
+   packs (each pack is one NAL behind a 4-byte start code, so only pack heads are inspected). */
+int gm_video_chn(int c,unsigned char *buf,unsigned cap,unsigned *len,u64 *pts,int *key){*key=0;
  if(uncertain)return -9;v3_venc_stat q;memset(&q,0,sizeof q);int st=a.venc_query(c,&q);if(st)return st;if(!q.curPacks)return 1;if(q.curPacks>16)return -2;
  v3_venc_pack packs[16];v3_venc_strm s;memset(packs,0,sizeof packs);memset(&s,0,sizeof s);s.packet=packs;s.count=q.curPacks;st=a.venc_get(c,&s,0);if(st)return st;
  unsigned n=0;int bad=s.packet!=packs||!s.count||s.count>q.curPacks;
- for(unsigned i=0;!bad&&i<s.count;i++){v3_venc_pack *k=&packs[i];if(!k->data||k->offset>k->length||k->length-k->offset>cap-n){bad=1;break;}memcpy(buf+n,k->data+k->offset,k->length-k->offset);n+=k->length-k->offset;}
+ for(unsigned i=0;!bad&&i<s.count;i++){v3_venc_pack *k=&packs[i];if(!k->data||k->offset>k->length||k->length-k->offset>cap-n){bad=1;break;}const unsigned char *d=k->data+k->offset;unsigned m=k->length-k->offset;if(m>4&&!d[0]&&!d[1]&&((!d[2]&&d[3]==1&&(d[4]&31)==5)||(d[2]==1&&(d[3]&31)==5)))*key=1;memcpy(buf+n,d,m);n+=m;}
  *pts=s.count?packs[0].timestamp:0;*len=n;
  st=a.venc_release(c,&s);if(st){uncertain=1;gm_message("venc_release",st);return -9;}
  return bad?-3:0;
 }
-int gm_video(unsigned char *buf,unsigned cap,unsigned *len,u64 *pts){return gm_video_chn(0,buf,cap,len,pts);}
+int gm_video(unsigned char *buf,unsigned cap,unsigned *len,u64 *pts){int key;return gm_video_chn(0,buf,cap,len,pts,&key);}
 /* One 40 ms PCM16 mono frame at the current rate into pcm (cap bytes). 0 ok, negative error. */
 int gm_audio(unsigned char *pcm,unsigned cap,unsigned *len,u64 *pts){
  if(uncertain)return -9;struct audio_frame f;struct aec_frame e;memset(&f,0,sizeof f);memset(&e,0,sizeof e);

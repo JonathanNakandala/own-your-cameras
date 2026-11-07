@@ -52,6 +52,8 @@ impl Default for ServerLimits {
 
 /// RTP payload bytes: 1500 MTU less IP/TCP/RTP headers, leaving room for Wi-Fi and the interleave frame.
 const MAX_PAYLOAD: usize = 1400;
+/// Packets per vectored write: three iovecs each, under the kernel's 1024-iovec limit.
+const PACKETS_PER_WRITE: usize = 300;
 const DESCRIBE_WAIT: Duration = Duration::from_secs(5);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -228,39 +230,66 @@ fn sender(
             Err(_) => return,
         };
         let ts = timestamp(frame.pts_us);
-        for p in pk.packets(&frame.data, ts) {
-            if stop.load(Ordering::Relaxed) {
-                return;
-            }
-            let res = match &sink {
-                Sink::Tcp { ch } => {
-                    let len = (p.len() as u16).to_be_bytes();
-                    let prefix = [b'$', *ch, len[0], len[1]];
-                    let mut parts = [
-                        IoSlice::new(&prefix),
-                        IoSlice::new(p.head()),
-                        IoSlice::new(p.payload),
-                    ];
+        let packets = pk.packets(&frame.data, ts);
+        let res = match &sink {
+            // One vectored write per frame (in slices of at most PACKETS_PER_WRITE packets) instead of one per
+            // RTP packet: on the HiSilicon panel per-packet writes cost ~8 % CPU per main-stream viewer.
+            Sink::Tcp { ch } => {
+                let prefixes: Vec<[u8; 4]> = packets
+                    .iter()
+                    .map(|p| {
+                        let len = (p.len() as u16).to_be_bytes();
+                        [b'$', *ch, len[0], len[1]]
+                    })
+                    .collect();
+                let mut res = Ok(());
+                for (group, heads) in packets
+                    .chunks(PACKETS_PER_WRITE)
+                    .zip(prefixes.chunks(PACKETS_PER_WRITE))
+                {
+                    if stop.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    let mut parts: Vec<IoSlice<'_>> = Vec::with_capacity(group.len() * 3);
+                    for (p, prefix) in group.iter().zip(heads) {
+                        parts.push(IoSlice::new(prefix));
+                        parts.push(IoSlice::new(p.head()));
+                        parts.push(IoSlice::new(p.payload));
+                    }
                     let mut g = w.lock().unwrap_or_else(|e| e.into_inner());
-                    write_vectored_all(&mut g, &mut parts)
+                    res = write_vectored_all(&mut g, &mut parts);
+                    if res.is_err() {
+                        break;
+                    }
                 }
-                Sink::Udp { sock, to } => {
+                res
+            }
+            Sink::Udp { sock, to } => {
+                let mut res = Ok(());
+                for p in &packets {
+                    if stop.load(Ordering::Relaxed) {
+                        return;
+                    }
                     buf.clear();
                     buf.extend_from_slice(p.head());
                     buf.extend_from_slice(p.payload);
-                    sock.send_to(&buf, to).map(|_| ())
+                    res = sock.send_to(&buf, to).map(|_| ());
+                    if res.is_err() {
+                        break;
+                    }
                 }
-            };
-            if res.is_err() {
-                stop.store(true, Ordering::Relaxed);
-                // Wake the control reader too: otherwise a failed sender can retain the
-                // connection and its exclusive speaker lease until the idle timeout.
-                let _ = w
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .shutdown(Shutdown::Both);
-                return;
+                res
             }
+        };
+        if res.is_err() {
+            stop.store(true, Ordering::Relaxed);
+            // Wake the control reader too: otherwise a failed sender can retain the
+            // connection and its exclusive speaker lease until the idle timeout.
+            let _ = w
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .shutdown(Shutdown::Both);
+            return;
         }
     }
 }

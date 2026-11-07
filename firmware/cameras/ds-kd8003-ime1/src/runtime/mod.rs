@@ -661,28 +661,40 @@ fn video_loop(g: Arc<Device>, chn: usize, hub: Arc<Hub>) {
             thread::sleep(Duration::from_millis(200));
             continue;
         }
-        let (mut len, mut pts) = (0u32, 0u64);
-        let rc = {
+        let (mut len, mut pts, mut key) = (0u32, 0u64, 0i32);
+        let (rc, fd) = {
             let _guard = g.video_lock[chn].lock().unwrap();
             // SAFETY: buf has AU_CAP bytes; the channel is live while its lock is held.
             unsafe {
-                gm_video_chn(
+                let rc = gm_video_chn(
                     chn as i32,
                     buf.as_mut_ptr(),
                     AU_CAP as u32,
                     &mut len,
                     &mut pts,
-                )
+                    &mut key,
+                );
+                (rc, if rc == 1 { gm_video_fd(chn as i32) } else { -1 })
             }
         };
         match rc {
             0 => {
-                let au = &buf[..len as usize];
-                let key = au
-                    .windows(4)
-                    .any(|w| w[0] == 0 && w[1] == 0 && w[2] == 1 && (w[3] & 31) == 5);
-                hub.publish(key, pts, au.to_vec());
+                hub.publish(key != 0, pts, buf[..len as usize].to_vec());
                 g.st.lock().unwrap().stream_frames[chn] += 1;
+            }
+            // Nothing ready: sleep on the encoder's descriptor (outside the channel lock, bounded so a
+            // reconfigured channel is picked up) instead of asking again every 5 ms.
+            1 if fd >= 0 => {
+                let mut p = libc::pollfd {
+                    fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                // SAFETY: one valid pollfd.
+                let r = unsafe { libc::poll(&mut p, 1, 100) };
+                if r < 0 || p.revents & (libc::POLLERR | libc::POLLNVAL) != 0 {
+                    thread::sleep(Duration::from_millis(5));
+                }
             }
             1 => thread::sleep(Duration::from_millis(5)),
             -9 => {
