@@ -62,7 +62,9 @@ pub enum Request {
     Velocity(Velocity),
     Home,
     Preset(PresetName),
+    /// Saves the current position under this name, creating the preset if the store has room.
     SavePreset(PresetName),
+    RemovePreset(PresetName),
     Region {
         start: (u8, u8),
         end: (u8, u8),
@@ -100,6 +102,10 @@ enum Wire {
         name: String,
     },
     SavePreset {
+        v: u8,
+        name: String,
+    },
+    RemovePreset {
         v: u8,
         name: String,
     },
@@ -160,6 +166,7 @@ impl Request {
             Wire::Home { v } => (v, Self::Home),
             Wire::Preset { v, name } => (v, Self::Preset(PresetName::parse(&name)?)),
             Wire::SavePreset { v, name } => (v, Self::SavePreset(PresetName::parse(&name)?)),
+            Wire::RemovePreset { v, name } => (v, Self::RemovePreset(PresetName::parse(&name)?)),
             Wire::Velocity { v, pan, tilt, zoom } => {
                 let velocity = Velocity { pan, tilt, zoom }.validate()?;
                 (
@@ -239,6 +246,10 @@ mod tests {
         assert_eq!(
             Request::parse(r#"{"v":1,"op":"point","x":200,"y":150}"#).unwrap(),
             Request::Point { x: 200, y: 150 }
+        );
+        assert_eq!(
+            Request::parse(r#"{"v":1,"op":"remove_preset","name":"Door"}"#).unwrap(),
+            Request::RemovePreset(PresetName::parse("Door").unwrap())
         );
     }
     #[test]

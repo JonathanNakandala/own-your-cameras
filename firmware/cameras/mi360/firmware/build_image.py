@@ -33,7 +33,7 @@ OTA_QUIESCE_REPLACEMENT = OTA_QUIESCE_ORIGINAL.replace(
     b"        PERP_BASE=/tmp/perp perpctl d miio_ota || :\n",
 )
 REPLACED_STOCK = frozenset({"etc/init.d/S00init", "etc/init.d/S60service", "bin/camera-update", "bin/camera-mtd-write"})
-RETAINED_STOCK_COUNT = 729
+RETAINED_STOCK_COUNT = 711
 START, SIZE, FLASH_SIZE = 0xAA0000, 0x470000, 0x1000000
 TIMESTAMP = 1792972800
 MARKER = b"# START OF DATA - DO NOT MODIFY\n#\n"
@@ -50,6 +50,20 @@ REMOVE_BINS = frozenset({
     "miio_nas_syncer", "miio_ota", "miio_pincode", "miio_record", "miio_recv_line",
     "miio_sdcard", "miio_send_line", "mortoxc", "mortoxd", "network_governor.sh",
     "pre-ota.sh", "rsa_verify", "dual_system_check.sh", "fsck_check.sh",
+})
+# Reviewed vendor libraries nothing in the image loads (Alex, 2026-11-07): the person-detection stack, the
+# cloud streaming library, the vendor Opus (cam links its own) and the stock A/V board library. cam dlopens
+# only libimp and libalog (libimp loads libaudioProcess); the kept stock programs' DT_NEEDED closures and
+# ROOTFS's (hostapd/wpa_supplicant need libnl.so, curl needs libcurl) never reach them. Removing them makes
+# room for the firmware in this slot only; the vendor firmware keeps them.
+REMOVE_LIBS = frozenset({
+    "libboardav.so", "libboardav.so.1", "libboardav.so.1.0.0",
+    "libgomp.so", "libgomp.so.1", "libgomp.so.1.0.0",
+    "libjzdl.so", "libmiss.so",
+    "libmxu_contrib.so", "libmxu_core.so", "libmxu_imgproc.so", "libmxu_merge.so",
+    "libmxu_objdetect.so", "libmxu_video.so",
+    "libopus.so", "libopus.so.0", "libopus.so.0.5.4",
+    "libpersonDet_inf.so",
 })
 PARTITIONS = (
     ("BOOT", 0, 0x50000), ("ROOTFS", 0x50000, 0x2D0000),
@@ -191,17 +205,18 @@ def camera_update_script(original: bytes, writer_path: str = "/mnt/usr/bin/camer
 def removed_paths(before: dict) -> set[str]:
     init = {name for name in before if name.startswith("etc/init.d/S") and name.rsplit("/", 1)[-1] not in KEEP_INIT}
     bins = {f"bin/{name}" for name in REMOVE_BINS}
-    missing = bins - before.keys()
+    libs = {f"lib/{name}" for name in REMOVE_LIBS}
+    missing = (bins | libs) - before.keys()
     if missing:
         raise ValueError(f"reviewed removal names missing from exact base: {sorted(missing)}")
-    return init | bins
+    return init | bins | libs
 
 
 def retained_scope(before: dict, removed: set[str], files: dict) -> tuple[set[str], set[str]]:
     replaced = before.keys() & files.keys()
     retained = before.keys() - removed - replaced
     if replaced != REPLACED_STOCK or len(retained) != RETAINED_STOCK_COUNT:
-        raise ValueError("expected exactly four stock replacements and729 retained paths")
+        raise ValueError(f"expected exactly four stock replacements and {RETAINED_STOCK_COUNT} retained paths")
     return replaced, retained
 
 

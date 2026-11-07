@@ -1,5 +1,5 @@
-//! The capture → videoproc → two H.264 encoders graph: built from a config, run, and
-//! torn down in reverse whatever fails. All hardware access goes through the `hdal` backend traits.
+//! The capture → videoproc → two H.264 encoders graph, plus a slow JPEG encoder for snapshots: built
+//! from a config, run, and torn down in reverse whatever fails. All hardware access goes through the `hdal` backend traits.
 
 use std::io::Write;
 
@@ -26,6 +26,9 @@ pub struct PipelineConfig {
     pub streams: [EncSpec; 2],
     /// Largest size and bitrate each encoder may later be retuned to (its path config).
     pub envelopes: [EncSpec; 2],
+    /// Snapshots: proc output 2 feeds JPEG encoder 2 at this size, [`SNAPSHOT_FPS`] pictures a second
+    /// while the camera streams; a wanted snapshot is the next picture.
+    pub snapshot: Option<Dim>,
 }
 
 /// Main-stream parameters that may change while the graph runs. The GOP follows the frame rate (one
@@ -87,7 +90,23 @@ pub trait Tuner {
     fn report(&mut self, tuned: Tuned);
     /// Every microphone capture frame's level (dBFS RMS), for homing by ear.
     fn hear(&mut self, _dbfs: f32) {}
+    /// Someone waits for a JPEG of the main stream.
+    fn snapshot_wanted(&mut self) -> bool {
+        false
+    }
+    /// The JPEG (or why there is none) for everyone waiting.
+    fn snapshot_done(&mut self, _result: Result<Vec<u8>, String>) {}
 }
+
+/// JPEG quality of snapshots (1–100).
+const SNAPSHOT_QUALITY: u32 = 70;
+/// The snapshot encoder's rate: a snapshot waits at most one period. It runs all the time because a
+/// stopped and restarted JPEG path delivered no picture for about half of the restarts on the camera.
+pub const SNAPSHOT_FPS: u32 = 2;
+/// A wanted snapshot with no picture this long is refused.
+const SNAPSHOT_WAIT_MS: u64 = 1500;
+/// The snapshot path's proc output and encoder index.
+const SNAPSHOT_SLOT: u32 = 2;
 
 /// Stock values throughout, for the dump, the diagnostic serve and tests that do not tune.
 pub struct Untuned;
@@ -136,6 +155,7 @@ impl PipelineConfig {
                 },
                 sub,
             ],
+            snapshot: Some(MAIN_SIZES[2]),
         }
     }
 }
@@ -210,6 +230,18 @@ struct Graph {
     main: Option<EncSpec>,
     /// Why the requested main stream was replaced by the stock one at build.
     main_refused: Option<Error>,
+    jpeg: Jpeg,
+}
+
+/// The snapshot path, opened and bound with the graph and started once the camera streams.
+#[derive(Default)]
+struct Jpeg {
+    proc: Option<PathId>,
+    enc: Option<PathId>,
+    bound: bool,
+    /// Fully configured and bound.
+    ready: bool,
+    running: bool,
 }
 
 impl Graph {
@@ -299,6 +331,15 @@ impl Graph {
             step!(hw.bind_proc_enc(i, i));
             self.enc_bound.push(i);
         }
+        // A snapshot path the driver refuses costs snapshots, never video.
+        if let Some(dim) = cfg.snapshot {
+            if !keep_going() {
+                return Ok(false);
+            }
+            if let Err(e) = self.build_jpeg(hw, dim) {
+                eprintln!("snapshot: path unavailable: {e}");
+            }
+        }
 
         // Downstream first, so no frame is produced before its consumer runs.
         for e in self.enc.clone() {
@@ -312,6 +353,34 @@ impl Graph {
         step!(hw.videocap_start(io));
         self.cap_started = true;
         Ok(true)
+    }
+
+    fn build_jpeg<B: Backend + EncBackend>(&mut self, hw: &mut B, dim: Dim) -> Result<(), Error> {
+        let p = hw.videoproc_open_out(SNAPSHOT_SLOT)?;
+        self.jpeg.proc = Some(p);
+        hw.videoproc_set_out(p, dim, SNAPSHOT_FPS)?;
+        let e = hw.videoenc_open(SNAPSHOT_SLOT)?;
+        self.jpeg.enc = Some(e);
+        hw.videoenc_configure_jpeg(e, dim, SNAPSHOT_QUALITY)?;
+        hw.bind_proc_enc(SNAPSHOT_SLOT, SNAPSHOT_SLOT)?;
+        self.jpeg.bound = true;
+        self.jpeg.ready = true;
+        Ok(())
+    }
+
+    /// Starts the snapshot path, returning its encoder.
+    fn start_jpeg<B: Backend + EncBackend>(&mut self, hw: &mut B) -> Result<PathId, Error> {
+        let (true, Some(p), Some(e)) = (self.jpeg.ready, self.jpeg.proc, self.jpeg.enc) else {
+            return Err(Error {
+                step: Step::VideoencConfigureJpeg,
+                code: -19,
+            });
+        };
+        // Downstream first; whatever started is stopped at teardown.
+        self.jpeg.running = true;
+        hw.videoenc_start(e)?;
+        hw.videoproc_start(p)?;
+        Ok(e)
     }
 
     /// Restarts the main path alone with `spec` (videoproc output size/rate and encoder parameters),
@@ -370,8 +439,15 @@ impl Graph {
         if let (true, Some(io)) = (self.cap_started, self.cap_io) {
             note(hw.videocap_stop(io));
         }
+        let jpeg = std::mem::take(&mut self.jpeg);
+        if let (true, Some(p)) = (jpeg.running, jpeg.proc) {
+            note(hw.videoproc_stop(p));
+        }
         for p in self.proc_started.drain(..) {
             note(hw.videoproc_stop(p));
+        }
+        if let (true, Some(e)) = (jpeg.running, jpeg.enc) {
+            note(hw.videoenc_stop(e));
         }
         for e in self.enc_started.drain(..) {
             note(hw.videoenc_stop(e));
@@ -382,10 +458,13 @@ impl Graph {
         for o in self.enc_bound.drain(..) {
             note(hw.unbind_proc_enc(o));
         }
-        for e in self.enc.drain(..) {
+        if jpeg.bound {
+            note(hw.unbind_proc_enc(SNAPSHOT_SLOT));
+        }
+        for e in self.enc.drain(..).chain(jpeg.enc) {
             note(hw.videoenc_close(e));
         }
-        for p in self.proc_out.drain(..) {
+        for p in self.proc_out.drain(..).chain(jpeg.proc) {
             note(hw.videoproc_close(p));
         }
         if let Some(p) = self.proc_ctrl.take() {
@@ -439,6 +518,11 @@ where
     B: Backend + EncBackend,
     W: Write,
 {
+    // Diagnostics build no snapshot path.
+    let cfg = &PipelineConfig {
+        snapshot: None,
+        ..cfg.clone()
+    };
     let mut g = Graph::default();
     let ran = (|| {
         g.build(hw, cfg, None, &mut || true)?;
@@ -482,6 +566,10 @@ pub fn stream<B>(
 where
     B: Backend + EncBackend,
 {
+    let cfg = &PipelineConfig {
+        snapshot: None,
+        ..cfg.clone()
+    };
     let mut g = Graph::default();
     let ran = (|| {
         if !g.build(hw, cfg, None, keep_going)? {
@@ -649,12 +737,51 @@ where
             .main
             .filter(|m| *m != cfg.streams[0])
             .map(|_| (start, cfg.streams[0]));
+        // The snapshot encoder is polled on its own: whatever goes wrong with it costs snapshots only.
+        let mut jpeg = match g.start_jpeg(hw) {
+            Ok(e) => Some(e),
+            Err(e) => {
+                eprintln!("snapshot: path did not start: {e}");
+                None
+            }
+        };
+        let mut snapshot_until: Option<u64> = None;
         while keep_going() {
+            if let Some(e) = jpeg {
+                match hw.videoenc_recv(&[e], 0) {
+                    // The next picture serves everyone waiting; the others are dropped.
+                    Ok(pictures) => {
+                        if let Some(f) = pictures.into_iter().last()
+                            && snapshot_until.take().is_some()
+                        {
+                            tuner.snapshot_done(Ok(f.data));
+                        }
+                    }
+                    Err(err) => {
+                        eprintln!("snapshot: encoder failed, snapshots off: {err}");
+                        jpeg = None;
+                        if snapshot_until.take().is_some() {
+                            tuner.snapshot_done(Err(format!("snapshot: {err}")));
+                        }
+                    }
+                }
+            }
             for f in hw.videoenc_recv(&g.enc, 10)? {
                 if let Some(t) = last.get_mut(f.stream) {
                     *t = hw.now_ms();
                 }
                 on_video(f);
+            }
+            if snapshot_until.is_none() && tuner.snapshot_wanted() {
+                if jpeg.is_some() {
+                    snapshot_until = Some(hw.now_ms() + SNAPSHOT_WAIT_MS);
+                } else {
+                    tuner.snapshot_done(Err("snapshot: no snapshot encoder".into()));
+                }
+            } else if snapshot_until.is_some_and(|until| hw.now_ms() > until) {
+                snapshot_until = None;
+                eprintln!("snapshot: no picture in {SNAPSHOT_WAIT_MS} ms");
+                tuner.snapshot_done(Err("snapshot: the encoder delivered no picture".into()));
             }
             if let Some((since, fallback)) = probation {
                 let now = hw.now_ms();

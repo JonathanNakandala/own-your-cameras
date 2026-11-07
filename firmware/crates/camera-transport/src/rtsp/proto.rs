@@ -359,13 +359,13 @@ mod tests {
 
     #[test]
     fn parses_a_request_and_its_length() {
-        let raw = b"DESCRIBE rtsp://cam:554/Preview_01_sub RTSP/1.0\r\nCSeq: 2\r\nAccept: application/sdp\r\n\r\nPLAY";
+        let raw = b"DESCRIBE rtsp://cam:554/sub RTSP/1.0\r\nCSeq: 2\r\nAccept: application/sdp\r\n\r\nPLAY";
         let Parsed::Request(r, n) = parse_request(raw) else {
             panic!("not parsed")
         };
         assert_eq!(r.method, "DESCRIBE");
         assert_eq!(r.cseq(), "2");
-        assert_eq!(r.path(), "Preview_01_sub");
+        assert_eq!(r.path(), "sub");
         assert_eq!(&raw[n..], b"PLAY");
     }
 
@@ -409,14 +409,8 @@ mod tests {
             uri: u.into(),
             headers: vec![],
         };
-        assert_eq!(
-            mk("rtsp://u:p@h:554/Preview_01_main?x=1").path(),
-            "Preview_01_main"
-        );
-        assert_eq!(
-            mk("rtsp://h/Preview_01_main/trackID=0").path(),
-            "Preview_01_main/trackID=0"
-        );
+        assert_eq!(mk("rtsp://u:p@h:554/main?x=1").path(), "main");
+        assert_eq!(mk("rtsp://h/main/trackID=0").path(), "main/trackID=0");
         assert_eq!(mk("*").path(), "");
     }
 

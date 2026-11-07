@@ -16,6 +16,7 @@ path = "src/main.rs"
 [dependencies]
 camera-opus = { path = "../../crates/camera-opus" }
 camera-transport = { path = "../../crates/camera-transport" }
+camera-onvif = { path = "../../crates/camera-onvif" }
 keypad-protocol = { path = "../../crates/keypad-protocol" }
 libc = "0.2"
 zeroize = { version = "=1.9.1", default-features = false, features = ["alloc"] }

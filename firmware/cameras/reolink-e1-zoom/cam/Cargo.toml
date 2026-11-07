@@ -14,6 +14,7 @@ path = "../image/cam-launch.rs"
 camera-transport = { path = "../../../crates/camera-transport" }
 camera-control = { path = "../../../crates/camera-control" }
 camera-opus = { path = "../../../crates/camera-opus" }
+camera-onvif = { path = "../../../crates/camera-onvif" }
 hdal = { path = "../hdal" }
 libc = "0.2"
 thiserror = "2"

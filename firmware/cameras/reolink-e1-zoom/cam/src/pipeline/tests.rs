@@ -111,6 +111,7 @@ fn main_is_the_full_4_3_frame_and_sub_keeps_the_vendor_settings() {
             gop: 15
         }
     );
+    // The diagnostic dump builds no snapshot path.
     assert_eq!(hw.binds, [(0, 0), (1, 1)]);
     // Bound to videoproc: frames must not queue for a user pull.
     assert_eq!(hw.cap_out_depth, Some(0));
@@ -460,6 +461,9 @@ struct Script {
     requests: Vec<(usize, MediaTuning)>,
     polls: usize,
     reports: Vec<Tuned>,
+    /// Polls from which a snapshot is wanted, one each, and what each got.
+    snapshot_at: Vec<usize>,
+    snapshots: Vec<Result<Vec<u8>, String>>,
 }
 
 impl Script {
@@ -469,6 +473,15 @@ impl Script {
             requests,
             polls: 0,
             reports: Vec::new(),
+            snapshot_at: Vec::new(),
+            snapshots: Vec::new(),
+        }
+    }
+
+    fn snapshots_at(polls: &[usize]) -> Self {
+        Self {
+            snapshot_at: polls.to_vec(),
+            ..Self::new(Vec::new())
         }
     }
 }
@@ -484,6 +497,13 @@ impl Tuner for Script {
     }
     fn report(&mut self, tuned: Tuned) {
         self.reports.push(tuned);
+    }
+    fn snapshot_wanted(&mut self) -> bool {
+        self.snapshot_at.first().is_some_and(|at| *at <= self.polls)
+    }
+    fn snapshot_done(&mut self, result: Result<Vec<u8>, String>) {
+        self.snapshot_at.remove(0);
+        self.snapshots.push(result);
     }
 }
 
@@ -579,7 +599,8 @@ fn audio_tuning_is_applied_between_frames_on_the_media_thread() {
     );
     for (call, n) in [
         ("audio_out_start", 1),
-        ("videoenc_stop", 2),
+        // Main, sub and the snapshot encoder, once each at teardown.
+        ("videoenc_stop", 3),
         ("videocap_start", 1),
     ] {
         assert_eq!(hw.calls.iter().filter(|c| **c == call).count(), n, "{call}");
@@ -690,15 +711,18 @@ fn a_main_retune_restarts_only_the_main_path_and_opens_with_a_key_frame() {
     for c in ["videocap_start", "audio_cap_start", "audio_out_start"] {
         assert_eq!(hw.calls.iter().filter(|x| **x == c).count(), 1, "{c}");
     }
+    // Main, sub and the snapshot encoder at startup, main again for the retune.
     assert_eq!(
         hw.calls.iter().filter(|c| **c == "videoenc_start").count(),
-        3
+        4
     );
     // First main frame after the restart is a key frame; the sub stream continued meanwhile.
+    // Each loop turn polls the snapshot encoder (no wait) and then the video encoders (10 ms).
     let recv_before = hw.calls[..at]
         .iter()
         .filter(|c| **c == "videoenc_recv")
-        .count();
+        .count()
+        / 2;
     let main_after: Vec<_> = frames
         .iter()
         .filter(|f| f.stream == 0 && f.pts_us > 0)
@@ -713,8 +737,8 @@ fn a_main_retune_restarts_only_the_main_path_and_opens_with_a_key_frame() {
 
 #[test]
 fn a_refused_main_retune_restores_the_previous_stream() {
-    // videoproc_set_out: two at build, the third is the retune.
-    let mut hw = Fake::default().failing_nth(Step::VideoprocSetOut, 3, -22);
+    // videoproc_set_out: three at build (main, sub, snapshot), the fourth is the retune.
+    let mut hw = Fake::default().failing_nth(Step::VideoprocSetOut, 4, -22);
     let mut tuner = Script::new(vec![(
         5,
         MediaTuning {
@@ -733,8 +757,8 @@ fn a_refused_main_retune_restores_the_previous_stream() {
 
 #[test]
 fn a_main_path_left_stopped_is_a_media_error_with_exact_cleanup() {
-    // videoenc_start: two at build, the third restarts main.
-    let mut hw = Fake::default().failing_nth(Step::VideoencStart, 3, -5);
+    // videoenc_start: main and sub at build, the snapshot encoder, then the fourth restarts main.
+    let mut hw = Fake::default().failing_nth(Step::VideoencStart, 4, -5);
     let mut tuner = Script::new(vec![(
         5,
         MediaTuning {
@@ -745,14 +769,15 @@ fn a_main_path_left_stopped_is_a_media_error_with_exact_cleanup() {
     let err = run_tuned(&mut hw, &mut tuner, 20).unwrap_err();
     assert_eq!(err.primary.step, Step::VideoencStart);
     assert!(err.cleanup.is_empty(), "{:?}", err.cleanup);
-    // main was stopped by the retune and is not stopped again; sub is stopped once by the teardown.
+    // main was stopped by the retune and is not stopped again; sub and the snapshot path are stopped once
+    // by the teardown.
     assert_eq!(
         hw.calls.iter().filter(|c| **c == "videoenc_stop").count(),
-        2
+        3
     );
     assert_eq!(
         hw.calls.iter().filter(|c| **c == "videoproc_stop").count(),
-        2
+        3
     );
     assert_eq!(hw.calls.last(), Some(&"common_uninit"));
 }
@@ -883,4 +908,67 @@ fn a_sustainable_main_change_survives_probation() {
         tuner.reports.last(),
         Some(Tuned::Main { applied, refused: None, .. }) if applied.fps == 15 && applied.dim.w == 2592
     ));
+}
+
+fn count(hw: &Fake, call: &str) -> usize {
+    hw.calls.iter().filter(|c| **c == call).count()
+}
+
+#[test]
+fn snapshots_are_the_next_picture_of_the_running_jpeg_path() {
+    let mut hw = Fake::default();
+    let mut tuner = Script::snapshots_at(&[3, 60]);
+    let frames = run_tuned(&mut hw, &mut tuner, 120).expect("media");
+    assert_eq!(tuner.snapshots.len(), 2);
+    for shot in &tuner.snapshots {
+        assert!(
+            shot.as_ref().is_ok_and(|j| j.starts_with(&[0xff, 0xd8])),
+            "{shot:?}"
+        );
+    }
+    assert!(
+        frames.iter().all(|f| f.stream < 2),
+        "no JPEG reaches the video consumer"
+    );
+    assert_eq!(hw.jpegs, [(2, hdal::Dim { w: 1280, h: 960 }, 70)]);
+    // Started once with the stream, stopped once with the graph.
+    assert_eq!(count(&hw, "videoenc_start"), 3);
+    assert_eq!(count(&hw, "videoenc_stop"), 3);
+    assert!(hw.running.is_empty());
+}
+
+#[test]
+fn a_refused_snapshot_path_keeps_video_and_refuses_snapshots() {
+    let mut hw = Fake::failing(Step::VideoencConfigureJpeg, -35);
+    let mut tuner = Script::snapshots_at(&[3]);
+    let frames = run_tuned(&mut hw, &mut tuner, 40).expect("video still runs");
+    assert!(frames.iter().any(|f| f.stream == 0) && frames.iter().any(|f| f.stream == 1));
+    assert!(matches!(tuner.snapshots.as_slice(), [Err(_)]));
+    // What was opened of the snapshot path is closed with the graph.
+    assert_eq!(count(&hw, "videoenc_close"), 3);
+    assert_eq!(count(&hw, "videoproc_close"), 4);
+}
+
+#[test]
+fn a_silent_jpeg_encoder_refuses_the_wait_and_video_runs_on() {
+    let control = std::sync::Arc::new(hdal::fake::Control::default());
+    control
+        .muted
+        .store(1 << 2, std::sync::atomic::Ordering::Release);
+    let mut hw = Fake::default();
+    hw.control = Some(control);
+    let mut tuner = Script::snapshots_at(&[3]);
+    let frames = run_tuned(&mut hw, &mut tuner, 400).expect("media");
+    assert!(matches!(tuner.snapshots.as_slice(), [Err(_)]));
+    assert!(frames.iter().any(|f| f.stream == 0 && f.pts_us > 2_000_000));
+}
+
+#[test]
+fn a_failing_jpeg_encoder_turns_snapshots_off_and_video_runs_on() {
+    // The first receive of the loop is the snapshot encoder's.
+    let mut hw = Fake::default().failing_nth(Step::VideoencRecv, 1, -5);
+    let mut tuner = Script::snapshots_at(&[3]);
+    let frames = run_tuned(&mut hw, &mut tuner, 40).expect("video is not a snapshot's casualty");
+    assert!(frames.iter().any(|f| f.stream == 0) && frames.iter().any(|f| f.stream == 1));
+    assert!(matches!(tuner.snapshots.as_slice(), [Err(_)]));
 }

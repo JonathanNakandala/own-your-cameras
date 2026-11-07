@@ -519,7 +519,7 @@ def main() -> int:
             raise VerificationError("research output directory must be private and owned by this user")
         output_ready = True
         credential = credentials(args, limits)
-        for name, path in [("main", "Preview_01_main"), ("sub", "Preview_01_sub")]:
+        for name, path in [("main", "main"), ("sub", "sub")]:
             recording, report = stream(args.host, args.port, path, credential, limits, args.replay_microphone and name == "main")
             saved_bytes += len(recording.video) + len(recording.audio)
             if saved_bytes > 2 * 1024 * 1024:

@@ -126,7 +126,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--host', required=True, help="the camera's address")
     parser.add_argument('--port', type=int, default=554)
-    parser.add_argument('--path', choices=['Preview_01_main', 'Preview_01_sub'], default='Preview_01_sub')
+    parser.add_argument('--path', choices=['main', 'sub'], default='sub')
     parser.add_argument('--auth', type=Path, help='file containing existing user:password')
     parser.add_argument('opus', type=Path, help='Ogg Opus file made from an existing real recording')
     args = parser.parse_args()

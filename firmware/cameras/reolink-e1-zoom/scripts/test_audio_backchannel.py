@@ -34,7 +34,7 @@ class SenderTests(unittest.TestCase):
                 thread.start()
                 try:
                     with self.assertRaisesRegex(ValueError, 'RTSP response'):
-                        sender.send_opus('127.0.0.1', listener.getsockname()[1], 'Preview_01_sub', [b'\xf8'])
+                        sender.send_opus('127.0.0.1', listener.getsockname()[1], 'sub', [b'\xf8'])
                 finally:
                     thread.join(timeout=3)
                 self.assertFalse(thread.is_alive())
@@ -75,7 +75,7 @@ class SenderTests(unittest.TestCase):
             thread.start()
             # Synthetic bytes are confined to this host-only network test: two 20 ms CELT TOC bytes.
             payload = [b'\xf8\x01\x02', b'\xf8\x03']
-            result = sender.send_opus('127.0.0.1', port, 'Preview_01_sub', payload)
+            result = sender.send_opus('127.0.0.1', port, 'sub', payload)
             thread.join(timeout=4)
             self.assertFalse(thread.is_alive())
             self.assertEqual(errors, [])

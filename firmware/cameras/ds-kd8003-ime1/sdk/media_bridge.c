@@ -276,11 +276,40 @@ int gm_audio(unsigned char *pcm,unsigned cap,unsigned *len,u64 *pts){
  st=a.ai_release(0,0,&f,&e);if(st){uncertain=1;gm_message("ai_release",st);return -9;}
  return bad?-3:0;
 }
+/* ---- Snapshot: JPEG VENC chn 2 on VPSS chn 0 (the full main picture), receiving one picture per
+ * request. Created once after the graph; a refusal costs snapshots, never video. */
+static int jpeg_venc,jpeg_link;
+static v3_sys_bind jpeg_src={V3_SYS_MOD_VPSS,0,0},jpeg_dst={V3_SYS_MOD_VENC,0,2};
+int gm_jpeg_open(void){
+ if(uncertain||jpeg_venc||!channel)return -1;
+ unsigned w=p.encoder.attrib.h264.pic.width,h=p.encoder.attrib.h264.pic.height;
+ v3_venc_chn e;memset(&e,0,sizeof e);e.attrib.codec=V3_VENC_CODEC_JPEG;
+ e.attrib.jpg.maxPic.width=e.attrib.jpg.pic.width=w;e.attrib.jpg.maxPic.height=e.attrib.jpg.pic.height=h;
+ e.attrib.jpg.bufSize=((w*h)/2+63)&~63u;e.attrib.jpg.byFrame=1;
+ STEP("jpeg_create",a.venc_create(2,&e));jpeg_venc=1;
+ STEP("jpeg_bind",a.bind(&jpeg_src,&jpeg_dst));jpeg_link=1;
+ return 0;
+}
+/* One JPEG into buf within wait_ms: 0 ok, -4 none in time, negative error. A picture finished while
+ * stopping is drained, so it never answers a later request. The caller serializes shots; the runtime
+ * never calls gm_stop (teardown is a reboot), so no shot races the teardown. */
+int gm_jpeg_shot(unsigned char *buf,unsigned cap,unsigned *len,unsigned wait_ms){
+ if(uncertain||!jpeg_link)return -1;
+ /* StartRecvPicEx is not used: loader_compat does not translate its ioctl (EPERM on the panel). */
+ int rc=1,st=a.venc_start(2);if(st){gm_message("jpeg_start",st);return st;}
+ u64 pts;int key;
+ for(unsigned t=0;rc==1&&t<=wait_ms;t+=10){rc=gm_video_chn(2,buf,cap,len,&pts,&key);if(rc==1)usleep(10000);}
+ int stop=a.venc_stop(2);if(stop)gm_message("jpeg_stop",stop);
+ unsigned spare=rc==0?*len:0,late;
+ if(!stop&&cap>spare)(void)gm_video_chn(2,buf+spare,cap-spare,&late,&pts,&key);
+ return rc==1?-4:rc?rc:stop;
+}
 /* Reverse teardown of whatever started; stops at the first failure (reboot recovers). */
 int gm_stop(void){
  if(uncertain){gm_message("lease_uncertain_reset_required",1);return -1;}
 #define CLEAN(flag,label,call) do{if(flag){int s_=(call);flag=0;if(s_){gm_message(label,s_);gm_message("teardown_reset_required",1);return -1;}}}while(0)
  CLEAN(ai_chn,"ai_chn_disable",a.ai_chn_disable(0,0));CLEAN(ai_dev,"ai_disable",a.ai_disable(0));
+ CLEAN(jpeg_link,"jpeg_unbind",a.unbind(&jpeg_src,&jpeg_dst));CLEAN(jpeg_venc,"jpeg_destroy",a.venc_destroy(2));
  CLEAN(receive,"venc_stop",a.venc_stop(0));CLEAN(enc_link,"encoder_unbind",a.unbind(&source_vpss,&dest_venc));CLEAN(venc,"venc_destroy",a.venc_destroy(0));CLEAN(channel,"vpss_disable",a.vpss_disable(0,0));CLEAN(vi_link,"vi_unbind",a.unbind(&source_vi,&dest_vpss));CLEAN(started,"vpss_stop",a.vpss_stop(0));CLEAN(group,"vpss_destroy",a.vpss_destroy(0));
  /* Stock ISP threads (ISP_Create) have no qualified stop here: leave VI/SYS/VB for the reboot. */
  /* Stock ISP stop: ISP_SetKeyParam key 1 value 0 -> isp_stop (HI_MPI_ISP_Exit + cancel its two threads),

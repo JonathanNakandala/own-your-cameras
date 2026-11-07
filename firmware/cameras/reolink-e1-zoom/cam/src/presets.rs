@@ -1,11 +1,14 @@
-//! The preset table the hardware thread moves to and saves into: `cam.toml`'s presets with the saved positions
-//! of the daemon-owned overlay file applied by name. `cam.toml` is never written; a hand edit of a preset there
-//! is newer than an earlier save and wins over it.
+//! The preset table the hardware thread moves to, saves into and removes from: `cam.toml`'s presets with the
+//! daemon-owned overlay file applied by name. The overlay holds saved positions (over a `cam.toml` preset or
+//! for a preset created at runtime) and removals of `cam.toml` presets. `cam.toml` is never written; a hand
+//! edit of a preset there is newer than an earlier save or removal and wins over it.
 use crate::settings::Disk;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 const MAX_FILE: usize = 16 * 1024;
+/// Presets in force at most, `cam.toml`'s and created ones together (also `cam.toml`'s own limit).
+pub const MAX_PRESETS: usize = 32;
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -28,14 +31,22 @@ pub fn check(name: &str, p: &Preset) -> Result<(), String> {
     Ok(())
 }
 
-/// One overlay entry: the saved position and the `cam.toml` position it replaced.
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+/// One overlay entry: a saved position and the `cam.toml` position it replaced (none for a preset created at
+/// runtime), or the removal of a `cam.toml` preset (its position is then `base`'s).
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct Entry {
     pan: u32,
     tilt: u32,
     zoom: u32,
-    base: Preset,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    base: Option<Preset>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    removed: bool,
 }
 
 impl Entry {
@@ -48,10 +59,16 @@ impl Entry {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Change {
+    At(Preset),
+    Removed,
+}
+
 pub struct Presets {
     base: BTreeMap<String, Preset>,
-    /// Saved positions in force, each for a name of `base`.
-    saved: BTreeMap<String, Preset>,
+    /// Overlay changes in force: saved positions and removals of `base` names.
+    overlay: BTreeMap<String, Change>,
     disk: Box<dyn Disk>,
 }
 
@@ -71,62 +88,143 @@ impl Presets {
                 BTreeMap::new()
             }
         };
-        let mut saved = BTreeMap::new();
+        let mut overlay = BTreeMap::new();
         for (name, e) in entries {
-            match base.get(&name) {
-                None => problems.push(format!("saved preset {name} ignored: not in cam.toml")),
-                Some(b) if *b != e.base => problems.push(format!(
+            let change = if e.removed {
+                Change::Removed
+            } else {
+                Change::At(e.at())
+            };
+            match (base.get(&name), e.base) {
+                (Some(b), Some(replaced)) if *b == replaced => {
+                    overlay.insert(name, change);
+                }
+                (Some(_), Some(_)) => problems.push(format!(
                     "saved preset {name} ignored: edited in cam.toml since the save"
                 )),
-                Some(_) => {
-                    saved.insert(name, e.at());
+                (Some(_), None) => problems.push(format!(
+                    "saved preset {name} ignored: cam.toml defines it since"
+                )),
+                (None, Some(_)) => {
+                    problems.push(format!("saved preset {name} ignored: not in cam.toml"))
+                }
+                (None, None) if e.removed => {
+                    problems.push(format!("removal of {name} ignored: not in cam.toml"))
+                }
+                (None, None) => {
+                    overlay.insert(name, change);
                 }
             }
         }
-        (Self { base, saved, disk }, problems)
+        let mut presets = Self {
+            base,
+            overlay,
+            disk,
+        };
+        // A hand edit can push the total over the limit: created presets beyond it are dropped.
+        while presets.names().len() > MAX_PRESETS {
+            let Some(name) = presets
+                .overlay
+                .iter()
+                .rev()
+                .find(|(n, c)| matches!(c, Change::At(_)) && !presets.base.contains_key(*n))
+                .map(|(n, _)| n.clone())
+            else {
+                break;
+            };
+            problems.push(format!(
+                "saved preset {name} ignored: over {MAX_PRESETS} presets"
+            ));
+            presets.overlay.remove(&name);
+        }
+        (presets, problems)
     }
 
-    /// The position in force for `name`: the saved one, else `cam.toml`'s.
+    /// The position in force for `name`: the saved one, else `cam.toml`'s; `None` once removed.
     pub fn get(&self, name: &str) -> Option<Preset> {
-        self.saved
-            .get(name)
-            .or_else(|| self.base.get(name))
-            .copied()
+        match self.overlay.get(name) {
+            Some(Change::At(p)) => Some(*p),
+            Some(Change::Removed) => None,
+            None => self.base.get(name).copied(),
+        }
     }
 
-    /// Writes `at` as `name`'s position to the overlay now, then puts it in force. On an error nothing changes.
+    /// The presets in force, in name order.
+    pub fn names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .base
+            .keys()
+            .filter(|n| !matches!(self.overlay.get(*n), Some(Change::Removed)))
+            .chain(
+                self.overlay
+                    .iter()
+                    .filter(|(n, c)| matches!(c, Change::At(_)) && !self.base.contains_key(*n))
+                    .map(|(n, _)| n),
+            )
+            .cloned()
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// Writes `at` as `name`'s position to the overlay now, then puts it in force; a new name creates the
+    /// preset while there is room. On an error nothing changes.
     pub fn save(&mut self, name: &str, at: Preset) -> Result<(), String> {
-        if !self.base.contains_key(name) {
+        check(name, &at)?;
+        if self.get(name).is_none() && self.names().len() >= MAX_PRESETS {
+            return Err(format!("preset table is full ({MAX_PRESETS})"));
+        }
+        let mut next = self.overlay.clone();
+        next.insert(name.to_owned(), Change::At(at));
+        self.commit(next)
+    }
+
+    /// Removes `name`: a created preset is forgotten, a `cam.toml` one is recorded as removed. On an error
+    /// nothing changes.
+    pub fn remove(&mut self, name: &str) -> Result<(), String> {
+        if self.get(name).is_none() {
             return Err("unknown preset".into());
         }
-        check(name, &at)?;
-        let mut next = self.saved.clone();
-        next.insert(name.to_owned(), at);
+        let mut next = self.overlay.clone();
+        if self.base.contains_key(name) {
+            next.insert(name.to_owned(), Change::Removed);
+        } else {
+            next.remove(name);
+        }
+        self.commit(next)
+    }
+
+    fn commit(&mut self, next: BTreeMap<String, Change>) -> Result<(), String> {
         let text = self.render(&next)?;
         self.write(text.as_bytes()).map_err(|e| e.to_string())?;
-        self.saved = next;
+        self.overlay = next;
         Ok(())
     }
 
-    fn render(&self, saved: &BTreeMap<String, Preset>) -> Result<String, String> {
-        let entries: BTreeMap<&str, Entry> = saved
+    fn render(&self, overlay: &BTreeMap<String, Change>) -> Result<String, String> {
+        let entries: BTreeMap<&str, Entry> = overlay
             .iter()
-            .filter_map(|(name, p)| {
-                let base = *self.base.get(name)?;
+            .filter_map(|(name, change)| {
+                let base = self.base.get(name).copied();
+                let (at, removed) = match change {
+                    Change::At(p) => (*p, false),
+                    Change::Removed => (base?, true),
+                };
                 Some((
                     name.as_str(),
                     Entry {
-                        pan: p.pan,
-                        tilt: p.tilt,
-                        zoom: p.zoom,
+                        pan: at.pan,
+                        tilt: at.tilt,
+                        zoom: at.zoom,
                         base,
+                        removed,
                     },
                 ))
             })
             .collect();
         let text = format!(
-            "# Written by cam: saved preset positions. `base` is the cam.toml position a save replaced;\n\
-             # editing that preset in cam.toml makes the save void.\n{}",
+            "# Written by cam: saved, created and removed presets. `base` is the cam.toml position a save or\n\
+             # removal replaced; editing that preset in cam.toml makes the entry void.\n{}",
             toml::to_string(&entries).map_err(|e| e.to_string())?
         );
         if text.len() > MAX_FILE {
@@ -152,7 +250,9 @@ fn parse(text: &str) -> Result<BTreeMap<String, Entry>, String> {
         toml::from_str(text).map_err(|_| "not a valid presets file".to_string())?;
     for (name, e) in &entries {
         check(name, &e.at())?;
-        check(name, &e.base)?;
+        if let Some(base) = &e.base {
+            check(name, base)?;
+        }
     }
     Ok(entries)
 }
@@ -240,7 +340,7 @@ mod tests {
         let (mut presets, _) = Presets::load(base(), Box::new(disk.clone()));
         presets.save("Door", p(6100, 700, 256)).unwrap();
         let entries = parse(&disk.file().unwrap()).unwrap();
-        assert_eq!(entries["Door"].base, p(6195, 650, 0));
+        assert_eq!(entries["Door"].base, Some(p(6195, 650, 0)));
         assert_eq!(entries["Door"].at(), p(6100, 700, 256));
         assert_eq!(entries.len(), 1);
     }
@@ -322,15 +422,77 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_name_or_an_out_of_travel_position_is_not_saved() {
+    fn an_out_of_travel_position_or_a_bad_name_is_not_saved() {
         let disk = Shared::default();
         let (mut presets, _) = Presets::load(base(), Box::new(disk.clone()));
-        assert_eq!(
-            presets.save("nosuch", p(1, 2, 3)),
-            Err("unknown preset".into())
-        );
         assert!(presets.save("Door", p(u32::MAX, 2, 3)).is_err());
+        assert!(presets.save(" ", p(1, 2, 3)).is_err());
         assert_eq!(disk.file(), None);
+    }
+
+    #[test]
+    fn a_new_name_creates_a_preset_that_survives_a_reload() {
+        let disk = Shared::default();
+        let (mut presets, _) = Presets::load(base(), Box::new(disk.clone()));
+        presets.save("Window", p(1, 2, 3)).unwrap();
+        assert_eq!(presets.names(), ["Desk", "Door", "Window"]);
+        let entries = parse(&disk.file().unwrap()).unwrap();
+        assert_eq!(entries["Window"].base, None);
+        let (again, problems) = Presets::load(base(), Box::new(disk));
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(again.get("Window"), Some(p(1, 2, 3)));
+    }
+
+    #[test]
+    fn removing_forgets_a_created_preset_and_records_a_cam_toml_one() {
+        let disk = Shared::default();
+        let (mut presets, _) = Presets::load(base(), Box::new(disk.clone()));
+        presets.save("Window", p(1, 2, 3)).unwrap();
+        presets.remove("Window").unwrap();
+        presets.remove("Door").unwrap();
+        assert_eq!(presets.get("Door"), None);
+        assert_eq!(presets.names(), ["Desk"]);
+        assert_eq!(presets.remove("Door"), Err("unknown preset".into()));
+        let (mut again, problems) = Presets::load(base(), Box::new(disk.clone()));
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(again.names(), ["Desk"]);
+        // Saving the name again brings the preset back at the new position.
+        again.save("Door", p(9, 9, 9)).unwrap();
+        assert_eq!(again.get("Door"), Some(p(9, 9, 9)));
+        // A hand edit of the removed preset in cam.toml wins over the removal.
+        let (mut presets, _) = Presets::load(base(), Box::new(disk.clone()));
+        presets.remove("Door").unwrap();
+        let mut edited = base();
+        edited.insert("Door".into(), p(5000, 600, 100));
+        let (presets, problems) = Presets::load(edited, Box::new(disk));
+        assert_eq!(presets.get("Door"), Some(p(5000, 600, 100)));
+        assert_eq!(problems.len(), 1, "{problems:?}");
+    }
+
+    #[test]
+    fn the_table_holds_at_most_32_presets() {
+        let disk = Shared::default();
+        let (mut presets, _) = Presets::load(base(), Box::new(disk.clone()));
+        for i in 0..MAX_PRESETS - 2 {
+            presets.save(&format!("p{i:02}"), p(1, 1, 1)).unwrap();
+        }
+        assert_eq!(presets.names().len(), MAX_PRESETS);
+        assert!(presets.save("one more", p(1, 1, 1)).is_err());
+        presets.save("Door", p(2, 2, 2)).unwrap();
+        presets.remove("p00").unwrap();
+        presets.save("one more", p(1, 1, 1)).unwrap();
+    }
+
+    #[test]
+    fn a_created_preset_that_cam_toml_defines_later_is_cam_toml_s() {
+        let disk = Shared::default();
+        let (mut presets, _) = Presets::load(base(), Box::new(disk.clone()));
+        presets.save("Window", p(1, 2, 3)).unwrap();
+        let mut more = base();
+        more.insert("Window".into(), p(7, 7, 7));
+        let (presets, problems) = Presets::load(more, Box::new(disk));
+        assert_eq!(presets.get("Window"), Some(p(7, 7, 7)));
+        assert_eq!(problems.len(), 1, "{problems:?}");
     }
 
     #[test]

@@ -16,6 +16,7 @@ struct Fixture {
     addr: SocketAddr,
     hub: Arc<Hub>,
     audio: Arc<AudioHub>,
+    pcmu: Arc<AudioHub>,
     talk: Arc<Talkback>,
     stop: Arc<AtomicBool>,
     worker: Option<std::thread::JoinHandle<io::Result<()>>>,
@@ -38,14 +39,20 @@ fn start_mode(creds: Option<Credentials>, audio_enabled: bool) -> Fixture {
     let hub = Hub::new();
     hub.publish(true, 0, idr(10));
     let audio = AudioHub::new();
+    let pcmu = AudioHub::with_format(crate::microphone::Format::Pcmu8k);
     let talk = crate::rtsp::talk::fake::talkback();
     let cfg = Arc::new(Config {
-        streams: vec![
-            ("Preview_01_sub".into(), Arc::clone(&hub)),
-            ("Preview_01_main".into(), Arc::clone(&hub)),
-        ],
+        streams: ["sub", "main"]
+            .map(|p| {
+                StreamPath::new(p, Arc::clone(&hub))
+                    .audio(audio_enabled.then(|| Arc::clone(&audio)))
+            })
+            .into_iter()
+            .chain([StreamPath::new(MAIN_PCMU_PATH, Arc::clone(&hub))
+                .audio(audio_enabled.then(|| Arc::clone(&pcmu)))
+                .backchannel(Backchannel::Pcmu)])
+            .collect(),
         creds,
-        audio: audio_enabled.then(|| Arc::clone(&audio)),
         talk: audio_enabled.then(|| Arc::clone(&talk)),
     });
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -58,6 +65,7 @@ fn start_mode(creds: Option<Credentials>, audio_enabled: bool) -> Fixture {
         hub,
         stop,
         audio,
+        pcmu,
         talk,
         worker,
     }
@@ -139,7 +147,7 @@ impl Client {
     }
 }
 
-const URL: &str = "rtsp://127.0.0.1/Preview_01_sub";
+const URL: &str = "rtsp://127.0.0.1/sub";
 
 #[test]
 fn stopping_the_server_closes_idle_connections_and_releases_the_speaker() {
@@ -381,7 +389,7 @@ fn dropping_the_connection_unsubscribes_the_viewer() {
 fn describe_offers_opus_and_only_negotiated_opus_backchannel_on_both_paths() {
     let f = start(None);
     let mut c = Client::connect(f.addr);
-    for path in ["Preview_01_sub", "Preview_01_main"] {
+    for path in ["sub", "main"] {
         let url = format!("rtsp://127.0.0.1/{path}");
         let plain = c.call("DESCRIBE", &url, &[]);
         assert_eq!(plain.code, 200);
@@ -533,7 +541,7 @@ fn playing_another_path_does_not_activate_a_configured_backchannel() {
         .code,
         200
     );
-    let main = "rtsp://127.0.0.1/Preview_01_main";
+    let main = "rtsp://127.0.0.1/main";
     c.call(
         "SETUP",
         &format!("{main}/trackID=1"),
@@ -668,7 +676,7 @@ fn a_digest_signed_for_another_uri_is_rejected() {
             "Digest username=\"admin\", realm=\"cam\", nonce=\"{nonce}\", uri=\"{uri}\", response=\"{resp}\""
         )
     };
-    let other = sign("rtsp://127.0.0.1/Preview_01_main");
+    let other = sign("rtsp://127.0.0.1/main");
     assert_eq!(
         c.call("DESCRIBE", URL, &[("Authorization", &other)]).code,
         401
@@ -787,4 +795,53 @@ fn setup_cannot_reassign_channels_while_the_previous_sender_is_playing() {
     );
     assert_eq!(c.call("TEARDOWN", URL, &[]).code, 200);
     assert_eq!(f.hub.viewers(), 0);
+}
+
+#[test]
+fn the_onvif_path_carries_pcmu_both_ways_while_the_camera_paths_keep_opus() {
+    let f = start(None);
+    let mut c = Client::connect(f.addr);
+    let url = format!("rtsp://127.0.0.1/{MAIN_PCMU_PATH}");
+    let d = c.call(
+        "DESCRIBE",
+        &url,
+        &[("Require", "www.onvif.org/ver20/backchannel")],
+    );
+    assert_eq!(d.code, 200);
+    assert!(
+        d.body
+            .contains("a=rtpmap:0 PCMU/8000/1\r\na=control:trackID=1\r\na=recvonly")
+    );
+    assert!(d.body.contains(
+        "m=audio 0 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000/1\r\na=control:trackID=2\r\na=sendonly"
+    ));
+    assert!(!d.body.contains("opus"));
+    for (track, channels) in [(1, "2-3"), (2, "4-5")] {
+        let r = c.call(
+            "SETUP",
+            &format!("{url}/trackID={track}"),
+            &[(
+                "Transport",
+                &format!("RTP/AVP/TCP;unicast;interleaved={channels}"),
+            )],
+        );
+        assert_eq!(r.code, 200);
+    }
+    assert_eq!(c.call("PLAY", &url, &[]).code, 200);
+    f.pcmu.publish(1_000_000, vec![0xff; 160]);
+    let (channel, rtp) = c.interleaved();
+    assert_eq!(channel, 2);
+    assert_eq!(rtp[1] & 127, 0, "PCMU payload type");
+    assert_eq!(rtp.len(), 12 + 160);
+    assert_eq!(f.audio.viewers(), 0, "the Opus hub has no listener");
+    let mut packet = vec![0x80, 0, 0, 1, 0, 0, 0, 0, 1, 2, 3, 4];
+    packet.extend([0x9f; 160]); // a loud constant level
+    for _ in 0..6 {
+        let stream = c.r.get_mut();
+        stream.write_all(&[b'$', 4, 0, packet.len() as u8]).unwrap();
+        stream.write_all(&packet).unwrap();
+    }
+    assert_eq!(c.call("GET_PARAMETER", &url, &[]).code, 200);
+    let pcm = f.talk.next_pcm(std::time::Instant::now()).unwrap();
+    assert_eq!(pcm.len(), 320);
 }

@@ -1,0 +1,10 @@
+[package]
+name = "camera-onvif"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+camera-transport = { path = "../camera-transport" }
+libc = "=0.2.188"

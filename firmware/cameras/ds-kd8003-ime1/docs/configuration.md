@@ -26,6 +26,8 @@ Two files sit next to `start.sh` on the config partition, both mode 0600:
 | `pins` | `/home/config/custom/pins.conf` | PIN table |
 | `clips` | `/home/app/custom/native/clips` | directory of `<name>.pcm` clips |
 | `http_port` | 0 | read-only diagnostics (`GET /state`, `GET /log?after=N`); 0 is off |
+| `onvif_port` | 80 | [ONVIF](../../../../docs/shared/onvif.md) with the RTSP credentials; 0 is off |
+| `ntp` | empty | NTP servers, comma-separated (up to four); empty leaves the clock alone |
 
 Changing `mqtt_prefix` or `mqtt_node` later makes Home Assistant see a new device. The diagnostics
 port has no credentials and its log names who opened the door; enable it only on a trusted network.

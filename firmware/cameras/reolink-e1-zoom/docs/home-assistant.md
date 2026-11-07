@@ -23,12 +23,19 @@ password = "PASSWORD"
 pan = 6195             # 0-7360 steps
 tilt = 650             # 0-1240 steps
 zoom = 0               # 0-1024 steps
+
+[onvif]                # optional: ONVIF (../../../../docs/shared/onvif.md)
+port = 80              # 0 turns it off
+
+[time]                 # optional: NTP servers the clock follows; none leaves the clock alone
+ntp = ["NTP_HOST"]
 ```
 
-Unknown keys are refused. Preset names and their initial positions come from this file, which the daemon never
-writes. `preset_save/set` overwrites a preset's position with where the camera stands; the daemon keeps the saved
-positions in `/mnt/para/cam-presets.toml`, each with the `cam.toml` position it replaced. Editing a preset here and
-restarting takes precedence over an earlier save of it; a save for a preset no longer here is dropped.
+Unknown keys are refused. The presets here are the starting table; the daemon never writes this file.
+`preset_save/set` saves where the camera stands under a name: an existing name moves that preset, a new name creates
+one, and `{"v":1,"op":"remove_preset","name":"…"}` on `motion/set` deletes one (ONVIF creates and deletes presets the same way). The daemon keeps these
+changes in `/mnt/para/cam-presets.toml`, each with the `cam.toml` position it replaced. Editing a preset here and
+restarting takes precedence over an earlier save of it.
 Runtime settings (volumes, IR thresholds, stream parameters, picture) are not in this file: they are entities
 and the daemon keeps them itself ([settings.md](settings.md)).
 

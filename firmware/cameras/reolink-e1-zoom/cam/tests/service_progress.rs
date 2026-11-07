@@ -35,9 +35,8 @@ fn rtsp_beats_every_idle_loop_and_nothing_else() {
     let stop = leak_flag();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let cfg = Arc::new(RtspConfig {
-        streams: vec![("Preview_01_main".into(), Hub::new())],
+        streams: vec![camera_transport::StreamPath::new("main", Hub::new())],
         creds: None,
-        audio: None,
         talk: None,
     });
     let worker = std::thread::spawn(move || server::serve_with(&listener, cfg, stop, Some(&beats)));

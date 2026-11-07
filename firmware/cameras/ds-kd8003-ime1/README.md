@@ -17,13 +17,17 @@ and your SSH key, then flashes the startup hook and installs and enables the app
 
 ## Use
 
+ONVIF (discovery, profiles, snapshot, call button and door events) is on by default: [ONVIF](../../../docs/shared/onvif.md).
+
 | RTSP stream | Video | Audio |
 |---|---|---|
-| `Streaming/Channels/101` (also `main`) | 1920×1080 H.264 | PCMU, 8 kHz mono |
-| `Streaming/Channels/102` (also `sub`) | 704×480 H.264, 15 fps | PCMU, 8 kHz mono |
+| `main` | 1920×1080 H.264 | PCMU, 8 kHz mono |
+| `sub` | 704×480 H.264, 15 fps | PCMU, 8 kHz mono |
+| `main_pcmu`, `sub_pcmu` | as `main`, `sub` | PCMU, 8 kHz mono, PCMU backchannel offer |
 
 The microphone is PCMU, not Opus as on the other cameras, because Synology Surveillance Station records
-G.711 but drops Opus audio. The stock paths and digest authentication keep existing recorders working. Both paths offer an Opus
+G.711 but drops Opus audio. The paths are the same on every camera of this project; the stock
+`Streaming/Channels/10x` paths are gone. `main` and `sub` offer an Opus
 backchannel (ONVIF `Require: www.onvif.org/ver20/backchannel`) that plays on the device's speaker.
 Home Assistant discovers the door, its open and close buttons, the reed and lock states, the
 doorbell and the access events through your broker: [MQTT and Home Assistant](docs/home-assistant.md).

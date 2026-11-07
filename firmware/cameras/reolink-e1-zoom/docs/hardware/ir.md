@@ -52,7 +52,7 @@ Needs the vendor `device` killed (it owns the MS32006 and the ISP). The ISP swit
 and the auto mode with thresholds just under the room's reading so the IR LEDs' own light flips it night → day → night
 on its own. Then it reboots the camera.
 
-## Verification frames (`Preview_01_sub`)
+## Verification frames (`sub`)
 
 - Lit room, IR-cut pulses alone: 0x04 gives R/G/B 119/101/72 against 101/96/73 for 0x08, reproducibly over two
   cycles (more red and brighter = IR passing). With GPIO 134 on: behind 0x04 the scene floods with IR

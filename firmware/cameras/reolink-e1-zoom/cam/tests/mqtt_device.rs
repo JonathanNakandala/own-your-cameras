@@ -1557,3 +1557,35 @@ fn stale_shared_velocity_is_not_replayed_after_blocking_work() {
         assert_eq!(before[axis], after[axis]);
     }
 }
+
+#[test]
+fn a_new_name_creates_a_preset_and_removing_it_takes_it_out_of_the_table() {
+    let saved = SharedDisk::default();
+    let mut d = device_with(
+        FakeHw::new(1800),
+        owner_full(None, SharedDisk::default(), saved.clone()),
+    );
+    let before = d.preset_names().unwrap();
+    d.apply(&Command::Pan(3000)).unwrap();
+    d.apply(&save("Window")).unwrap();
+    let names = d.preset_names().unwrap();
+    assert!(names.contains(&"Window".to_string()), "{names:?}");
+    assert_eq!(names.len(), before.len() + 1);
+    d.apply(&Command::Pan(100)).unwrap();
+    d.apply(&Command::Preset("Window".into())).unwrap();
+    assert_eq!(pose(&mut d).0, "3000");
+    d.apply(&Command::RemovePreset("Window".into())).unwrap();
+    assert_eq!(d.preset_names().unwrap(), before);
+    assert!(
+        !d.states().unwrap().contains_key("preset"),
+        "no longer at a preset"
+    );
+    assert!(d.apply(&Command::Preset("Window".into())).is_err());
+    assert!(d.apply(&Command::RemovePreset("Window".into())).is_err());
+    // The removal survives a restart.
+    let d = device_with(
+        FakeHw::new(1800),
+        owner_full(None, SharedDisk::default(), saved),
+    );
+    assert_eq!(d.preset_names().unwrap(), before);
+}

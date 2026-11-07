@@ -69,7 +69,10 @@ pub struct Wiring<H, B, C> {
     pub hdal: B,
     pub media: PipelineConfig,
     pub hubs: VideoHubs,
+    /// The Opus microphone of the camera's own paths.
     pub audio: Arc<AudioHub>,
+    /// The G.711 µ-law microphone of the ONVIF paths.
+    pub pcmu: Arc<AudioHub>,
     pub talk: Arc<Talkback>,
     pub pipeline: Arc<PipelineHealth>,
     /// Persisted startup values and live requests from the settings owner.
@@ -257,6 +260,8 @@ pub struct Started<B> {
     /// The network host is parked here after the network worker stops; the caller keeps it running
     /// by calling `LinuxHost::exit_preserving_network`, never by dropping it.
     pub network: Arc<Mutex<Option<LinuxHost>>>,
+    /// The running ONVIF service; dropping it stops discovery (with `Bye`) and the HTTP server.
+    pub onvif: Option<camera_onvif::Service>,
 }
 
 /// Everything that must succeed before the watchdog handoff: attempt token, strict preflight, the
@@ -287,12 +292,12 @@ pub fn start<B>(
 
     let hubs = VideoHubs::new();
     let audio = AudioHub::new();
+    let pcmu = AudioHub::with_format(camera_transport::microphone::Format::Pcmu8k);
     let talk = crate::rtsp::opus::talkback(hdal::audio::RATE);
     let pipeline = Arc::new(PipelineHealth::default());
     let rtsp_config = Arc::new(rtsp_server::Config {
-        streams: hubs.streams(),
-        creds: Some(ready.rtsp),
-        audio: Some(Arc::clone(&audio)),
+        streams: hubs.paths(Some(Arc::clone(&audio)), Some(Arc::clone(&pcmu))),
+        creds: Some(ready.rtsp.clone()),
         talk: Some(Arc::clone(&talk)),
     });
     let network = Arc::new(Mutex::new(Some(host)));
@@ -311,8 +316,19 @@ pub fn start<B>(
     let media_tuning = Arc::clone(&owner.media);
     let counters = Arc::new(crate::telemetry::StreamCounters::default());
     let telemetry = telemetry_task(Arc::clone(&counters), Arc::clone(&media_tuning));
+    start_time(&ready.mqtt);
+    // MQTT and ONVIF drive the one hardware thread through one queue.
+    let motion = Arc::new(crate::mqtt::Motion::default());
+    let onvif = start_onvif(
+        &ready.mqtt,
+        &ready.rtsp,
+        &media_tuning,
+        &motion,
+        paths.rtsp_port,
+    );
     let mqtt_config = ready.mqtt;
     let mqtt_health = Arc::clone(&pipeline);
+    let mqtt_motion = Arc::clone(&motion);
     let services = Services {
         network: net_service(Arc::clone(&network), Timing::default(), NET_TICK),
         rtsp: Box::new(move |beats, stop| {
@@ -333,6 +349,7 @@ pub fn start<B>(
                 stop,
                 Some(&beats),
                 Some(telemetry),
+                Some(mqtt_motion),
             )
         }),
     };
@@ -348,6 +365,7 @@ pub fn start<B>(
             media: PipelineConfig::e1_zoom(),
             hubs,
             audio,
+            pcmu,
             talk,
             pipeline,
             media_tuning,
@@ -355,6 +373,7 @@ pub fn start<B>(
             services,
         },
         network,
+        onvif,
     })
 }
 
@@ -432,6 +451,7 @@ where
         media,
         hubs,
         audio,
+        pcmu,
         talk,
         pipeline: pipeline_health,
         media_tuning,
@@ -536,8 +556,9 @@ where
         errors: RefCell::new(Vec::new()),
     };
     let mut media_result = None;
-    // One encoder, on the media thread: every RTSP listener shares its packets through `audio`.
-    let mut microphone = crate::rtsp::opus::microphone()
+    // One capture, on the media thread: every RTSP listener shares its packets through `audio` (Opus) or
+    // `pcmu` (ONVIF paths); each codec runs only while it has listeners.
+    let mut microphone = crate::rtsp::opus::fanout(Arc::clone(&audio), Arc::clone(&pcmu))
         .map_err(|error| run.fail(error))
         .ok();
     if let Some(microphone) = microphone.as_mut()
@@ -586,9 +607,7 @@ where
                 hubs.publish(frame.stream, frame.key, frame.pts_us, frame.data);
             },
             &mut |frame| {
-                for (pts_us, packet) in microphone.push(frame.pts_us, &frame.samples) {
-                    audio.publish(pts_us, packet);
-                }
+                microphone.push(frame.pts_us, &frame.samples);
             },
             &mut || talk.next_pcm(std::time::Instant::now()),
             &mut &*media_tuning,
@@ -638,4 +657,64 @@ fn finish<H>(
         (false, _) => Err(io::Error::other(errors.join("; "))),
     };
     Outcome { result, handoff }
+}
+
+/// The clock follows `[time] ntp` for the life of the process (ONVIF authentication needs real time).
+pub(crate) fn start_time(cfg: &crate::mqtt::Config) {
+    if cfg.time.ntp.is_empty() {
+        return;
+    }
+    let keeper = camera_transport::sntp::Keeper {
+        servers: cfg.time.ntp.clone(),
+        log: |line| eprintln!("{line}"),
+    };
+    if let Err(e) = keeper.spawn(Arc::new(AtomicBool::new(false))) {
+        eprintln!("time: not started: {e}");
+    }
+}
+
+/// ONVIF on `[onvif] port` with the RTSP credentials; `None` when it is off or cannot start (logged: the
+/// camera works without it).
+pub(crate) fn start_onvif(
+    cfg: &crate::mqtt::Config,
+    creds: &camera_transport::Credentials,
+    media: &Arc<crate::media_tuning::Handoff>,
+    motion: &Arc<crate::mqtt::Motion>,
+    rtsp_port: u16,
+) -> Option<camera_onvif::Service> {
+    let port = cfg.onvif.port;
+    if port == 0 {
+        return None;
+    }
+    let identity = camera_onvif::identity(
+        camera_onvif::Product {
+            manufacturer: "Reolink".into(),
+            model: "E1 Zoom".into(),
+            firmware: env!("CARGO_PKG_VERSION").into(),
+            hardware: "E1 Zoom".into(),
+            name: cfg.camera.name().into(),
+            ntp: cfg.time.ntp.clone(),
+            dhcp: true,
+        },
+        None,
+    );
+    let camera = Arc::new(crate::onvif::E1Onvif::new(
+        identity,
+        Arc::clone(media),
+        Arc::clone(motion),
+    ));
+    match camera_onvif::start(
+        camera,
+        creds.clone(),
+        rtsp_port,
+        port,
+        camera_onvif::HttpLimits::DEFAULT,
+        |line| eprintln!("{line}"),
+    ) {
+        Ok(service) => Some(service),
+        Err(e) => {
+            eprintln!("onvif: not started on port {port}: {e}");
+            None
+        }
+    }
 }

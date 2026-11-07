@@ -1,6 +1,7 @@
 //! Latest-wins hand-off between the settings owner (the `mqtt-hardware` thread) and the media thread,
 //! which alone may call HDAL. The owner posts requests; the media loop takes at most one merged request
-//! per iteration and reports what actually runs.
+//! per iteration and reports what actually runs. Snapshot requests (ONVIF, Home Assistant) wait here too:
+//! the media loop serves everyone waiting with one hardware JPEG.
 
 use std::sync::Mutex;
 
@@ -21,7 +22,11 @@ struct State {
 }
 
 #[derive(Debug, Default)]
-pub struct Handoff(Mutex<State>, Mutex<std::collections::VecDeque<f32>>);
+pub struct Handoff(
+    Mutex<State>,
+    Mutex<std::collections::VecDeque<f32>>,
+    camera_onvif::snapshot::Waiters,
+);
 
 /// Microphone levels kept for homing by ear: about 2 s at one level per 21 ms capture frame.
 const LEVELS_KEPT: usize = 100;
@@ -44,7 +49,14 @@ impl Handoff {
                 ..State::default()
             }),
             Mutex::new(std::collections::VecDeque::with_capacity(LEVELS_KEPT)),
+            camera_onvif::snapshot::Waiters::default(),
         )
+    }
+
+    /// One JPEG from the media thread, or an error once `deadline` passes. Callers waiting at the same
+    /// time share one picture.
+    pub fn snapshot(&self, deadline: std::time::Instant) -> Result<Vec<u8>, String> {
+        self.2.wait(deadline)
     }
 
     fn state(&self) -> std::sync::MutexGuard<'_, State> {
@@ -91,6 +103,14 @@ impl Handoff {
 }
 
 impl Tuner for &Handoff {
+    fn snapshot_wanted(&mut self) -> bool {
+        self.2.wanted()
+    }
+
+    fn snapshot_done(&mut self, result: Result<Vec<u8>, String>) {
+        self.2.answer(result);
+    }
+
     /// The newest [`LEVELS_KEPT`] levels wait for the listener.
     fn hear(&mut self, dbfs: f32) {
         let mut l = self.levels();

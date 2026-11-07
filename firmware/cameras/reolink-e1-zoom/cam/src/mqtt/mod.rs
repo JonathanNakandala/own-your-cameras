@@ -12,6 +12,37 @@ pub struct Config {
     pub mqtt: Option<Broker>,
     #[serde(default)]
     pub presets: BTreeMap<String, crate::presets::Preset>,
+    #[serde(default)]
+    pub onvif: Onvif,
+    #[serde(default)]
+    pub time: Time,
+}
+
+/// `[time]`: NTP servers the camera clock follows (`host` or `host:port`); none leaves the clock alone.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Time {
+    #[serde(default)]
+    pub ntp: Vec<String>,
+}
+
+/// `[onvif]`: the ONVIF service (Profile S, discovery, snapshots), on by default.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Onvif {
+    /// HTTP port of the ONVIF services and `/snapshot.jpg`; 0 turns ONVIF off.
+    #[serde(default = "default_onvif_port")]
+    pub port: u16,
+}
+fn default_onvif_port() -> u16 {
+    80
+}
+impl Default for Onvif {
+    fn default() -> Self {
+        Self {
+            port: default_onvif_port(),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -69,6 +100,9 @@ impl Config {
 
 use serde_json::{Value, json};
 
+mod motion;
+pub use motion::Motion;
+
 /// A command on its way to the hardware thread: the motion epoch it was accepted under and when it arrived.
 #[derive(Debug)]
 pub struct Queued {
@@ -114,7 +148,15 @@ pub struct Publication {
 }
 
 impl Config {
+    /// Discovery with `cam.toml`'s presets; [`Config::discovery_for`] with the presets in force.
     pub fn discovery(&self) -> Vec<Publication> {
+        let names: Vec<String> = self.presets.keys().cloned().collect();
+        self.discovery_for(&names)
+    }
+
+    /// Discovery whose preset select offers `presets` (the table in force: created and removed presets
+    /// change it at runtime, and it is announced again then).
+    pub fn discovery_for(&self, presets: &[String]) -> Vec<Publication> {
         use crate::settings::Section;
         let camera = &self.camera;
         let device = camera.client_id();
@@ -156,7 +198,7 @@ impl Config {
             "select",
             "preset",
             "Preset",
-            json!({"options":self.presets.keys().collect::<Vec<_>>()}),
+            json!({"options":presets}),
             None,
         );
         add(
@@ -275,7 +317,7 @@ impl Config {
             }
             messages.push(Publication {
                 topic: format!("homeassistant/{domain}/{device}/{id}/config"),
-                payload: if id == "preset" && self.presets.is_empty() {
+                payload: if id == "preset" && presets.is_empty() {
                     Value::Null
                 } else {
                     payload
@@ -330,6 +372,8 @@ pub enum Command {
     Preset(String),
     /// Save where the camera stands as the named preset's position (`preset_save/set`).
     SavePreset(String),
+    /// Forget a preset (created at runtime or from `cam.toml`).
+    RemovePreset(String),
     /// A validated payload for a key of `crate::settings::specs`.
     Setting(&'static str, String),
     Move(Move),
@@ -388,9 +432,9 @@ impl Config {
             "tilt" => Command::Tilt(number(crate::ptz::TILT_MAX)?),
             "zoom" => Command::Zoom(number(ZOOM_MAX)?),
             "preset" | "preset_save" => {
-                if !self.presets.contains_key(text) {
-                    return Err("unknown preset".into());
-                }
+                // Any valid name: a save creates the preset, a recall of an unknown one fails on the hardware
+                // thread, which owns the table in force.
+                crate::motion_control::PresetName::parse(text)?;
                 if id == "preset" {
                     Command::Preset(text.into())
                 } else {
@@ -420,6 +464,7 @@ impl Config {
                     }),
                     Request::Preset(name) => Command::Preset(name.as_str()?.to_owned()),
                     Request::SavePreset(name) => Command::SavePreset(name.as_str()?.to_owned()),
+                    Request::RemovePreset(name) => Command::RemovePreset(name.as_str()?.to_owned()),
                     Request::Point { x, y } => Command::Position3d(crate::position3d::Request {
                         start: (x, y),
                         end: (x, y),
@@ -477,9 +522,16 @@ pub trait Hardware: Send {
     fn changed(&mut self) -> bool {
         false
     }
+    /// The preset names in force, when the hardware owns a preset table (`None`: `cam.toml`'s).
+    fn preset_names(&self) -> Option<Vec<String>> {
+        None
+    }
 }
 
 impl Hardware for Box<dyn Hardware> {
+    fn preset_names(&self) -> Option<Vec<String>> {
+        (**self).preset_names()
+    }
     fn failed(&self) -> bool {
         (**self).failed()
     }
@@ -570,8 +622,9 @@ impl LogBudget {
         }
     }
 }
-fn announce(client: &Client, cfg: &Config, log: &LogBudget) {
-    for p in cfg.discovery() {
+fn announce(client: &Client, cfg: &Config, presets: &Mutex<Vec<String>>, log: &LogBudget) {
+    let presets = presets.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    for p in cfg.discovery_for(&presets) {
         send(
             client,
             log,
@@ -606,7 +659,7 @@ pub fn run_with(
     stop: &AtomicBool,
     beats: Option<&Beats>,
 ) -> std::io::Result<()> {
-    run_full(cfg, hw, health, stop, beats, None)
+    run_full(cfg, hw, health, stop, beats, None, None)
 }
 
 /// Outbound request queue of the MQTT client (bounded; a full queue drops the update, which retries).
@@ -626,6 +679,7 @@ pub fn run_full(
     stop: &AtomicBool,
     beats: Option<&Beats>,
     telemetry: Option<crate::telemetry::Task>,
+    motion: Option<Arc<Motion>>,
 ) -> std::io::Result<()> {
     let Some(broker) = &cfg.mqtt else {
         return Ok(());
@@ -658,9 +712,22 @@ pub fn run_full(
     let refresh = AtomicBool::new(true);
     let endpoint = hw.stop_endpoint();
     let epoch = hw.motion_epoch().unwrap_or_default();
-    let (tx, rx) = std::sync::mpsc::sync_channel::<Queued>(8);
+    // The queue, clock and preset list other services (ONVIF) share with MQTT.
+    let motion = motion.unwrap_or_default();
+    let rx = motion
+        .take_receiver()
+        .ok_or_else(|| std::io::Error::other("the motion queue already has an owner"))?;
+    let tx = motion.sender();
+    *motion.presets.lock().unwrap_or_else(|e| e.into_inner()) = hw
+        .preset_names()
+        .unwrap_or_else(|| cfg.presets.keys().cloned().collect());
+    if let Some(epoch) = hw.motion_epoch() {
+        motion.attach(epoch, endpoint.clone());
+    }
+    let presets = &motion.presets;
+    let config = &cfg;
     // The one clock: commands are stamped on it when they arrive, the hardware thread ticks on it.
-    let started = Instant::now();
+    let started = motion.started;
     let telemetry_round = std::sync::atomic::AtomicU64::new(0);
     let hardware_result = std::thread::scope(|scope| -> std::io::Result<()> {
         let shutdown = HardwareShutdown {
@@ -751,6 +818,19 @@ pub fn run_full(
                             if let Err(e) = hw.apply_at(&q.command, q.received) {
                                 log.line(format_args!("hardware command failed: {e}"));
                             }
+                            // A created or removed preset changes the select's options: announce again.
+                            if let Some(names) = hw.preset_names() {
+                                let changed = {
+                                    let mut held =
+                                        presets.lock().unwrap_or_else(|e| e.into_inner());
+                                    let changed = *held != names;
+                                    *held = names;
+                                    changed
+                                };
+                                if changed && connected.load(Ordering::Relaxed) {
+                                    announce(client, config, presets, log);
+                                }
+                            }
                             true
                         }
                         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => false,
@@ -801,14 +881,14 @@ pub fn run_full(
                     }
                     let _ = client.try_subscribe(camera.topic("+/set"), QoS::AtLeastOnce);
                     let _ = client.try_subscribe("homeassistant/status", QoS::AtLeastOnce);
-                    announce(client, &cfg, log);
+                    announce(client, &cfg, presets, log);
                     refresh.store(true, Ordering::Relaxed);
                     connected.store(true, Ordering::Relaxed);
                     log.line(format_args!("connected, discovery published"));
                 }
                 Ok(Ok(Event::Incoming(Packet::Publish(p)))) => {
                     if p.topic == "homeassistant/status" && p.payload.as_ref() == b"online" {
-                        announce(client, &cfg, log);
+                        announce(client, &cfg, presets, log);
                         refresh.store(true, Ordering::Relaxed);
                     } else {
                         match cfg.command(&p.topic, &p.payload, p.retain) {

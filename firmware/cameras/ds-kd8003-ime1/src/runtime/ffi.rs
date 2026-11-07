@@ -27,6 +27,8 @@ unsafe extern "C" {
         key: *mut i32,
     ) -> i32;
     pub fn gm_video_fd(chn: i32) -> i32;
+    pub fn gm_jpeg_open() -> i32;
+    pub fn gm_jpeg_shot(buf: *mut u8, cap: u32, len: *mut u32, wait_ms: u32) -> i32;
     pub fn gm_stream_set(
         chn: i32,
         w: u32,

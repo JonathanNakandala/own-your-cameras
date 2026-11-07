@@ -50,6 +50,10 @@ pub struct Fake {
     /// The path-config envelope `videoenc_configure` was given, by encoder index.
     pub envelopes: Vec<(u32, EncSpec)>,
     pub binds: Vec<(u32, u32)>,
+    /// JPEG encoders configured: (index, size, quality).
+    pub jpegs: Vec<(u32, Dim, u32)>,
+    /// Encoder indexes running now.
+    pub running: Vec<u32>,
     /// Virtual clock: `sleep_ms` and `videoenc_recv` advance it.
     pub clock_ms: u64,
     frames_made: [u32; 4],
@@ -85,6 +89,8 @@ impl Default for Fake {
             envelopes: Vec::new(),
             starve_sub_above_fps: None,
             binds: Vec::new(),
+            jpegs: Vec::new(),
+            running: Vec::new(),
             clock_ms: 0,
             frames_made: [0; 4],
             next_due_ms: [0; 4],
@@ -297,6 +303,16 @@ impl EncBackend for Fake {
         self.envelopes.push((path.0 - ENC, *envelope));
         Ok(())
     }
+    fn videoenc_configure_jpeg(
+        &mut self,
+        path: PathId,
+        dim: Dim,
+        quality: u32,
+    ) -> Result<(), Error> {
+        self.enter(Step::VideoencConfigureJpeg)?;
+        self.jpegs.push((path.0 - ENC, dim, quality));
+        Ok(())
+    }
     fn videoenc_retune(&mut self, path: PathId, spec: &EncSpec) -> Result<(), Error> {
         self.enter(Step::VideoencRetune)?;
         self.enc_specs.push((path.0 - ENC, *spec));
@@ -308,10 +324,13 @@ impl EncBackend for Fake {
         let idx = (path.0 - ENC) as usize;
         self.frames_made[idx] = 0;
         self.next_due_ms[idx] = self.clock_ms;
+        self.running.push(idx as u32);
         Ok(())
     }
-    fn videoenc_stop(&mut self, _: PathId) -> Result<(), Error> {
-        self.enter(Step::VideoencStop)
+    fn videoenc_stop(&mut self, path: PathId) -> Result<(), Error> {
+        self.enter(Step::VideoencStop)?;
+        self.running.retain(|i| *i != path.0 - ENC);
+        Ok(())
     }
     fn videoenc_close(&mut self, _: PathId) -> Result<(), Error> {
         self.enter(Step::VideoencClose)
@@ -351,6 +370,18 @@ impl EncBackend for Fake {
             if self.control.as_ref().is_some_and(|c| {
                 c.muted.load(std::sync::atomic::Ordering::Acquire) & (1 << idx) != 0
             }) {
+                continue;
+            }
+            if self.jpegs.iter().any(|(n, _, _)| *n as usize == idx) {
+                if self.running.contains(&(idx as u32)) && self.clock_ms >= self.next_due_ms[idx] {
+                    self.next_due_ms[idx] += 200;
+                    out.push(EncFrame {
+                        stream: i,
+                        data: vec![0xff, 0xd8, 0xff, 0xe0, 0, 0, 0xff, 0xd9],
+                        key: true,
+                        pts_us: self.clock_ms * 1000,
+                    });
+                }
                 continue;
             }
             let Some((_, spec)) = self.enc_specs.iter().rfind(|(n, _)| *n as usize == idx) else {

@@ -1,5 +1,5 @@
 //! Actual loopback wire check; isolated protocol fixtures never reach a camera.
-use camera_transport::{AudioHub, Config, Hub, ServerLimits, serve_with_limits};
+use camera_transport::{AudioHub, Config, Hub, ServerLimits, StreamPath, serve_with_limits};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{
@@ -40,9 +40,8 @@ fn the_opus_microphone_is_advertised_and_transmitted_paced_on_the_mi360_limits()
     );
     let audio = AudioHub::new();
     let cfg = Arc::new(Config {
-        streams: vec![("Preview_01_main".into(), hub)],
+        streams: vec![StreamPath::new("main", hub).audio(Some(audio.clone()))],
         creds: None,
-        audio: Some(audio.clone()),
         talk: None,
     });
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -57,7 +56,7 @@ fn the_opus_microphone_is_advertised_and_transmitted_paced_on_the_mi360_limits()
         .set_read_timeout(Some(Duration::from_secs(3)))
         .unwrap();
     let mut reader = BufReader::new(socket.try_clone().unwrap());
-    let uri = format!("rtsp://{addr}/Preview_01_main");
+    let uri = format!("rtsp://{addr}/main");
     write!(socket, "DESCRIBE {uri} RTSP/1.0\r\nCSeq: 1\r\n\r\n").unwrap();
     let (header, sdp) = response(&mut reader);
     assert!(header.starts_with("RTSP/1.0 200"));

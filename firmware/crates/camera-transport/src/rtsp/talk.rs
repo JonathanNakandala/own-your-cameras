@@ -1,4 +1,5 @@
-//! Opus talkback from up to four RTSP backchannels at once, mixed for the speaker.
+//! Talkback from up to four RTSP backchannels at once, mixed for the speaker. Each talker sends Opus or
+//! G.711 µ-law; the payload type of each packet picks its decoder.
 //!
 //! Each talker has its own decoder (at the speaker rate) and gain. Their packets arrive at independent times, so a pure
 //! [`Mixer`] keeps one sample FIFO per talker and emits 20 ms blocks on its own real-time output clock:
@@ -191,8 +192,37 @@ pub struct Talkback {
 pub struct TalkLease {
     talk: Arc<Talkback>,
     slot: usize,
-    decoder: Box<dyn OpusDecode>,
+    decoder: TalkDecoder,
     gain: TalkGain,
+}
+
+/// One talker's decoders, chosen per packet by payload type. PCMU is decoded and interpolated from
+/// 8 kHz to the speaker rate; a speaker rate that is no multiple of 8 kHz plays no PCMU.
+struct TalkDecoder {
+    opus: Box<dyn OpusDecode>,
+    pcmu: Option<crate::resample::Interpolator>,
+}
+
+impl TalkDecoder {
+    fn new(opus: Box<dyn OpusDecode>, rate: u32) -> Self {
+        Self {
+            opus,
+            pcmu: crate::resample::Interpolator::new(rate),
+        }
+    }
+
+    fn decode(&mut self, codec: Codec, payload: &[u8]) -> Option<Vec<i16>> {
+        match codec {
+            Codec::Opus => self.opus.decode(payload),
+            Codec::Pcmu => {
+                let linear: Vec<i16> = payload
+                    .iter()
+                    .map(|&b| crate::resample::mulaw_to_linear(b))
+                    .collect();
+                Some(self.pcmu.as_mut()?.push(&linear))
+            }
+        }
+    }
 }
 
 impl Talkback {
@@ -219,7 +249,7 @@ impl Talkback {
         Some(TalkLease {
             talk: Arc::clone(self),
             slot,
-            decoder,
+            decoder: TalkDecoder::new(decoder, self.rate),
             gain: TalkGain::default(),
         })
     }
@@ -255,12 +285,13 @@ impl Talkback {
 }
 
 impl TalkLease {
-    /// One RTP packet from this talker. Malformed packets and payload types other than 111 and 96 are ignored.
+    /// One RTP packet from this talker. Malformed packets and payload types other than Opus (111, 96) and
+    /// PCMU (0) are ignored.
     pub fn push_rtp(&mut self, packet: &[u8]) {
-        let Some(payload) = rtp_payload(packet) else {
+        let Some((codec, payload)) = rtp_payload(packet) else {
             return;
         };
-        let Some(pcm) = self.decoder.decode(payload) else {
+        let Some(pcm) = self.decoder.decode(codec, payload) else {
             return;
         };
         if pcm.is_empty() || pcm.len() > speaker_max(self.talk.rate) {
@@ -283,16 +314,26 @@ impl Drop for TalkLease {
 /// The payload type ffmpeg gives its Opus output.
 const FFMPEG_OPUS_PT: u8 = 96;
 
-fn rtp_payload(packet: &[u8]) -> Option<&[u8]> {
-    // The backchannel track carries Opus only. The SDP offers 111, which WebRTC relays keep; ffmpeg
-    // (go2rtc's `ffmpeg:` sources) numbers its Opus output 96 whatever was offered. Anything else,
-    // static types (PCMU…) included, is refused.
-    if packet.len() < 12
-        || packet[0] >> 6 != 2
-        || !matches!(packet[1] & 127, PAYLOAD_TYPE | FFMPEG_OPUS_PT)
-    {
+/// Static RTP payload type of G.711 µ-law (RFC 3551).
+const PCMU_PT: u8 = 0;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Codec {
+    Opus,
+    Pcmu,
+}
+
+fn rtp_payload(packet: &[u8]) -> Option<(Codec, &[u8])> {
+    // Opus is offered as 111, which WebRTC relays keep; ffmpeg (go2rtc's `ffmpeg:` sources) numbers its
+    // Opus output 96 whatever was offered. Recorders talk PCMU, static type 0. Anything else is refused.
+    if packet.len() < 12 || packet[0] >> 6 != 2 {
         return None;
     }
+    let codec = match packet[1] & 127 {
+        PAYLOAD_TYPE | FFMPEG_OPUS_PT => Codec::Opus,
+        PCMU_PT => Codec::Pcmu,
+        _ => return None,
+    };
     let mut start = 12 + usize::from(packet[0] & 15) * 4;
     if packet[0] & 16 != 0 {
         let header = packet.get(start..start + 4)?;
@@ -307,7 +348,8 @@ fn rtp_payload(packet: &[u8]) -> Option<&[u8]> {
     } else {
         0
     };
-    packet.get(start..packet.len().checked_sub(padding)?)
+    let payload = packet.get(start..packet.len().checked_sub(padding)?)?;
+    Some((codec, payload))
 }
 
 #[cfg(test)]
@@ -494,7 +536,7 @@ mod tests {
         for packet in [
             vec![],
             vec![0x80, PAYLOAD_TYPE, 0, 0],
-            vec![0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff], // PCMU
+            vec![0x80, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff], // PCMA
             vec![0x90, PAYLOAD_TYPE, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff], // short extension
             vec![0xa0, PAYLOAD_TYPE, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 100], // excessive padding
             vec![0x40, PAYLOAD_TYPE, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1], // RTP v1
@@ -533,16 +575,45 @@ mod tests {
             0,
             2,
         ];
-        assert_eq!(rtp_payload(&csrc_ext_padding), Some(&[100][..]));
+        assert_eq!(
+            rtp_payload(&csrc_ext_padding),
+            Some((Codec::Opus, &[100][..]))
+        );
         // ffmpeg numbers the same Opus track 96; other dynamic types are not ours.
         assert_eq!(
             rtp_payload(&[0x80, 96, 0, 1, 0, 0, 0, 0, 1, 2, 3, 4, 7]),
-            Some(&[7][..])
+            Some((Codec::Opus, &[7][..]))
+        );
+        assert_eq!(
+            rtp_payload(&[0x80, 0, 0, 1, 0, 0, 0, 0, 1, 2, 3, 4, 7]),
+            Some((Codec::Pcmu, &[7][..]))
         );
         assert_eq!(
             rtp_payload(&[0x80, 97, 0, 1, 0, 0, 0, 0, 1, 2, 3, 4, 7]),
             None
         );
+    }
+
+    #[test]
+    fn a_pcmu_talker_is_interpolated_to_the_speaker_rate_and_mixed_like_opus() {
+        let talk = fake_talkback();
+        let mut lease = talk.claim().unwrap();
+        // 20 ms of a loud 1 kHz µ-law tone (8 samples per period at 8 kHz).
+        let tone: Vec<u8> = (0..160)
+            .map(|i| {
+                let x = (12_000.0 * (std::f64::consts::PI * i as f64 / 4.0).sin()) as i16;
+                crate::microphone::encode_pcm8k_mono(&[x]).unwrap()[0]
+            })
+            .collect();
+        let mut packet = vec![0x80, 0, 0, 1, 0, 0, 0, 0, 1, 2, 3, 4];
+        packet.extend(&tone);
+        for _ in 0..6 {
+            lease.push_rtp(&packet);
+        }
+        let pcm = talk.next_pcm(Instant::now()).unwrap();
+        assert_eq!(pcm.len(), F, "8 kHz in, 20 ms at the 16 kHz speaker out");
+        let peak = pcm.iter().map(|s| s.unsigned_abs()).max().unwrap();
+        assert!(peak > 4000, "the tone reaches the speaker: {peak}");
     }
 
     #[test]

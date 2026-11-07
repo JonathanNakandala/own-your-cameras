@@ -499,7 +499,7 @@ def main():
         return all(token in log for token in ("rtsp: serving", "mqtt: connected", "keypad: ready"))
 
     wait_for("RTSP, MQTT and the keypad to come up", healthy, 600)
-    say(f"Done. Streams: rtsp://{host}/Streaming/Channels/101 and /102; Home Assistant finds "
+    say(f"Done. Streams: rtsp://{host}/main and /sub; Home Assistant finds "
         f"'{v['device_name']}' over MQTT. SSH: ssh root@{host} with your key.")
 
 

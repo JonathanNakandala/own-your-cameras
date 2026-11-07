@@ -6,10 +6,14 @@ mod http;
 mod hw;
 mod keypad;
 mod link;
+mod onvif;
 mod uart;
 
 use camera_transport::microphone::Format;
-use camera_transport::{AudioHub, Config as RtspConfig, Credentials, Hub};
+use camera_transport::{
+    AudioHub, Backchannel, Config as RtspConfig, Credentials, Hub, MAIN_PATH, MAIN_PCMU_PATH,
+    SUB_PATH, SUB_PCMU_PATH, StreamPath,
+};
 use ds_kd8003_ime1_cam::access::{Access, Decision};
 use ds_kd8003_ime1_cam::config::{self, Config};
 use ds_kd8003_ime1_cam::discovery::{self, DoorCommand};
@@ -306,6 +310,19 @@ pub fn main(args: &[String]) {
     }
     g.beat();
 
+    // SAFETY: the graph is up; the bridge creates VENC channel 2 once, bound beside the main encoder.
+    let jpeg_rc = unsafe { gm_jpeg_open() };
+    g.log(format!("snapshot: JPEG channel rc {jpeg_rc}"));
+    if !cfg.ntp.is_empty() {
+        let keeper = camera_transport::sntp::Keeper {
+            servers: cfg.ntp.clone(),
+            log: |line| eprintln!("{line}"),
+        };
+        if let Err(e) = keeper.spawn(Arc::new(AtomicBool::new(false))) {
+            g.log(format!("time: not started: {e}"));
+        }
+    }
+
     let video = Hub::new();
     let sub = Hub::new();
     let mic = AudioHub::with_format(Format::Pcmu8k);
@@ -323,17 +340,24 @@ pub fn main(args: &[String]) {
     match camera_transport::bind(cfg.rtsp_port) {
         Ok(listener) => {
             let rtsp = Arc::new(RtspConfig {
-                streams: vec![
-                    ("Streaming/Channels/101".to_string(), video.clone()),
-                    ("Streaming/Channels/102".to_string(), sub.clone()),
-                    ("main".to_string(), video.clone()),
-                    ("sub".to_string(), sub.clone()),
-                ],
+                // The paths every camera serves. Every path carries the PCMU microphone; the PCMU
+                // paths also offer a PCMU backchannel to recorders, `main`/`sub` offer Opus.
+                streams: [
+                    (MAIN_PATH, &video, Backchannel::Opus),
+                    (SUB_PATH, &sub, Backchannel::Opus),
+                    (MAIN_PCMU_PATH, &video, Backchannel::Pcmu),
+                    (SUB_PCMU_PATH, &sub, Backchannel::Pcmu),
+                ]
+                .map(|(path, hub, backchannel)| {
+                    StreamPath::new(path, hub.clone())
+                        .audio(Some(mic.clone()))
+                        .backchannel(backchannel)
+                })
+                .into(),
                 creds: Some(Credentials {
                     user: cfg.rtsp_user.clone(),
                     password: cfg.rtsp_password.clone(),
                 }),
-                audio: Some(mic.clone()),
                 talk: Some(Arc::clone(&talk)),
             });
             let g2 = g.clone();
@@ -408,6 +432,9 @@ pub fn main(args: &[String]) {
             Err(e) => g.log(format!("http: bind failed {e}")),
         }
     }
+
+    let onvif = start_onvif(&g, &cfg, jpeg_rc == 0);
+    let events = onvif.as_ref().map(|service| service.events());
 
     let mut access = Access::new(credentials);
     let open_ms = u64::from(cfg.open_seconds) * 1000;
@@ -505,6 +532,9 @@ pub fn main(args: &[String]) {
                     if reed_open { "OPEN" } else { "closed" }
                 ));
                 publisher.publish(&topics.reed, discovery::door_state(reed_open), true);
+                if let Some(events) = &events {
+                    events.input(onvif::DOOR, reed_open);
+                }
             }
             // The cover is "open" while the strike is released or the leaf is away from the reed:
             // Home Assistant only offers "close" on an open cover, and a released strike is what
@@ -530,6 +560,9 @@ pub fn main(args: &[String]) {
             ));
             if pressed {
                 g.st.lock().unwrap().button_presses += 1;
+            }
+            if let Some(events) = &events {
+                events.input(onvif::CALL_BUTTON, pressed);
             }
             publisher.publish(
                 &topics.call_button,
@@ -652,6 +685,53 @@ pub fn main(args: &[String]) {
     unsafe { gm_amp(0) };
     thread::sleep(Duration::from_millis(500));
     std::process::exit(0);
+}
+
+/// ONVIF on `onvif_port` with the RTSP credentials; `None` when it is off or cannot start (logged: the
+/// door works without it).
+fn start_onvif(g: &Arc<Device>, cfg: &Config, jpeg: bool) -> Option<camera_onvif::Service> {
+    if cfg.onvif_port == 0 {
+        return None;
+    }
+    let identity = camera_onvif::identity(
+        camera_onvif::Product {
+            manufacturer: "Hikvision".into(),
+            model: "DS-KD8003-IME1".into(),
+            firmware: env!("CARGO_PKG_VERSION").into(),
+            hardware: "DS-KD8003-IME1".into(),
+            name: cfg.device_name.clone(),
+            ntp: cfg.ntp.clone(),
+            dhcp: true,
+        },
+        None,
+    );
+    let camera = Arc::new(onvif::DoorOnvif {
+        identity,
+        device: g.clone(),
+        jpeg,
+        buffer: Mutex::new(Vec::new()),
+    });
+    let creds = Credentials {
+        user: cfg.rtsp_user.clone(),
+        password: cfg.rtsp_password.clone(),
+    };
+    match camera_onvif::start(
+        camera,
+        creds,
+        cfg.rtsp_port,
+        cfg.onvif_port,
+        camera_onvif::HttpLimits::DEFAULT,
+        |line| eprintln!("{line}"),
+    ) {
+        Ok(service) => {
+            g.log(format!("onvif: serving on {}", cfg.onvif_port));
+            Some(service)
+        }
+        Err(e) => {
+            g.log(format!("onvif: not started on {}: {e}", cfg.onvif_port));
+            None
+        }
+    }
 }
 
 fn video_loop(g: Arc<Device>, chn: usize, hub: Arc<Hub>) {

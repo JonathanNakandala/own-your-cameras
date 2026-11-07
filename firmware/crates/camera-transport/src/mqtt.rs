@@ -101,6 +101,7 @@ pub enum Command {
     Home,
     Preset(crate::motion_control::PresetName),
     SavePreset(crate::motion_control::PresetName),
+    RemovePreset(crate::motion_control::PresetName),
     Position3d(crate::position3d::Request),
     Stop,
     /// Graceful held-motion release; explicit Stop remains the hard stop.
@@ -375,6 +376,7 @@ impl Config {
                 }),
                 Request::Preset(name) => Command::Preset(name),
                 Request::SavePreset(name) => Command::SavePreset(name),
+                Request::RemovePreset(name) => Command::RemovePreset(name),
                 Request::Point { x, y } => Command::Position3d(crate::position3d::Request {
                     start: (x, y),
                     end: (x, y),

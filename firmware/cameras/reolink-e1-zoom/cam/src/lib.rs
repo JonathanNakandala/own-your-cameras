@@ -14,6 +14,7 @@ mod media_tuning;
 pub use camera_control::motion_control;
 pub mod mqtt;
 pub mod net;
+pub mod onvif;
 pub mod pipeline;
 pub mod position3d;
 pub mod presets;

@@ -169,9 +169,8 @@ fn commands_validate_topics_payloads_and_presets_before_hardware_access() {
         ("tilt", "-1"),
         ("zoom", "1025"),
         ("zoom", "1.5"),
-        ("preset", "Missing"),
-        ("preset_save", "Missing"),
-        ("preset_save", "desk"),
+        ("preset", " "),
+        ("preset_save", ""),
         ("ir", "dusk"),
         ("led", "yes"),
         ("reboot", "yes"),
@@ -196,14 +195,24 @@ fn commands_validate_topics_payloads_and_presets_before_hardware_access() {
             .is_none()
     );
     assert!(cfg.command("camera/e1zoom/led/set", &[255], false).is_err());
+    // Any valid name reaches the hardware thread: a save creates the preset there.
     let none = Config::default();
-    for id in ["preset", "preset_save"] {
-        assert_eq!(
-            none.command(&format!("camera/e1zoom/{id}/set"), b"Desk", false),
-            Err("unknown preset".into()),
-            "no presets configured"
-        );
-    }
+    assert_eq!(
+        none.command("camera/e1zoom/preset_save/set", b"Window", false),
+        Ok(Some(Command::SavePreset("Window".into())))
+    );
+    assert_eq!(
+        none.command("camera/e1zoom/preset/set", b"Missing", false),
+        Ok(Some(Command::Preset("Missing".into())))
+    );
+    assert_eq!(
+        none.command(
+            "camera/e1zoom/motion/set",
+            br#"{"v":1,"op":"remove_preset","name":"Desk"}"#,
+            false
+        ),
+        Ok(Some(Command::RemovePreset("Desk".into())))
+    );
 }
 
 #[test]

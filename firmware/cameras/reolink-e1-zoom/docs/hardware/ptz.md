@@ -150,7 +150,7 @@ Not reproduced (not needed here): backlash compensation, cruise tracks, the slee
 with or without a 1200 pps write at 0.5 s). The gap from "idle seen" to the next kick is 3–7 ms.
 Homing always uses the vendor 600 pps with no ramp (`Profile::homing()`).
 
-Repeatability: a frame of `Preview_01_main` (1920×1440) at (6195, 650), 10 round trips
+Repeatability: a frame of `main` (1920×1440) at (6195, 650), 10 round trips
 (3262, 739) ↔ (6195, 650) at the rate, a frame at (6195, 650) again, phase-correlation shift (the RAM probe
 `cam/examples/probe90.rs`, stock stack stopped, ≈1 step per pixel horizontally):
 
