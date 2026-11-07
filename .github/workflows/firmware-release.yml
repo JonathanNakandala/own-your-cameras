@@ -13,6 +13,10 @@ permissions:
 concurrency:
   group: firmware-release-${{ github.event.inputs.version || github.ref_name }}
   cancel-in-progress: false
+env:
+  CARGO_NET_RETRY: "10"
+  RUSTUP_MAX_RETRIES: "10"
+
 jobs:
   build:
     runs-on: ubuntu-24.04
@@ -38,8 +42,8 @@ jobs:
           PY
       - name: Host tools and Rust
         run: |
-          sudo apt-get update
-          sudo apt-get install -y clang llvm lld make autoconf automake
+          sudo apt-get -o Acquire::Retries=5 update
+          sudo apt-get -o Acquire::Retries=5 install -y clang llvm lld make autoconf automake
           rustup toolchain install 1.95.0 --profile minimal --component rustfmt --component clippy --component rust-src
           rustup default 1.95.0
           rustup target add --toolchain 1.95.0 armv7-unknown-linux-gnueabihf

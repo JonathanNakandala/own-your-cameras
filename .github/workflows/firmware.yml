@@ -7,6 +7,10 @@ on:
     paths: ['firmware/**', 'tools/mi-360/**', 'tools/reolink-e1-zoom/**', 'tools/ds-kd8003-ime1/**', 'Makefile', '.github/workflows/**']
 permissions:
   contents: read
+env:
+  CARGO_NET_RETRY: "10"
+  RUSTUP_MAX_RETRIES: "10"
+
 jobs:
   host:
     runs-on: ubuntu-24.04
@@ -17,11 +21,18 @@ jobs:
           persist-credentials: false
       - name: Host compiler and Rust
         run: |
-          sudo apt-get update
-          sudo apt-get install -y clang llvm lld
+          sudo apt-get -o Acquire::Retries=5 update
+          sudo apt-get -o Acquire::Retries=5 install -y clang llvm lld
           rustup toolchain install 1.95.0 --profile minimal --component rustfmt --component clippy --component rust-src
           rustup default 1.95.0
           rustup target add --toolchain 1.95.0 armv7-unknown-linux-gnueabihf
+      - name: Cache pinned tools
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            firmware/.tools/zig
+            firmware/.tools/opus-*
+          key: pinned-tools-${{ runner.os }}-${{ hashFiles('firmware/toolchain.json', 'firmware/opus.json') }}
       - name: Pinned cross compiler
         run: |
           python3 firmware/scripts/fetch-zig.py

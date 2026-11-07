@@ -5,11 +5,10 @@ import hashlib
 import json
 from pathlib import Path
 import platform
-import shutil
 import subprocess
 import tarfile
 import tempfile
-import urllib.request
+import download
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -38,11 +37,10 @@ def main():
         with tempfile.TemporaryDirectory(prefix='zig-download-', dir=output.parent) as directory:
             temporary = Path(directory)
             archive = temporary / 'zig.tar.xz'
-            with urllib.request.urlopen(source['url'], timeout=60) as response:
-                with archive.open('wb') as destination:
-                    shutil.copyfileobj(response, destination)
-            if hashlib.sha256(archive.read_bytes()).hexdigest() != source['sha256']:
-                raise ValueError('Compiler archive SHA-256 does not match the recorded official release')
+            try:
+                archive.write_bytes(download.fetch(source['url'], source['sha256']))
+            except download.DigestMismatch:
+                raise ValueError('Compiler archive SHA-256 does not match the recorded official release') from None
             with tarfile.open(archive) as bundle:
                 bundle.extractall(temporary / 'unpacked', filter='data')
             candidates = list((temporary / 'unpacked').iterdir())
