@@ -56,24 +56,59 @@ fn main() {
     );
     let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap();
     let os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
+    let env = std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
     let host = std::env::var("HOST").unwrap() == std::env::var("TARGET").unwrap();
+    // the DS-KD8003-IME1's ARM926EJ-S has no FPU: the fixed-point library, decoder-only use.
+    let fixed = arch == "arm" && env == "uclibc";
 
     let mut sources = list(&source.join("opus_sources.mk"), "OPUS_SOURCES");
-    sources.extend(list(&source.join("opus_sources.mk"), "OPUS_SOURCES_FLOAT"));
+    if !fixed {
+        sources.extend(list(&source.join("opus_sources.mk"), "OPUS_SOURCES_FLOAT"));
+    }
     sources.extend(list(&source.join("celt_sources.mk"), "CELT_SOURCES"));
     sources.extend(list(&source.join("silk_sources.mk"), "SILK_SOURCES"));
-    sources.extend(list(&source.join("silk_sources.mk"), "SILK_SOURCES_FLOAT"));
+    sources.extend(list(
+        &source.join("silk_sources.mk"),
+        if fixed {
+            "SILK_SOURCES_FIXED"
+        } else {
+            "SILK_SOURCES_FLOAT"
+        },
+    ));
     let mut flags: Vec<String> = ["-O2", "-ffunction-sections", "-fdata-sections", "-w"]
         .map(String::from)
         .to_vec();
     for define in ["OPUS_BUILD", "USE_ALLOCA", "HAVE_LRINTF", "HAVE_LRINT"] {
         flags.push(format!("-D{define}"));
     }
-    for dir in ["", "include", "celt", "silk", "silk/float"] {
+    for dir in [
+        "",
+        "include",
+        "celt",
+        "silk",
+        if fixed { "silk/fixed" } else { "silk/float" },
+    ] {
         flags.push("-I".into());
         flags.push(source.join(dir).display().to_string());
     }
     match arch.as_str() {
+        // Hikvision DS-KD8003: ARM926EJ-S, soft float, uClibc. Fixed point, size-optimised, no NEON.
+        "arm" if fixed => {
+            flags.retain(|f| f != "-O2");
+            flags.extend(
+                [
+                    "-Os",
+                    "-target",
+                    "arm-linux-musleabi",
+                    "-mcpu=arm926ej_s",
+                    "-mfloat-abi=soft",
+                    "-fPIC",
+                    "-DFIXED_POINT",
+                    "-DDISABLE_FLOAT_API",
+                ]
+                .map(String::from),
+            );
+        }
         // Reolink E1 Zoom: Cortex-A9 with NEON and no hardware divide (udiv-guard checks the result).
         "arm" if !host => {
             flags.extend(

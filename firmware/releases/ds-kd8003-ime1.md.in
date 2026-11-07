@@ -1,0 +1,27 @@
+# Install this DS-KD8003-IME1 bundle
+
+Supported: original non-B DS-KD8003-IME1 on stock V2.2.62 build 230204, untouched. You need the
+panel's administrator password, an MQTT broker, Python 3.12+ and an SSH key pair.
+
+```sh
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python install.py
+```
+
+The installer asks for the panel address, the administrator password, the MQTT broker, the RTSP login,
+the PIN table file and your SSH public key, and confirms before it flashes and before it switches.
+It needs no firmware download: it reads the panel's own firmware, checks it is the unmodified stock
+build, adds the startup hook and flashes it, then uploads the application and switches to it.
+
+For unattended runs, give every setting as a flag (`--help` lists them) or in a TOML file with
+`--config`, secrets included or in `DS_KD_ADMIN_PASSWORD`, `DS_KD_MQTT_PASSWORD` and
+`DS_KD_RTSP_PASSWORD`; add `--yes` to skip the two confirmations.
+
+After the switch the vendor web interface, ISAPI and the vendor SSH service are gone: log in with your
+key (`ssh root@PANEL`). Delete `/home/config/custom/native.enabled` and reboot to return to the vendor
+application; two unhealthy boots in a row do the same by themselves.
+
+`third-party/` holds the HiSilicon Hi3516CV300 MPP libraries the application loads, redistributed from
+OpenIPC (sources and hashes in `third-party/SOURCES.json`); the project's MIT license does not cover them.
+More: `source/firmware/cameras/ds-kd8003-ime1/README.md`.

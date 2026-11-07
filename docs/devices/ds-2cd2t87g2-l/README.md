@@ -28,7 +28,7 @@ V5.5.820 build 231108. Start with [root and persistent SSH](../../shared/root-ac
 | PHY reset / peripheral MCU reset | GPIO 62 / 91 |
 | Sensor | I2C `0x36`, 8 MP MIPI, board code HIK188; exact sensor part unconfirmed |
 
-Use ARMv7 softfp builds, not the door station's ARMv5/uClibc binary assumptions.
+Use ARMv7 softfp builds, not the DS-KD8003-IME1's ARMv5/uClibc binary assumptions.
 Do not kill `davinci` or `hikdsp`: watchdog and `guard.sh` behavior can send the
 camera into recovery. `/home/webLib` is HTTP-served; keep private files elsewhere.
 

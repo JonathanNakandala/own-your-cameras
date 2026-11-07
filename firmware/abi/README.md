@@ -2,7 +2,8 @@
 
 These JSON manifests describe the link interfaces of the hash-pinned camera libraries. They contain
 symbol metadata, library identities, versions and architecture attributes, with no implementations.
-The Mi360 manifests describe stockuClibc0.9.33.2 and its matching runtime; Reolink describes HDAL2.00.000.
+The Mi360 (MIPS) and DS-KD8003-IME1 (ARM) manifests describe stock uClibc 0.9.33.2 and its matching
+runtime; Reolink describes HDAL 2.00.000.
 
 `scripts/link_stubs.py` uses only Python's standard library to generate deterministic, non-installable
 ELF32 interfaces. They have no program headers or executable payload. Native builds link through these

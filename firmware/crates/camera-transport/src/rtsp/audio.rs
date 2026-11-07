@@ -1,5 +1,6 @@
-//! Microphone fan-out at the RTSP boundary: one Opus packet stream shared by every listener.
+//! Microphone fan-out at the RTSP boundary: one encoded packet stream shared by every listener.
 
+use crate::microphone::Format;
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex, Weak};
 
@@ -8,9 +9,10 @@ pub struct AudioFrame {
     pub data: Vec<u8>,
 }
 
-/// One microphone capture shared by both RTSP paths; at most 16 Opus packets (320 ms) queued per viewer.
+/// One microphone capture shared by both RTSP paths; at most 16 blocks (320 ms of Opus) queued per viewer.
 #[derive(Default)]
 pub struct AudioHub {
+    format: Format,
     subs: Mutex<Vec<AudioSub>>,
 }
 
@@ -34,8 +36,18 @@ impl AudioViewer {
 }
 
 impl AudioHub {
+    /// An Opus 48 kHz microphone.
     pub fn new() -> Arc<Self> {
         Arc::new(Self::default())
+    }
+    pub fn with_format(format: Format) -> Arc<Self> {
+        Arc::new(Self {
+            format,
+            subs: Mutex::default(),
+        })
+    }
+    pub fn format(&self) -> Format {
+        self.format
     }
     /// Current microphone viewers, including ones waiting for their first frame.
     pub fn viewers(&self) -> usize {

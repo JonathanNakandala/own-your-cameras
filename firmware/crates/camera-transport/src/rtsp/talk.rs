@@ -255,7 +255,7 @@ impl Talkback {
 }
 
 impl TalkLease {
-    /// One RTP packet from this talker. Malformed packets and other payload types are ignored.
+    /// One RTP packet from this talker. Malformed packets and payload types other than 111 and 96 are ignored.
     pub fn push_rtp(&mut self, packet: &[u8]) {
         let Some(payload) = rtp_payload(packet) else {
             return;
@@ -280,8 +280,17 @@ impl Drop for TalkLease {
     }
 }
 
+/// The payload type ffmpeg gives its Opus output.
+const FFMPEG_OPUS_PT: u8 = 96;
+
 fn rtp_payload(packet: &[u8]) -> Option<&[u8]> {
-    if packet.len() < 12 || packet[0] >> 6 != 2 || packet[1] & 127 != PAYLOAD_TYPE {
+    // The backchannel track carries Opus only. The SDP offers 111, which WebRTC relays keep; ffmpeg
+    // (go2rtc's `ffmpeg:` sources) numbers its Opus output 96 whatever was offered. Anything else,
+    // static types (PCMU…) included, is refused.
+    if packet.len() < 12
+        || packet[0] >> 6 != 2
+        || !matches!(packet[1] & 127, PAYLOAD_TYPE | FFMPEG_OPUS_PT)
+    {
         return None;
     }
     let mut start = 12 + usize::from(packet[0] & 15) * 4;
@@ -525,6 +534,15 @@ mod tests {
             2,
         ];
         assert_eq!(rtp_payload(&csrc_ext_padding), Some(&[100][..]));
+        // ffmpeg numbers the same Opus track 96; other dynamic types are not ours.
+        assert_eq!(
+            rtp_payload(&[0x80, 96, 0, 1, 0, 0, 0, 0, 1, 2, 3, 4, 7]),
+            Some(&[7][..])
+        );
+        assert_eq!(
+            rtp_payload(&[0x80, 97, 0, 1, 0, 0, 0, 0, 1, 2, 3, 4, 7]),
+            None
+        );
     }
 
     #[test]

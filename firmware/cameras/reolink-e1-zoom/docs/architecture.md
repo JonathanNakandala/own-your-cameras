@@ -112,7 +112,8 @@ every pending capture frame and every due mixed speaker block per turn.
 
 `cam::rtsp` is a small RTSP 1.0 server: OPTIONS, DESCRIBE, SETUP, PLAY, TEARDOWN and GET_PARAMETER as keep-alive,
 digest authentication with the single `user:password` in `/mnt/para/cam-rtsp.auth`, RTP interleaved on the TCP
-connection or over UDP to the client's ports, at most eight connections and 60 s session timeout.
+connection or over UDP to the client's ports, at most eight connections and 60 s session timeout. Video limits:
+7 MiB access units, 8 MiB shared retained video, 32 queued frames.
 
 Each path offers H.264 video (track 0) and Opus audio (track 1, RFC 7587: PT 111, `opus/48000/2`,
 `sprop-stereo=0`, 48 kHz mono, 64 kbit/s, one 20 ms frame per packet). A client that sends `Require:

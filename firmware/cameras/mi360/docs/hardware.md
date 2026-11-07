@@ -48,6 +48,11 @@ separately, and validate against independent image pairs before enabling this fe
 coefficients from the Reolink lens or reuse household recordings as public fixtures. Display delay
 also depends on the viewing client. Open-loop pointing is approximate, not angular/encoder feedback.
 
+## RTSP limits
+
+At most six RTSP connections with 96 KiB worker stacks; 1 MiB access units, 2 MiB retained video and four
+queued frames.
+
 ## Audio and recovery limits
 
 The microphone is captured at 48 kHz (IMP AI device 1, 40 ms frames of 1,920 samples) and encoded to

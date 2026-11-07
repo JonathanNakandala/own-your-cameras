@@ -1,5 +1,7 @@
-//! Hardware-neutral microphone path: 48 kHz mono capture blocks of any size → 20 ms Opus frames → RTP
-//! (RFC 7587: dynamic PT 111, 48 kHz clock, one frame per packet). Pure: no clock reads, no I/O.
+//! Hardware-neutral microphone path. Opus: 48 kHz mono capture blocks of any size → 20 ms Opus frames →
+//! RTP (RFC 7587: dynamic PT 111, 48 kHz clock, one frame per packet). PCMU: 8 kHz G.711 µ-law blocks →
+//! RTP (RFC 3551: static PT 0, 160 samples per 20 ms packet) for recorders that take no Opus.
+//! Pure: no clock reads, no I/O.
 
 use crate::opus::{MIC_FRAME, MIC_RATE, OpusEncode, PAYLOAD_TYPE};
 
@@ -7,13 +9,111 @@ const FRAME_US: u64 = MIC_FRAME as u64 * 1_000_000 / MIC_RATE as u64;
 /// A capture block this far from where the previous one ended is a gap: the remainder is dropped.
 const MAX_SKEW_US: u64 = 40_000;
 
+/// The microphone codec an application publishes into its `AudioHub`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Format {
+    #[default]
+    Opus48k,
+    Pcmu8k,
+}
+
+impl Format {
+    /// Duration of one RTP packet.
+    pub const fn packet_us(self) -> u64 {
+        match self {
+            Self::Opus48k => FRAME_US,
+            Self::Pcmu8k => PCMU_PACKET_US,
+        }
+    }
+}
+
 /// Track 1 of both RTSP paths. RFC 7587 requires `opus/48000/2` even for a mono stream.
 pub fn sdp() -> String {
-    format!(
-        "m=audio 0 RTP/AVP {pt}\r\na=rtpmap:{pt} opus/48000/2\r\na=fmtp:{pt} sprop-stereo=0\r\n\
-         a=control:trackID=1\r\na=recvonly\r\n",
-        pt = PAYLOAD_TYPE
-    )
+    sdp_for(Format::Opus48k)
+}
+
+/// Track 1 of both RTSP paths for the given codec.
+pub fn sdp_for(format: Format) -> String {
+    match format {
+        Format::Opus48k => format!(
+            "m=audio 0 RTP/AVP {pt}\r\na=rtpmap:{pt} opus/48000/2\r\na=fmtp:{pt} sprop-stereo=0\r\n\
+             a=control:trackID=1\r\na=recvonly\r\n",
+            pt = PAYLOAD_TYPE
+        ),
+        Format::Pcmu8k => {
+            "m=audio 0 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000/1\r\na=control:trackID=1\r\na=recvonly\r\n"
+                .into()
+        }
+    }
+}
+
+/// 160 samples at 8 kHz.
+pub const PCMU_PACKET_US: u64 = 20_000;
+const PCMU_SAMPLES: usize = 160;
+
+/// RTP for PCMU: a published block of any whole number of 20 ms packets is split into them, timestamps
+/// advancing 160 per packet from the block's PTS.
+pub struct PcmuPacketizer {
+    ssrc: u32,
+    sequence: u16,
+    first: bool,
+}
+
+impl PcmuPacketizer {
+    pub fn new(ssrc: u32) -> Self {
+        Self {
+            ssrc,
+            sequence: 0,
+            first: true,
+        }
+    }
+
+    pub fn packets(&mut self, pts_us: u64, bytes: &[u8]) -> Vec<Vec<u8>> {
+        if bytes.is_empty() || bytes.len() > 8191 {
+            return Vec::new();
+        }
+        let timestamp = (pts_us.wrapping_mul(8000) / 1_000_000) as u32;
+        bytes
+            .chunks(PCMU_SAMPLES)
+            .enumerate()
+            .map(|(index, payload)| {
+                let mut packet = Vec::with_capacity(12 + payload.len());
+                packet.extend_from_slice(&[0x80, if self.first { 0x80 } else { 0 }]);
+                packet.extend_from_slice(&self.sequence.to_be_bytes());
+                packet.extend_from_slice(
+                    &timestamp
+                        .wrapping_add((index * PCMU_SAMPLES) as u32)
+                        .to_be_bytes(),
+                );
+                packet.extend_from_slice(&self.ssrc.to_be_bytes());
+                packet.extend_from_slice(payload);
+                self.sequence = self.sequence.wrapping_add(1);
+                self.first = false;
+                packet
+            })
+            .collect()
+    }
+}
+
+/// G.711 µ-law for one bounded 8 kHz mono PCM16 block (for example one 40 ms SDK frame).
+pub fn encode_pcm8k_mono(samples: &[i16]) -> Option<Vec<u8>> {
+    if samples.is_empty() || samples.len() > 1600 {
+        return None;
+    }
+    Some(samples.iter().map(|&s| linear_to_mulaw(s)).collect())
+}
+
+fn linear_to_mulaw(sample: i16) -> u8 {
+    let sign = if sample < 0 { 0x80 } else { 0 };
+    let biased = i32::from(sample).abs().min(32635) + 132;
+    let mut exponent = 7;
+    let mut mask = 0x4000;
+    while exponent > 0 && biased & mask == 0 {
+        exponent -= 1;
+        mask >>= 1;
+    }
+    let mantissa = (biased >> (exponent + 3)) & 0x0f;
+    !(sign | (exponent << 4) as u8 | mantissa as u8)
 }
 
 /// Regroups capture blocks into exact 960-sample frames, each stamped with its first sample's time.
@@ -244,5 +344,40 @@ mod tests {
         assert_eq!(jitter.deadline(100_000, 20_000), Some(100_000));
         assert_eq!(jitter.deadline(121_000, 20_000), Some(121_000));
         assert_eq!(jitter.deadline(121_000, 20_000), Some(140_000));
+    }
+}
+
+#[cfg(test)]
+mod pcmu_tests {
+    use super::*;
+
+    #[test]
+    fn a_40ms_block_becomes_two_paced_packets_with_contiguous_timestamps() {
+        let mut pk = PcmuPacketizer::new(7);
+        let packets = pk.packets(1_000_000, &[0xff; 320]);
+        assert_eq!(packets.len(), 2);
+        assert_eq!(packets[0][1], 0x80, "marker on the first packet only");
+        assert_eq!(packets[1][1], 0, "static payload type 0");
+        assert_eq!(
+            u32::from_be_bytes(packets[0][4..8].try_into().unwrap()),
+            8000
+        );
+        assert_eq!(
+            u32::from_be_bytes(packets[1][4..8].try_into().unwrap()),
+            8160
+        );
+        assert_eq!(u16::from_be_bytes(packets[1][2..4].try_into().unwrap()), 1);
+        assert_eq!(packets[1].len(), 12 + 160);
+        assert!(pk.packets(0, &[]).is_empty());
+    }
+
+    #[test]
+    fn mulaw_matches_the_itu_reference_points() {
+        assert_eq!(
+            encode_pcm8k_mono(&[0, 32767, -32768, 1000, -1000]).unwrap(),
+            [0xff, 0x80, 0x00, 0xce, 0x4e]
+        );
+        assert!(encode_pcm8k_mono(&[]).is_none());
+        assert!(encode_pcm8k_mono(&[0; 1601]).is_none());
     }
 }

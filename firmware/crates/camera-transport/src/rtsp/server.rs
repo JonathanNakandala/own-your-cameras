@@ -281,6 +281,7 @@ struct Setup {
 
 fn audio_sender(
     viewer: AudioViewer,
+    format: crate::microphone::Format,
     sink: Sink,
     w: Writer,
     ssrc: u32,
@@ -290,7 +291,9 @@ fn audio_sender(
     if go.recv().is_err() {
         return;
     }
-    let mut pk = crate::microphone::Packetizer::new(ssrc);
+    let mut opus = crate::microphone::Packetizer::new(ssrc);
+    let mut pcmu = crate::microphone::PcmuPacketizer::new(ssrc);
+    let packet_us = format.packet_us();
     let started = std::time::Instant::now();
     let mut pacer = crate::microphone::Pacer::default();
     while !stop.load(Ordering::Relaxed) {
@@ -299,13 +302,17 @@ fn audio_sender(
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
             Err(_) => return,
         };
-        let Some(packet) = pk.packet(frame.pts_us, &frame.data) else {
-            continue;
+        let packets = match format {
+            crate::microphone::Format::Opus48k => {
+                opus.packet(frame.pts_us, &frame.data).into_iter().collect()
+            }
+            crate::microphone::Format::Pcmu8k => pcmu.packets(frame.pts_us, &frame.data),
         };
-        // Capture blocks (21.3 ms on the Reolink) yield frames unevenly; send them at a steady 20 ms.
-        {
+        // Capture blocks (21.3 ms on the Reolink, 40 ms on HiSilicon) yield packets unevenly; send them
+        // at a steady 20 ms.
+        for packet in packets {
             let now = started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
-            let Some(due) = pacer.deadline(now, crate::microphone::PACKET_US) else {
+            let Some(due) = pacer.deadline(now, packet_us) else {
                 return;
             };
             loop {
@@ -476,8 +483,8 @@ fn handle(
             };
             let base = format!("{}/", req.uri.trim_end_matches('/'));
             let mut body = sdp(&params, &base);
-            if cfg.audio.is_some() {
-                body.push_str(&crate::microphone::sdp());
+            if let Some(audio) = &cfg.audio {
+                body.push_str(&crate::microphone::sdp_for(audio.format()));
             }
             if cfg.talk.is_some()
                 && req.header("Require").is_some_and(|v| {
@@ -639,9 +646,10 @@ fn handle(
                     }
                     Media::Audio(hub) => {
                         let rx = hub.subscribe();
+                        let format = hub.format();
                         match limits
                             .thread()
-                            .spawn(move || audio_sender(rx, sink, w, ssrc, st, go_rx))
+                            .spawn(move || audio_sender(rx, format, sink, w, ssrc, st, go_rx))
                         {
                             Ok(thread) => playing.threads.push(thread),
                             Err(_) => return (Response::new(455), false),

@@ -1,0 +1,3792 @@
+{
+  "schema": 1,
+  "purpose": "link-only; never deploy",
+  "source_sha256": "dc0bf23d9ca2f9ca052cb7f102c091370a6094ce3d7c54f9ecbb71a6dcf00831",
+  "machine": 40,
+  "flags": 83886594,
+  "osabi": 0,
+  "abi_version": 0,
+  "soname": "libpthread.so.0",
+  "needed": [
+    "ld-uClibc.so.0",
+    "libdl.so.0",
+    "libc.so.0"
+  ],
+  "mips_abiflags": null,
+  "versioned": false,
+  "definitions": [],
+  "requirements": [],
+  "filename": "libpthread-0.9.33.2.so",
+  "symbols": [
+    {
+      "name": "stpcpy",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "tsearch",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__libc_sigaction",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "waitpid",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "getrlimit",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "sysconf",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "printf",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__fsetlocking",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "munmap",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__libc_stack_end",
+      "size": 0,
+      "info": 17,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "sched_getparam",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__stack_chk_guard",
+      "size": 0,
+      "info": 17,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "errno",
+      "size": 0,
+      "info": 22,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "execve",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "getpagesize",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "getpid",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "memcpy",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "getuid",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "malloc",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "sched_setscheduler",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_deallocate_tls",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "statfs",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__libc_longjmp",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "sched_getscheduler",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__libc_pthread_init",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "mempcpy",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__environ",
+      "size": 0,
+      "info": 17,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "mmap",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "dlclose",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "abort",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__stack_chk_fail",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "fstat64",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "tdelete",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__tls_get_addr",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_get_tls_static_info",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "nanosleep",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "h_errno",
+      "size": 0,
+      "info": 22,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "calloc",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "write",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "environ",
+      "size": 0,
+      "info": 33,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "getmntent_r",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_stdio_openlist",
+      "size": 0,
+      "info": 17,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "madvise",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "getdelim",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "tfind",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_allocate_tls_init",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "read",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_error_catch_tsd",
+      "size": 0,
+      "info": 17,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "dlopen",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__libc_dl_error_tsd",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_stdio_user_locking",
+      "size": 0,
+      "info": 17,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "unlink",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "sched_get_priority_max",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "realloc",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "sched_get_priority_min",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "sscanf",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "setmntent",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "endmntent",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "dlsym",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "gettimeofday",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "fopen",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "memset",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "fclose",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "open64",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "strcmp",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "sprintf",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__libc_fork",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "sched_setparam",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_init_static_tls",
+      "size": 0,
+      "info": 17,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_allocate_tls",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "twalk",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "stat",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "link",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "exit",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_setjmp",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_exit",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "strlen",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "open",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "clone",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "mprotect",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "sched_yield",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "mkdir",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "close",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__resp",
+      "size": 0,
+      "info": 22,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "free",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "sigprocmask",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_thread_db_pthread_key_struct_seq",
+      "size": 12,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_setcanceltype",
+      "size": 296,
+      "info": 18,
+      "other": 3,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_key_create_internal",
+      "size": 192,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_pthread_cleanup_pop_restore",
+      "size": 300,
+      "info": 34,
+      "other": 3,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__libc_system",
+      "size": 188,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_attr_setschedpolicy",
+      "size": 92,
+      "info": 18,
+      "other": 3,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_condattr_init",
+      "size": 80,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_self",
+      "size": 72,
+      "info": 18,
+      "other": 3,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_attr_getinheritsched",
+      "size": 84,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_join",
+      "size": 384,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__h_errno_location",
+      "size": 80,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_pthread_cleanup_push_defer",
+      "size": 184,
+      "info": 34,
+      "other": 3,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_getcpuclockid",
+      "size": 104,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_thread_db_pthread_schedparam_sched_priority",
+      "size": 12,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_cleanup_upto",
+      "size": 164,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_cancel",
+      "size": 336,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_spin_destroy",
+      "size": 68,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_cond_init",
+      "size": 160,
+      "info": 18,
+      "other": 3,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__nptl_death_event",
+      "size": 64,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_mutexattr_init",
+      "size": 76,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__new_sem_post",
+      "size": 252,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_getschedparam",
+      "size": 388,
+      "info": 18,
+      "other": 3,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__new_sem_getvalue",
+      "size": 76,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "setresuid",
+      "size": 120,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_initialize_minimal",
+      "size": 884,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_attr_getstacksize",
+      "size": 96,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_mutexattr_setkind_np",
+      "size": 100,
+      "info": 34,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_exit",
+      "size": 124,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_attr_getschedpolicy",
+      "size": 76,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_unwind",
+      "size": 100,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_spin_lock",
+      "size": 24,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_thread_db_dtv_t_pointer_val",
+      "size": 12,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "setresgid",
+      "size": 120,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_rwlock_trywrlock",
+      "size": 280,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_attr_getstackaddr",
+      "size": 76,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_attr_init",
+      "size": 92,
+      "info": 34,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_attr_setguardsize",
+      "size": 72,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_thread_db_sizeof_td_eventbuf_t",
+      "size": 4,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_attr_setinheritsched",
+      "size": 104,
+      "info": 18,
+      "other": 3,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_mutex_lock",
+      "size": 656,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__fork",
+      "size": 68,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_attr_getdetachstate",
+      "size": 80,
+      "info": 18,
+      "other": 3,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_pthread_cleanup_push",
+      "size": 88,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_rwlock_unlock",
+      "size": 536,
+      "info": 18,
+      "other": 3,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_mutexattr_getkind_np",
+      "size": 88,
+      "info": 34,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_spin_trylock",
+      "size": 24,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_rwlock_unlock",
+      "size": 536,
+      "info": 34,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_setcanceltype",
+      "size": 296,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_unregister_cancel_restore",
+      "size": 264,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_setconcurrency",
+      "size": 92,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_end",
+      "size": 0,
+      "info": 16,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_attr_setaffinity_np",
+      "size": 268,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_mutexattr_getprotocol",
+      "size": 84,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_mutex_unlock",
+      "size": 72,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_thread_db_pthread_schedpolicy",
+      "size": 12,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_thread_db_pthread_key_data_seq",
+      "size": 12,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_mutexattr_destroy",
+      "size": 68,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_cond_broadcast",
+      "size": 456,
+      "info": 34,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__new_sem_init",
+      "size": 136,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_mutexattr_setrobust_np",
+      "size": 116,
+      "info": 34,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__res_state",
+      "size": 84,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_thread_db_sizeof_list_t",
+      "size": 4,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_getaffinity_np",
+      "size": 128,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_attr_setschedparam",
+      "size": 180,
+      "info": 18,
+      "other": 3,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_kill",
+      "size": 184,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_setspecific_internal",
+      "size": 260,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_getspecific_internal",
+      "size": 184,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_mutexattr_gettype",
+      "size": 88,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_getschedparam",
+      "size": 388,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_cond_wait",
+      "size": 828,
+      "info": 18,
+      "other": 3,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_setspecific",
+      "size": 260,
+      "info": 18,
+      "other": 3,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_seteuid_np",
+      "size": 208,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_rwlock_rdlock_internal",
+      "size": 564,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_mutexattr_setrobust",
+      "size": 116,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_barrier_destroy",
+      "size": 264,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_mutexattr_getrobust",
+      "size": 84,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_rwlockattr_init",
+      "size": 80,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_thread_db_const_thread_area",
+      "size": 4,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_mutexattr_setprioceiling",
+      "size": 196,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_rwlock_timedrdlock",
+      "size": 712,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_register_cancel",
+      "size": 92,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_attr_getschedparam",
+      "size": 88,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_cond_timedwait",
+      "size": 1044,
+      "info": 18,
+      "other": 3,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "system",
+      "size": 68,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_key_create",
+      "size": 192,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_mutexattr_init",
+      "size": 76,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_cond_signal",
+      "size": 348,
+      "info": 18,
+      "other": 3,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_mutexattr_settype",
+      "size": 100,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_create_2_1",
+      "size": 2752,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__end__",
+      "size": 0,
+      "info": 16,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_once",
+      "size": 252,
+      "info": 34,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_mutex_destroy",
+      "size": 104,
+      "info": 34,
+      "other": 3,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_attr_setdetachstate",
+      "size": 116,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "sigtimedwait",
+      "size": 168,
+      "info": 34,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_edata",
+      "size": 0,
+      "info": 16,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_mutex_destroy",
+      "size": 104,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "sem_open",
+      "size": 908,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__syscall_rt_sigaction",
+      "size": 60,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_create",
+      "size": 2752,
+      "info": 34,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_condattr_setpshared",
+      "size": 96,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_cond_destroy",
+      "size": 544,
+      "info": 34,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "sigwait",
+      "size": 160,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_rwlockattr_setpshared",
+      "size": 80,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_thread_db_list_t_prev",
+      "size": 12,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "sigwaitinfo",
+      "size": 160,
+      "info": 34,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__new_sem_wait",
+      "size": 460,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_attr_getscope",
+      "size": 84,
+      "info": 18,
+      "other": 3,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_equal",
+      "size": 76,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_sigmask",
+      "size": 168,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_rwlock_tryrdlock",
+      "size": 308,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_attr_setscope",
+      "size": 104,
+      "info": 18,
+      "other": 3,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_Unwind_Resume",
+      "size": 124,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_exit",
+      "size": 124,
+      "info": 18,
+      "other": 3,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_once_internal",
+      "size": 252,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_rwlock_trywrlock",
+      "size": 280,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__bss_start__",
+      "size": 0,
+      "info": 16,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_mutex_unlock",
+      "size": 72,
+      "info": 34,
+      "other": 3,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__nptl_main",
+      "size": 76,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_rwlockattr_setkind_np",
+      "size": 80,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "siglongjmp",
+      "size": 68,
+      "info": 34,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_thread_db_sizeof_pthread_key_data",
+      "size": 4,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_rwlockattr_getpshared",
+      "size": 76,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "setreuid",
+      "size": 116,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_attr_getschedpolicy",
+      "size": 76,
+      "info": 18,
+      "other": 3,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__unwind_freeres",
+      "size": 124,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_cond_init",
+      "size": 160,
+      "info": 34,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_rwlock_destroy",
+      "size": 68,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_testcancel",
+      "size": 168,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_mutex_trylock",
+      "size": 1428,
+      "info": 34,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_getaffinity_np",
+      "size": 128,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_barrierattr_destroy",
+      "size": 68,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_Unwind_GetCFA",
+      "size": 124,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_attr_getinheritsched",
+      "size": 84,
+      "info": 18,
+      "other": 3,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_yield",
+      "size": 68,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "sem_unlink",
+      "size": 336,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "setregid",
+      "size": 116,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "setuid",
+      "size": 116,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "sem_trywait",
+      "size": 184,
+      "info": 34,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_thread_db_pthread_dtvp",
+      "size": 12,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_thread_db_sizeof_td_thr_events_t",
+      "size": 4,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_thread_db_pthread_eventbuf_eventmask_event_bits",
+      "size": 12,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "sem_destroy",
+      "size": 68,
+      "info": 34,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_mutex_consistent_np",
+      "size": 116,
+      "info": 34,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_key_delete",
+      "size": 164,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_thread_db_pthread_key_data_data",
+      "size": 12,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_thread_db_sizeof_pthread_key_struct",
+      "size": 4,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "setgid",
+      "size": 116,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_kill",
+      "size": 184,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_bss_end__",
+      "size": 0,
+      "info": 16,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_attr_init_2_1",
+      "size": 92,
+      "info": 18,
+      "other": 3,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_thread_db_pthread_key_struct_destr",
+      "size": 12,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_cleanup_routine",
+      "size": 104,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_mutex_init",
+      "size": 360,
+      "info": 34,
+      "other": 3,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_thread_db___nptl_last_event",
+      "size": 12,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__stack_user",
+      "size": 8,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_setspecific",
+      "size": 260,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_attr_getscope",
+      "size": 84,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_thread_db_pthread_eventbuf",
+      "size": 12,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_setegid_np",
+      "size": 208,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_register_cancel_defer",
+      "size": 188,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_attr_setscope",
+      "size": 104,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_cond_timedwait",
+      "size": 1044,
+      "info": 34,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_rwlock_wrlock",
+      "size": 520,
+      "info": 18,
+      "other": 3,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_condattr_getpshared",
+      "size": 80,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_thread_db_pthread_cancelhandling",
+      "size": 12,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_rwlock_wrlock",
+      "size": 520,
+      "info": 34,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_attr_getschedparam",
+      "size": 88,
+      "info": 18,
+      "other": 3,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_thread_db_td_eventbuf_t_eventdata",
+      "size": 12,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_attr_getstacksize",
+      "size": 96,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_getconcurrency",
+      "size": 76,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_thread_db_sizeof_pthread_key_data_level2",
+      "size": 4,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_fini",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_mutex_trylock",
+      "size": 1428,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_cond_destroy",
+      "size": 544,
+      "info": 18,
+      "other": 3,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_cond_signal",
+      "size": 348,
+      "info": 34,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_thread_db_pthread_nextevent",
+      "size": 12,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_timedjoin_np",
+      "size": 328,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_attr_getstackaddr",
+      "size": 76,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_keys",
+      "size": 8192,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_rwlock_init",
+      "size": 148,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_rwlockattr_getkind_np",
+      "size": 76,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_Unwind_ForcedUnwind",
+      "size": 140,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_cond_wait",
+      "size": 828,
+      "info": 34,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_once",
+      "size": 252,
+      "info": 18,
+      "other": 3,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_attr_getguardsize",
+      "size": 76,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__errno_location",
+      "size": 84,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "fork",
+      "size": 68,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_init",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_barrierattr_setpshared",
+      "size": 80,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_tryjoin_np",
+      "size": 220,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_attr_destroy",
+      "size": 76,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_thread_db_list_t_next",
+      "size": 12,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_thread_db_dtv_dtv",
+      "size": 12,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "sem_post",
+      "size": 252,
+      "info": 34,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_attr_setdetachstate",
+      "size": 116,
+      "info": 18,
+      "other": 3,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "sigaction",
+      "size": 136,
+      "info": 34,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_mutexattr_destroy",
+      "size": 68,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__gcc_personality_v0",
+      "size": 156,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_rwlock_tryrdlock",
+      "size": 308,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_equal",
+      "size": 76,
+      "info": 18,
+      "other": 3,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_rwlock_destroy",
+      "size": 68,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_getspecific",
+      "size": 184,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_getattr_np",
+      "size": 808,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_mutexattr_setprotocol",
+      "size": 96,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_attr_setstacksize",
+      "size": 80,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_barrierattr_getpshared",
+      "size": 76,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__sigaction",
+      "size": 136,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_attr_setstackaddr",
+      "size": 84,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "sem_getvalue",
+      "size": 76,
+      "info": 34,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_sigqueue",
+      "size": 212,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_cleanup_pop_restore",
+      "size": 300,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_mutexattr_getprioceiling",
+      "size": 152,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_setcancelstate",
+      "size": 284,
+      "info": 18,
+      "other": 3,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_rwlockattr_destroy",
+      "size": 68,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_thread_db_pthread_list",
+      "size": 12,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_attr_getaffinity_np",
+      "size": 184,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_thread_db___pthread_keys",
+      "size": 12,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_attr_destroy",
+      "size": 76,
+      "info": 18,
+      "other": 3,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_spin_unlock",
+      "size": 88,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_attr_getstack",
+      "size": 88,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__bss_start",
+      "size": 0,
+      "info": 16,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_condattr_destroy",
+      "size": 68,
+      "info": 18,
+      "other": 3,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_attr_setstack",
+      "size": 100,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_barrier_init",
+      "size": 152,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_attr_setschedpolicy",
+      "size": 92,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "sem_init",
+      "size": 136,
+      "info": 34,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_thread_db_td_eventbuf_t_eventnum",
+      "size": 12,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_thread_db_pthread_specific",
+      "size": 12,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_setschedparam",
+      "size": 372,
+      "info": 18,
+      "other": 3,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_attr_setinheritsched",
+      "size": 104,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_setschedparam",
+      "size": 372,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_self",
+      "size": 72,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_mutex_lock",
+      "size": 656,
+      "info": 34,
+      "other": 3,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_rwlock_rdlock",
+      "size": 564,
+      "info": 18,
+      "other": 3,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_rwlock_rdlock",
+      "size": 564,
+      "info": 34,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_mutexattr_getrobust_np",
+      "size": 84,
+      "info": 34,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_unregister_cancel",
+      "size": 80,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_key_create",
+      "size": 192,
+      "info": 18,
+      "other": 3,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_thread_db_td_thr_events_t_event_bits",
+      "size": 12,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_thread_db_pthread_key_data_level2_data",
+      "size": 12,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_rwlock_init",
+      "size": 148,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_cleanup_push_defer",
+      "size": 184,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_spin_init",
+      "size": 76,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_cond_broadcast",
+      "size": 456,
+      "info": 18,
+      "other": 3,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_attr_getdetachstate",
+      "size": 80,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_attr_getstack",
+      "size": 88,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "sleep",
+      "size": 332,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_attr_setstack",
+      "size": 100,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_mutex_init",
+      "size": 360,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "raise",
+      "size": 220,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_mutexattr_settype",
+      "size": 100,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__nptl_create_event",
+      "size": 64,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_thread_db_pthread_eventbuf_eventmask",
+      "size": 12,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_rwlock_wrlock_internal",
+      "size": 520,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_thread_db_pthread_tid",
+      "size": 12,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_setschedprio",
+      "size": 356,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_rwlock_unlock_internal",
+      "size": 536,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_thread_db___nptl_nthreads",
+      "size": 12,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_unwind_next",
+      "size": 44,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_mutex_consistent",
+      "size": 116,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_condattr_init",
+      "size": 80,
+      "info": 18,
+      "other": 3,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_barrier_wait",
+      "size": 512,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "sem_wait",
+      "size": 460,
+      "info": 34,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_setaffinity_np",
+      "size": 208,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_getspecific",
+      "size": 184,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_setcancelstate",
+      "size": 284,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_rwlock_timedwrlock",
+      "size": 684,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_pthread_cleanup_pop",
+      "size": 124,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "sem_timedwait",
+      "size": 644,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_kill_other_threads_np",
+      "size": 64,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_mutexattr_setpshared",
+      "size": 116,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__bss_end__",
+      "size": 0,
+      "info": 16,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "sem_close",
+      "size": 416,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_attr_setschedparam",
+      "size": 180,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_thread_db_link_map_l_tls_modid",
+      "size": 12,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_thread_db_pthread_report_events",
+      "size": 12,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__determine_cpumask_size",
+      "size": 216,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_mutex_timedlock",
+      "size": 2288,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_attr_setstacksize",
+      "size": 80,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_condattr_getclock",
+      "size": 84,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_detach",
+      "size": 188,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_condattr_destroy",
+      "size": 68,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_condattr_setclock",
+      "size": 96,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_attr_setstackaddr",
+      "size": 84,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_mutexattr_getpshared",
+      "size": 80,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_barrierattr_init",
+      "size": 76,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_thread_db_pthread_start_routine",
+      "size": 12,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "longjmp",
+      "size": 68,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_thread_db_sizeof_pthread",
+      "size": 4,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__new_sem_trywait",
+      "size": 184,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__new_sem_destroy",
+      "size": 68,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    }
+  ]
+}

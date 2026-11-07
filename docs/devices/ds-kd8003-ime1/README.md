@@ -1,4 +1,4 @@
-# DS-KD8003-IME1 door station
+# DS-KD8003-IME1
 
 <img src="device.png" alt="Hikvision DS-KD8003-IME1" width="280">
 
@@ -8,7 +8,8 @@ Tested: original non-B hardware, DS-17040 board, V2.2.62 build 230204.
 
 1. Get a root shell and inspect hardware below.
 2. [Build firmware with a startup hook](firmware.md).
-3. [Run a sidecar alongside vendor software](sidecar.md).
+3. [Install the native application](../../../firmware/cameras/ds-kd8003-ime1/README.md), which replaces
+   the vendor application through that hook.
 
 [Package format and verification evidence](firmware-format.md).
 
@@ -111,9 +112,7 @@ channel 101 instead. Its audio was G.711 µ-law.
 
 ## Running your own program
 
-Build for ARMv5TE soft float and the matching uClibc runtime. `/home/app` is suitable
-for a temporary trial. Keep `hicore` running when adding an observing program;
-stopping it also affects media, access control and watchdog behavior.
-
-For reboot persistence, follow [build and use a startup hook](firmware.md).
-Stock firmware does not run a script just because it is placed in `/home/config`.
+Build for ARMv5TE soft float and the matching uClibc runtime. Stock firmware does not run a
+script just because it is placed in `/home/config`; the [startup hook](firmware.md) runs one at
+every boot, and the [native application](../../../firmware/cameras/ds-kd8003-ime1/README.md) uses
+it to replace the vendor application: RTSP, two-way audio, keypad PIN access and MQTT.

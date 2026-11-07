@@ -1,4 +1,4 @@
-# Door-station firmware format and evidence
+# DS-KD8003-IME1 firmware format and evidence
 
 [DS-KD8003-IME1 overview](README.md)
 
@@ -8,7 +8,7 @@ Start with the [build and hook instructions](firmware.md).
 ## Image assembly
 
 
-The [builder](../../../tools/door-station-firmware/build.py) performs these steps:
+The [builder](../../../tools/ds-kd8003-ime1/build.py) performs these steps:
 
 1. Require the pinned stock hash and decode the XOR-obfuscated SWKH header.
    Validate the header and payload byte sums, payload MD5, compatibility-tail

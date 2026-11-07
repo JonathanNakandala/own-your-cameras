@@ -9,7 +9,7 @@ They contain no stock firmware, settings, owner key or generated link-only libra
 sha256sum -c MODEL-vVERSION.tar.gz.sha256
 tar -xzf MODEL-vVERSION.tar.gz
 cd MODEL-vVERSION
-python3 build-image.py --help
+cat INSTALL.md
 ```
 
 On macOS, use `shasum -a 256 -c` instead of `sha256sum -c`.
@@ -99,3 +99,9 @@ so they do not set a repository-wide latest release. Manual runs build preview a
 
 Compilation/host checks do not qualify hardware. Keep image preservation checks and on-camera
 installation/media/control evidence separate from the release's model/source/build identity.
+
+## DS-KD8003-IME1
+
+Only the original non-B panel on stock V2.2.62 build 230204 is supported. The bundle has an installer
+instead of an image builder: `python3 install.py` reads the panel's own firmware, so no stock download is
+needed. Follow its `INSTALL.md`.

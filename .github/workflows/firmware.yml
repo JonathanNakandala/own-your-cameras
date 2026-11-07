@@ -2,9 +2,9 @@ name: Firmware checks
 on:
   push:
     branches: ['**']
-    paths: ['firmware/**', 'tools/mi-360/**', 'tools/reolink-e1-zoom/**', 'Makefile', '.github/workflows/**']
+    paths: ['firmware/**', 'tools/mi-360/**', 'tools/reolink-e1-zoom/**', 'tools/ds-kd8003-ime1/**', 'Makefile', '.github/workflows/**']
   pull_request:
-    paths: ['firmware/**', 'tools/mi-360/**', 'tools/reolink-e1-zoom/**', 'Makefile', '.github/workflows/**']
+    paths: ['firmware/**', 'tools/mi-360/**', 'tools/reolink-e1-zoom/**', 'tools/ds-kd8003-ime1/**', 'Makefile', '.github/workflows/**']
 permissions:
   contents: read
 jobs:
