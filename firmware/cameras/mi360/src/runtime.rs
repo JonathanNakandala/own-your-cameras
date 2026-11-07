@@ -427,6 +427,8 @@ struct HardwareWiring {
     publisher: mqtt::Publisher,
     ready: SyncSender<io::Result<board::MotorStatus>>,
     calibration: Option<pointing::Calibration>,
+    /// The saved preset names, for ONVIF.
+    preset_names: Arc<Mutex<Vec<String>>>,
 }
 fn hardware_loop(
     wiring: HardwareWiring,
@@ -440,6 +442,7 @@ fn hardware_loop(
         publisher,
         ready,
         calibration,
+        preset_names,
     } = wiring;
     let mut board = match board::Board::open() {
         Ok(board) => board,
@@ -461,6 +464,10 @@ fn hardware_loop(
     let _ = ready.send(Ok(initial));
     let mut motion = Motion::default();
     let mut presets = crate::presets::Presets::load("/mnt/data/mi360/presets.json")?;
+    let publish_names = |presets: &crate::presets::Presets| {
+        *preset_names.lock().unwrap_or_else(|e| e.into_inner()) = presets.names();
+    };
+    publish_names(&presets);
     let mut homed = false;
     let mut approach = crate::presets::Approach::homed(initial.position);
     let mut request_home = true;
@@ -625,6 +632,7 @@ fn hardware_loop(
                             approach.directions(),
                         );
                         if result.is_ok() {
+                            publish_names(&presets);
                             let _ =
                                 publisher.state("preset", name.as_str().map_err(io::Error::other)?);
                         }
@@ -633,6 +641,20 @@ fn hardware_loop(
                                 format!("saved preset {}", name.as_str().map_err(io::Error::other)?)
                             }
                             Err(e) => format!("preset save failed: {e}"),
+                        };
+                        let _ = publisher.state("motion_status", message);
+                    }
+                    mqtt::Command::RemovePreset(name) => {
+                        let removed = presets.remove(name);
+                        if removed.is_ok() {
+                            publish_names(&presets);
+                        }
+                        let message = match removed {
+                            Ok(()) => format!(
+                                "removed preset {}",
+                                name.as_str().map_err(io::Error::other)?
+                            ),
+                            Err(e) => format!("preset remove failed: {e}"),
                         };
                         let _ = publisher.state("motion_status", message);
                     }
@@ -919,6 +941,50 @@ impl Drop for Workers {
     }
 }
 
+/// ONVIF on `[onvif] port` with the RTSP credentials; `None` when it is off or cannot start (logged: the
+/// camera works without it).
+fn start_onvif(
+    name: &str,
+    onvif: &config::Onvif,
+    time: &config::Time,
+    mut camera: crate::onvif::Mi360Onvif,
+    creds: Option<Credentials>,
+    rtsp_port: u16,
+) -> Option<camera_onvif::Service> {
+    let (port, Some(creds)) = (onvif.port, creds) else {
+        return None;
+    };
+    if port == 0 {
+        return None;
+    }
+    camera.identity = camera_onvif::identity(
+        camera_onvif::Product {
+            manufacturer: "Xiaomi".into(),
+            model: "MJSXJ10CM".into(),
+            firmware: env!("CARGO_PKG_VERSION").into(),
+            hardware: "MJSXJ10CM".into(),
+            name: name.into(),
+            ntp: time.ntp.clone(),
+            dhcp: true,
+        },
+        Some("wlan0"),
+    );
+    match camera_onvif::start(
+        Arc::new(camera),
+        creds,
+        rtsp_port,
+        port,
+        camera_onvif::HttpLimits::DEFAULT,
+        |line| eprintln!("{line}"),
+    ) {
+        Ok(service) => Some(service),
+        Err(error) => {
+            eprintln!("onvif: not started on port {port}: {error}");
+            None
+        }
+    }
+}
+
 pub fn run(path: &str) -> io::Result<()> {
     let cfg = config::load(path)?;
     let boot_id = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")?
@@ -975,6 +1041,15 @@ pub fn run(path: &str) -> io::Result<()> {
         None => RustVideoSpec::default(),
     };
     let mut media = Media::open_spec(cfg.runtime.audio, video_spec)?;
+    let mut jpeg = match media.jpeg_open() {
+        Ok(()) => true,
+        Err(error) => {
+            eprintln!("snapshot: no JPEG channel: {error}");
+            false
+        }
+    };
+    // While a snapshot is wanted the JPEG channel receives, until its picture or this deadline.
+    let mut snapshot_until: Option<Instant> = None;
     let mut settings = crate::setting_service::Service::initialize(
         &mut SettingHardware {
             media: &mut media,
@@ -1047,7 +1122,7 @@ pub fn run(path: &str) -> io::Result<()> {
             password: cfg.mqtt.password,
         },
         node_id: format!("cam_{}", cfg.camera.id),
-        device_name: cfg.camera.name,
+        device_name: cfg.camera.name.clone(),
         manufacturer: "Xiaomi".into(),
         model: "MJSXJ10CM".into(),
         software_version: env!("CARGO_PKG_VERSION").into(),
@@ -1064,20 +1139,53 @@ pub fn run(path: &str) -> io::Result<()> {
     }
     let hubs = Arc::new(VideoHubs::with_limits(camera_transport::VideoLimits::MI360));
     let microphone = AudioHub::new();
-    let mut encoder = camera_opus::microphone()?;
+    let pcmu = AudioHub::with_format(camera_transport::microphone::Format::Pcmu8k);
+    let mut encoder = camera_opus::fanout(microphone.clone(), pcmu.clone())?;
     // The Mi 360 speaker plays 16 kHz blocks; its microphone captures 48 kHz on a separate device.
     let talk = camera_opus::talkback(16_000);
     let rtsp_cfg = Arc::new(camera_transport::Config {
-        streams: hubs.streams(),
+        streams: hubs.paths(
+            cfg.runtime.audio.then(|| microphone.clone()),
+            cfg.runtime.audio.then(|| pcmu.clone()),
+        ),
         creds: Some(Credentials {
             user: cfg.rtsp.username,
             password: cfg.rtsp.password,
         }),
-        audio: cfg.runtime.audio.then(|| microphone.clone()),
         talk: cfg.runtime.audio.then(|| talk.clone()),
     });
     let listener =
         camera_transport::bind_with_limits(cfg.rtsp.port, camera_transport::ServerLimits::MI360)?;
+    let rtsp_port = cfg.rtsp.port;
+    let rtsp_creds = rtsp_cfg.creds.clone();
+    if !cfg.time.ntp.is_empty() {
+        let keeper = camera_transport::sntp::Keeper {
+            servers: cfg.time.ntp.clone(),
+            log: |line| eprintln!("{line}"),
+        };
+        if let Err(error) = keeper.spawn(stop.clone()) {
+            eprintln!("time: not started: {error}");
+        }
+    }
+    // ONVIF commands reach the main loop beside MQTT's and take the same path.
+    let (onvif_tx, onvif_rx) = sync_channel::<mqtt::Command>(8);
+    let preset_names = Arc::new(Mutex::new(Vec::new()));
+    let snapshots = Arc::new(camera_onvif::snapshot::Waiters::default());
+    let _onvif = start_onvif(
+        &cfg.camera.name,
+        &cfg.onvif,
+        &cfg.time,
+        crate::onvif::Mi360Onvif {
+            identity: Default::default(),
+            video: video_spec,
+            commands: onvif_tx,
+            presets: preset_names.clone(),
+            snapshots: snapshots.clone(),
+            audio: cfg.runtime.audio,
+        },
+        rtsp_creds,
+        rtsp_port,
+    );
     let (work_tx, work_rx) = sync_channel(8);
     let (isp_tx, isp_rx) = sync_channel(1);
     let (ready_tx, ready_rx) = sync_channel(1);
@@ -1106,6 +1214,7 @@ pub fn run(path: &str) -> io::Result<()> {
                         publisher,
                         ready: ready_tx,
                         calibration,
+                        preset_names,
                     },
                     controls,
                     stop.clone(),
@@ -1203,7 +1312,8 @@ pub fn run(path: &str) -> io::Result<()> {
                 }
             }
             for _ in 0..8 {
-                let Some(command) = commands.try_next(now) else {
+                let Some(command) = commands.try_next(now).or_else(|| onvif_rx.try_recv().ok())
+                else {
                     break;
                 };
                 match command {
@@ -1276,6 +1386,42 @@ pub fn run(path: &str) -> io::Result<()> {
             controls
                 .mqtt_ready
                 .store(publisher.is_connected(), Ordering::Release);
+            if let Some(until) = snapshot_until {
+                let picture = match media.next_jpeg() {
+                    Ok(None) if now < until => None,
+                    Ok(None) => Some(Err("snapshot: the encoder delivered no picture".to_string())),
+                    Ok(Some(picture)) => Some(Ok(picture)),
+                    Err(error) => {
+                        jpeg = false;
+                        Some(Err(format!("snapshot: {error}")))
+                    }
+                };
+                if let Some(result) = picture {
+                    snapshot_until = None;
+                    if let Err(error) = media.jpeg_receive(false) {
+                        eprintln!("snapshot: {error}");
+                        jpeg = false;
+                    }
+                    // A picture finished while stopping would be the next request's answer, however old.
+                    if jpeg && let Err(error) = media.next_jpeg() {
+                        eprintln!("snapshot: {error}");
+                        jpeg = false;
+                    }
+                    if let Err(error) = &result {
+                        eprintln!("{error}");
+                    }
+                    snapshots.answer(result);
+                }
+            } else if snapshots.wanted() {
+                match jpeg.then(|| media.jpeg_receive(true)) {
+                    Some(Ok(())) => snapshot_until = Some(now + Duration::from_millis(1500)),
+                    Some(Err(error)) => {
+                        jpeg = false;
+                        snapshots.answer(Err(format!("snapshot: {error}")));
+                    }
+                    None => snapshots.answer(Err("snapshot: no JPEG channel".into())),
+                }
+            }
             if stop.load(Ordering::Acquire) || INTERRUPTED.load(Ordering::Relaxed) {
                 break;
             }
@@ -1309,9 +1455,7 @@ pub fn run(path: &str) -> io::Result<()> {
                     last_audio = Some(Instant::now());
                     progress.mark(&progress.audio);
                     audio_frames += 1;
-                    for (pts_us, packet) in encoder.push(frame.timestamp_us, &frame.samples) {
-                        microphone.publish(pts_us, packet);
-                    }
+                    encoder.push(frame.timestamp_us, &frame.samples);
                 }
                 // Take every mixer block that is due; keep at most 200 ms, dropping the oldest.
                 for _ in 0..8 {

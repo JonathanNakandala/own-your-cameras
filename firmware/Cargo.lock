@@ -34,6 +34,7 @@ name = "cam"
 version = "0.1.0"
 dependencies = [
  "camera-control",
+ "camera-onvif",
  "camera-opus",
  "camera-transport",
  "hdal",
@@ -51,6 +52,14 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "camera-onvif"
+version = "0.1.0"
+dependencies = [
+ "camera-transport",
+ "libc",
 ]
 
 [[package]]
@@ -144,6 +153,7 @@ dependencies = [
 name = "ds-kd8003-ime1-cam"
 version = "0.1.0"
 dependencies = [
+ "camera-onvif",
  "camera-opus",
  "camera-transport",
  "keypad-protocol",
@@ -308,6 +318,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 name = "mi360-cam"
 version = "0.1.0"
 dependencies = [
+ "camera-onvif",
  "camera-opus",
  "camera-transport",
  "libc",

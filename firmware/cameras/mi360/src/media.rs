@@ -188,6 +188,8 @@ mod target {
             cap: u32,
         ) -> c_int;
         fn t31_video_close(handle: *mut c_void, error: *mut c_char, cap: u32) -> c_int;
+        fn t31_jpeg_open(handle: *mut c_void, error: *mut c_char, cap: u32) -> c_int;
+        fn t31_jpeg_receive(handle: *mut c_void, on: c_int, error: *mut c_char, cap: u32) -> c_int;
         fn t31_audio_open(
             handle: *mut *mut c_void,
             sdk: *mut c_void,
@@ -533,6 +535,69 @@ mod target {
             }
         }
 
+        /// Creates the snapshot channel (a JPEG of the sub picture). A refusal costs snapshots only.
+        pub fn jpeg_open(&mut self) -> io::Result<()> {
+            self.ready()?;
+            let mut error = [0_u8; ERROR_CAPACITY];
+            // SAFETY: serialized live video owner; the C side checks the handle.
+            let code =
+                unsafe { t31_jpeg_open(self.video, error.as_mut_ptr().cast(), error.len() as u32) };
+            if code != 0 {
+                return Err(io::Error::other(diagnostic("jpeg open", code, &error)));
+            }
+            Ok(())
+        }
+
+        /// Starts or stops the snapshot channel's pictures.
+        pub fn jpeg_receive(&mut self, on: bool) -> io::Result<()> {
+            self.ready()?;
+            let mut error = [0_u8; ERROR_CAPACITY];
+            // SAFETY: serialized live video owner; the C side checks the handle and channel state.
+            let code = unsafe {
+                t31_jpeg_receive(
+                    self.video,
+                    c_int::from(on),
+                    error.as_mut_ptr().cast(),
+                    error.len() as u32,
+                )
+            };
+            if code != 0 {
+                return Err(io::Error::other(diagnostic("jpeg receive", code, &error)));
+            }
+            Ok(())
+        }
+
+        /// The snapshot channel's next picture, if one is ready (while receiving).
+        pub fn next_jpeg(&mut self) -> io::Result<Option<Vec<u8>>> {
+            self.ready()?;
+            let mut length = 0_u32;
+            let mut timestamp = 0_i64;
+            let mut error = [0_u8; ERROR_CAPACITY];
+            // SAFETY: as `next_video`: disjoint valid outputs; the C shim releases its borrow first.
+            let code = unsafe {
+                t31_video_next_channel(
+                    self.video,
+                    2,
+                    self.video_scratch.as_mut_ptr(),
+                    self.video_scratch.len() as u32,
+                    &mut length,
+                    &mut timestamp,
+                    error.as_mut_ptr().cast(),
+                    error.len() as u32,
+                )
+            };
+            match code {
+                1 => Ok(None),
+                0 if length as usize <= self.video_scratch.len()
+                    && self.video_scratch.starts_with(&[0xff, 0xd8]) =>
+                {
+                    Ok(Some(self.video_scratch[..length as usize].to_vec()))
+                }
+                0 => Err(io::Error::other("jpeg: not a JPEG")),
+                _ => Err(io::Error::other(diagnostic("jpeg next", code, &error))),
+            }
+        }
+
         pub fn set_night(&mut self, night: bool) -> io::Result<()> {
             self.ready()?;
             let mut error = [0_u8; ERROR_CAPACITY];
@@ -661,6 +726,15 @@ impl Media {
         Self::unsupported()
     }
     pub fn set_night(&mut self, _: bool) -> io::Result<()> {
+        Self::unsupported()
+    }
+    pub fn jpeg_open(&mut self) -> io::Result<()> {
+        Self::unsupported()
+    }
+    pub fn jpeg_receive(&mut self, _: bool) -> io::Result<()> {
+        Self::unsupported()
+    }
+    pub fn next_jpeg(&mut self) -> io::Result<Option<Vec<u8>>> {
         Self::unsupported()
     }
     pub fn close(&mut self) -> io::Result<()> {

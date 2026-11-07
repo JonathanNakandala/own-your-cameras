@@ -57,14 +57,61 @@ const PACKETS_PER_WRITE: usize = 300;
 const DESCRIBE_WAIT: Duration = Duration::from_secs(5);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// The RTSP paths every camera serves, and nothing else: `main` and `sub` with Opus audio, and the same
+/// video with G.711 µ-law audio for recorders that take no Opus (what ONVIF `GetStreamUri` hands out).
+pub const MAIN_PATH: &str = "main";
+pub const SUB_PATH: &str = "sub";
+pub const MAIN_PCMU_PATH: &str = "main_pcmu";
+pub const SUB_PCMU_PATH: &str = "sub_pcmu";
+
+/// The codec a path's backchannel SDP offers. Talkers may send Opus (PT 111 or 96) or PCMU (PT 0) on
+/// any path; the offer only tells the client what to send.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Backchannel {
+    /// No track 2 on this path.
+    Off,
+    #[default]
+    Opus,
+    Pcmu,
+}
+
+/// One RTSP path: its video (track 0), microphone (track 1) and backchannel offer (track 2).
+pub struct StreamPath {
+    /// `main`, `main_pcmu`…
+    pub path: String,
+    pub video: Arc<Hub>,
+    /// Absent until the hardware is ready, or when audio is disabled.
+    pub audio: Option<Arc<AudioHub>>,
+    /// Offered only when [`Config::talk`] is present and the client requires the ONVIF backchannel.
+    pub backchannel: Backchannel,
+}
+
+impl StreamPath {
+    /// Video only, with an Opus backchannel offer.
+    pub fn new(path: impl Into<String>, video: Arc<Hub>) -> Self {
+        Self {
+            path: path.into(),
+            video,
+            audio: None,
+            backchannel: Backchannel::default(),
+        }
+    }
+    pub fn audio(mut self, audio: Option<Arc<AudioHub>>) -> Self {
+        self.audio = audio;
+        self
+    }
+    pub fn backchannel(mut self, backchannel: Backchannel) -> Self {
+        self.backchannel = backchannel;
+        self
+    }
+}
+
 pub struct Config {
-    /// Path (`Preview_01_main`) → its stream.
-    pub streams: Vec<(String, Arc<Hub>)>,
+    pub streams: Vec<StreamPath>,
     /// `None` serves without authentication.
     pub creds: Option<Credentials>,
-    /// One 48 kHz mono Opus capture shared by main and sub (track 1); absent until hardware is ready.
-    pub audio: Option<Arc<AudioHub>>,
-    /// Opus backchannel (track 2): up to four talkers mixed into mono samples at the camera's speaker rate.
+    /// The backchannel mixer shared by every path: up to four talkers mixed into mono samples at the
+    /// camera's speaker rate.
     pub talk: Option<Arc<Talkback>>,
 }
 
@@ -298,6 +345,8 @@ enum Media {
     Video(Arc<Hub>),
     Audio(Arc<AudioHub>),
     Talk(TalkLease),
+    /// A UDP talker whose lease a receiver thread holds since PLAY.
+    TalkUdp,
 }
 
 struct Setup {
@@ -306,6 +355,53 @@ struct Setup {
     media: Media,
     transport: Transport,
     udp: Option<UdpSocket>,
+}
+
+/// A UDP backchannel (Surveillance Station sets it up over UDP even when video is interleaved): RTP from
+/// the client's address into the talker's lease until the PLAY ends.
+fn udp_talk(sock: UdpSocket, from: IpAddr, mut lease: TalkLease, stop: Arc<AtomicBool>) {
+    if sock
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .is_err()
+    {
+        return;
+    }
+    let mut buf = [0u8; 2048];
+    let (mut taken, mut foreign, mut last_foreign) = (0u64, 0u64, None);
+    let (mut last, mut largest, mut late) = (None, 0usize, 0u64);
+    while !stop.load(Ordering::Relaxed) {
+        match sock.recv_from(&mut buf) {
+            Ok((n, addr)) if addr.ip() == from => {
+                taken += 1;
+                let now = std::time::Instant::now();
+                // Surveillance Station flushes the end of a phrase a second after the talker let go: a short
+                // packet after a pause would play as a lone fragment, so it is dropped.
+                let after_pause = last.is_some_and(|t: std::time::Instant| {
+                    now.duration_since(t) >= super::talk::PAUSE
+                });
+                last = Some(now);
+                if after_pause && n < largest {
+                    late += 1;
+                    continue;
+                }
+                largest = largest.max(n);
+                lease.push_rtp(&buf[..n]);
+            }
+            Ok((_, addr)) => {
+                foreign += 1;
+                last_foreign = Some(addr);
+            }
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) => {}
+            Err(_) => break,
+        }
+    }
+    eprintln!(
+        "talk: udp packets {taken} from the client ({late} late tails dropped), {foreign} from elsewhere (last {last_foreign:?})"
+    );
 }
 
 fn audio_sender(
@@ -396,6 +492,7 @@ fn connection(
     let mut setups: HashMap<String, Setup> = HashMap::new();
     let mut play: Option<Play> = None;
     let mut backchannel = false;
+    let mut trace = TalkTrace::default();
     let mut buf: Vec<u8> = Vec::new();
     let mut chunk = [0u8; 4096];
     loop {
@@ -408,15 +505,25 @@ fn connection(
             if buf.len() < n {
                 break;
             }
+            trace.frames += 1;
             if play.is_some() {
+                let mut taken = false;
                 for setup in setups.values_mut() {
                     if setup.active
                         && matches!(setup.transport, Transport::Tcp { rtp_ch, .. } if rtp_ch == buf[1])
                         && let Media::Talk(input) = &mut setup.media
                     {
                         input.push_rtp(&buf[4..n]);
+                        taken = true;
                     }
                 }
+                if taken {
+                    trace.to_talk += 1;
+                } else {
+                    trace.other.get_or_insert(buf[1]);
+                }
+            } else {
+                trace.before_play += 1;
             }
             buf.drain(..n);
         }
@@ -436,6 +543,7 @@ fn connection(
             }
             Parsed::Request(req, used) => {
                 buf.drain(..used);
+                trace.request(&req);
                 let (resp, teardown) = handle(
                     &req,
                     cfg,
@@ -465,12 +573,70 @@ fn connection(
     }
 }
 
-fn find_stream<'a>(cfg: &'a Config, path: &str) -> Option<(&'a str, &'a Arc<Hub>)> {
+/// What a client that asked for the backchannel did, logged when its connection ends: its requests
+/// (path and transport only, never the URI, which may carry credentials) and where its interleaved
+/// frames went. Silent for every other client.
+#[derive(Default)]
+struct TalkTrace {
+    requests: Vec<String>,
+    talk: bool,
+    frames: u64,
+    to_talk: u64,
+    before_play: u64,
+    /// The first interleaved channel seen after PLAY that no talk setup owns (RTCP, or a mismatch).
+    other: Option<u8>,
+}
+
+impl TalkTrace {
+    fn request(&mut self, req: &super::proto::Request) {
+        self.talk |= req
+            .header("Require")
+            .is_some_and(|r| r.contains("www.onvif.org/ver20/backchannel"));
+        let transport = req.header("Transport").unwrap_or("");
+        let line: String = format!("{} {} {transport}", req.method, req.path())
+            .trim_end()
+            .into();
+        if self.requests.len() < 12 {
+            self.requests.push(line);
+        }
+    }
+}
+
+impl Drop for TalkTrace {
+    fn drop(&mut self) {
+        if self.talk {
+            eprintln!(
+                "talk: client {} | frames {} to_talk {} before_play {} other_channel {:?}",
+                self.requests.join(" | "),
+                self.frames,
+                self.to_talk,
+                self.before_play,
+                self.other
+            );
+        }
+    }
+}
+
+fn find_stream<'a>(cfg: &'a Config, path: &str) -> Option<&'a StreamPath> {
     let base = path.split("/trackID=").next().unwrap_or(path);
-    cfg.streams
-        .iter()
-        .find(|(p, _)| p == base)
-        .map(|(p, h)| (p.as_str(), h))
+    cfg.streams.iter().find(|s| s.path == base)
+}
+
+fn backchannel_sdp(offer: Backchannel) -> Option<String> {
+    let (pt, rtpmap) = match offer {
+        Backchannel::Off => return None,
+        Backchannel::Opus => (
+            crate::opus::PAYLOAD_TYPE,
+            format!(
+                "opus/48000/2\r\na=fmtp:{} sprop-stereo=0",
+                crate::opus::PAYLOAD_TYPE
+            ),
+        ),
+        Backchannel::Pcmu => (0, "PCMU/8000/1".to_string()),
+    };
+    Some(format!(
+        "m=audio 0 RTP/AVP {pt}\r\na=rtpmap:{pt} {rtpmap}\r\na=control:trackID=2\r\na=sendonly\r\n"
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -504,15 +670,15 @@ fn handle(
     let session = format!("{session_id};timeout={SESSION_TIMEOUT_S}");
     match req.method.as_str() {
         "DESCRIBE" => {
-            let Some((_, hub)) = find_stream(cfg, req.path()) else {
+            let Some(stream) = find_stream(cfg, req.path()) else {
                 return (Response::new(404), false);
             };
-            let Some(params) = hub.wait_params(DESCRIBE_WAIT) else {
+            let Some(params) = stream.video.wait_params(DESCRIBE_WAIT) else {
                 return (Response::new(404), false);
             };
             let base = format!("{}/", req.uri.trim_end_matches('/'));
             let mut body = sdp(&params, &base);
-            if let Some(audio) = &cfg.audio {
+            if let Some(audio) = &stream.audio {
                 body.push_str(&crate::microphone::sdp_for(audio.format()));
             }
             if cfg.talk.is_some()
@@ -520,13 +686,10 @@ fn handle(
                     v.split(',')
                         .any(|v| v.trim() == "www.onvif.org/ver20/backchannel")
                 })
+                && let Some(offer) = backchannel_sdp(stream.backchannel)
             {
                 *backchannel = true;
-                body.push_str(&format!(
-                    "m=audio 0 RTP/AVP {pt}\r\na=rtpmap:{pt} opus/48000/2\r\na=fmtp:{pt} sprop-stereo=0\r\n\
-                     a=control:trackID=2\r\na=sendonly\r\n",
-                    pt = crate::opus::PAYLOAD_TYPE
-                ));
+                body.push_str(&offer);
             }
             let r = Response::new(200)
                 .with("Content-Base", base.clone())
@@ -539,13 +702,14 @@ fn handle(
             if play.is_some() {
                 return (Response::new(455), false);
             }
-            let Some((name, hub)) = find_stream(cfg, req.path()) else {
+            let Some(stream) = find_stream(cfg, req.path()) else {
                 return (Response::new(404), false);
             };
+            let name = stream.path.as_str();
             let track = req.path().split_once("/trackID=").map_or("0", |(_, t)| t);
             let media = match track {
-                "0" => Media::Video(Arc::clone(hub)),
-                "1" => match &cfg.audio {
+                "0" => Media::Video(Arc::clone(&stream.video)),
+                "1" => match &stream.audio {
                     Some(audio) => Media::Audio(Arc::clone(audio)),
                     None => return (Response::new(404), false),
                 },
@@ -558,9 +722,6 @@ fn handle(
             let Some(transport) = req.header("Transport").and_then(parse_transport) else {
                 return (Response::new(461), false);
             };
-            if matches!(media, Media::Talk(_)) && !matches!(transport, Transport::Tcp { .. }) {
-                return (Response::new(461), false);
-            }
             if let Transport::Tcp { rtp_ch, rtcp_ch } = &transport {
                 let key = format!("{name}/{track}");
                 if rtp_ch == rtcp_ch
@@ -623,9 +784,10 @@ fn handle(
             )
         }
         "PLAY" => {
-            let Some((base, _)) = find_stream(cfg, req.path()) else {
+            let Some(StreamPath { path: base, .. }) = find_stream(cfg, req.path()) else {
                 return (Response::new(404), false);
             };
+            let base = base.as_str();
             if !setups.values().any(|s| s.base == base) {
                 return (Response::new(455), false);
             }
@@ -684,7 +846,27 @@ fn handle(
                             Err(_) => return (Response::new(455), false),
                         }
                     }
-                    Media::Talk(_) => {}
+                    Media::Talk(_) | Media::TalkUdp => {}
+                }
+            }
+            // UDP talkers: the lease and the socket go to a receiver thread for this PLAY.
+            for setup in setups.values_mut().filter(|s| s.active) {
+                let (Media::Talk(_), Some(sock)) = (&setup.media, &setup.udp) else {
+                    continue;
+                };
+                let Ok(sock) = sock.try_clone() else {
+                    return (Response::new(455), false);
+                };
+                let Media::Talk(lease) = std::mem::replace(&mut setup.media, Media::TalkUdp) else {
+                    continue;
+                };
+                let st = Arc::clone(&stop);
+                match limits
+                    .thread()
+                    .spawn(move || udp_talk(sock, peer_ip, lease, st))
+                {
+                    Ok(thread) => playing.threads.push(thread),
+                    Err(_) => return (Response::new(455), false),
                 }
             }
             *play = Some(playing);

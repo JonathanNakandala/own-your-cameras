@@ -158,6 +158,28 @@ impl Presets {
         self.positions = positions;
         Ok(())
     }
+    /// The saved names, in order.
+    pub fn names(&self) -> Vec<String> {
+        self.positions.keys().cloned().collect()
+    }
+    /// Forgets `name` and persists the table; an unknown name is an error.
+    pub fn remove(&mut self, name: PresetName) -> io::Result<()> {
+        let mut positions = self.positions.clone();
+        if positions
+            .remove(name.as_str().map_err(io::Error::other)?)
+            .is_none()
+        {
+            return Err(io::Error::other("preset is not saved"));
+        }
+        let bytes = serde_json::to_vec(&Document {
+            version: 2,
+            positions: positions.clone(),
+        })
+        .map_err(io::Error::other)?;
+        self.store.write_bytes(&bytes)?;
+        self.positions = positions;
+        Ok(())
+    }
 }
 #[cfg(test)]
 mod tests {

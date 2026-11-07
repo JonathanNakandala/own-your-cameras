@@ -14,10 +14,13 @@ Home Assistant controls over MQTT. Uses the camera's stock kernel and drivers.
 
 ## Use
 
+ONVIF (discovery, profiles, snapshot, PTZ and presets) is on by default: [ONVIF](../../../docs/shared/onvif.md).
+
 | RTSP stream | Default video | Audio |
 |---|---|---|
-| `Preview_01_main` | 1920×1080, 20 fps | Opus, 48 kHz mono |
-| `Preview_01_sub` | 640×360, 20 fps | Opus, 48 kHz mono |
+| `main` | 1920×1080, 20 fps | Opus, 48 kHz mono |
+| `sub` | 640×360, 20 fps | Opus, 48 kHz mono |
+| `main_pcmu`, `sub_pcmu` | as `main`, `sub` | G.711 µ-law, 8 kHz mono, for ONVIF recorders |
 
 Both paths offer an Opus backchannel (ONVIF `Require: www.onvif.org/ver20/backchannel`); up to four
 clients can talk at once and are mixed on the camera.

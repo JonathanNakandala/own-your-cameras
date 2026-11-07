@@ -190,7 +190,12 @@ struct sdk_api {
 
 struct video {
     unsigned int channel_id;
+    unsigned int width;
+    unsigned int height;
+    unsigned int fps;
     struct video *sub;
+    /* The snapshot channel, registered in the sub channel's encoder group. */
+    struct video *jpeg;
     void *library;
     void *math_library;
     void *logger_library;
@@ -263,6 +268,7 @@ static void leave_call(void)
 static bool pipeline_empty(const struct video *v)
 {
     return !v->acquisition_uncertain && (v->sub == NULL || pipeline_empty(v->sub)) &&
+           (v->jpeg == NULL || pipeline_empty(v->jpeg)) &&
            !v->fs_created && !v->fs_enabled && !v->group_created &&
            !v->encoder_created && !v->encoder_registered && !v->bound &&
            !v->receiving && !v->stream_held;
@@ -315,6 +321,9 @@ static void cleanup(struct video *v, char *error, uint32_t cap)
                      "POISONED: failed acquisition ownership uncertain; reboot required");
         return;
     }
+    /* The JPEG channel leaves the main group before the main channel does. */
+    if (v->jpeg != NULL)
+        cleanup(v->jpeg, error, cap);
     if (v->sub != NULL)
         cleanup(v->sub, error, cap);
     /* A retained stream means Release already failed; do not repeat it. */
@@ -574,6 +583,7 @@ static int dispose(struct video *v, char *error, uint32_t cap)
         close_library(&v->math_library, "dlclose libm", error, cap) != 0)
         return -1;
     owner = NULL;
+    free(v->jpeg);
     free(v->sub);
     free(v);
     return 0;
@@ -639,6 +649,9 @@ static int configure_channel(struct video *v, unsigned int width, unsigned int h
     int rc;
     v->source = (IMPCell){ DEV_ID_FS, (int)v->channel_id, 0 };
     v->sink = (IMPCell){ DEV_ID_ENC, (int)v->channel_id, 0 };
+    v->width = width;
+    v->height = height;
+    v->fps = fps;
     memset(&fs, 0, sizeof(fs));
     fs.picWidth = width;
     fs.picHeight = height;
@@ -837,6 +850,102 @@ int t31_video_night(void *handle, int night, char *error, uint32_t cap)
     leave_call(); return rc;
 }
 
+/* Snapshot channel: JPEG of the sub picture, encoder channel 2 in the sub channel's group (a main-size JPEG
+ * buffer does not fit the 16.5 MiB media reservation: IMP_Alloc refused 949248 bytes), created
+ * once after the graph and receiving only while a snapshot is wanted. Its failure leaves video alone. */
+#define JPEG_CHANNEL 2U
+#define JPEG_QP 25
+
+static struct video *jpeg_of(void *handle, char *error, uint32_t error_cap)
+{
+    if (handle == NULL || handle != owner || owner->closed || owner->failed) {
+        append_error(error, error_cap, "jpeg", EINVAL, "invalid, closed or failed video handle");
+        return NULL;
+    }
+    return owner->jpeg;
+}
+
+int t31_jpeg_open(void *handle, char *error, uint32_t error_cap)
+{
+    struct video *v, *source;
+    IMPEncoderChnAttr encoder;
+    int rc;
+    if (enter_call(error, error_cap) != 0)
+        return -1;
+    if (handle == NULL || handle != owner || owner->closed || owner->failed || owner->jpeg != NULL) {
+        append_error(error, error_cap, "jpeg_open", EINVAL, "needs an open graph without a JPEG channel");
+        leave_call();
+        return -1;
+    }
+    source = owner->sub != NULL ? owner->sub : owner;
+    v = calloc(1, sizeof(*v));
+    if (v == NULL) {
+        append_error(error, error_cap, "calloc jpeg", ENOMEM, NULL);
+        leave_call();
+        return -1;
+    }
+    v->channel_id = JPEG_CHANNEL;
+    v->sdk = owner->sdk;
+    v->width = source->width;
+    v->height = source->height;
+    owner->jpeg = v;
+    memset(&encoder, 0, sizeof(encoder));
+    INIT_CALL(v->sdk.IMP_Encoder_SetDefaultParam(&encoder, IMP_ENC_PROFILE_JPEG, IMP_ENC_RC_MODE_FIXQP,
+              v->width, v->height, source->fps, 1, 0, 0, JPEG_QP, 0), "IMP_Encoder_SetDefaultParam jpeg");
+    INIT_CALL(v->sdk.IMP_Encoder_SetMaxStreamCnt(v->channel_id, 1), "IMP_Encoder_SetMaxStreamCnt jpeg");
+    /* A refused create allocated nothing (IMP_Alloc reports the refused DMA buffer before failing), and a
+     * refused registration is undone at once: unlike the graph's stages, the snapshot channel's failure
+     * must leave video and its later close alone. */
+    INIT_CALL(v->sdk.IMP_Encoder_CreateChn(v->channel_id, &encoder), "IMP_Encoder_CreateChn jpeg");
+    v->encoder_created = true;
+    rc = v->sdk.IMP_Encoder_RegisterChn(source->channel_id, v->channel_id);
+    if (rc != 0) {
+        append_error(error, error_cap, "IMP_Encoder_RegisterChn jpeg", rc, NULL);
+        if (v->sdk.IMP_Encoder_DestroyChn(v->channel_id) == 0)
+            v->encoder_created = false;
+        goto fail;
+    }
+    v->encoder_registered = true;
+    leave_call();
+    return 0;
+fail:
+    /* Nothing left acquired: forget the channel. Otherwise it stays for close to clean up, and
+     * snapshots are refused. */
+    if (!v->encoder_created && !v->acquisition_uncertain) {
+        owner->jpeg = NULL;
+        free(v);
+    } else {
+        v->failed = true;
+    }
+    leave_call();
+    return -1;
+}
+
+int t31_jpeg_receive(void *handle, int on, char *error, uint32_t error_cap)
+{
+    struct video *v;
+    int rc;
+    if (enter_call(error, error_cap) != 0)
+        return -1;
+    v = jpeg_of(handle, error, error_cap);
+    /* A failed channel may still be stopped, never started. */
+    if (v == NULL || (on == 1 && v->failed) || !v->encoder_registered || v->stream_held ||
+        (on != 0 && on != 1) || v->receiving == (on == 1)) {
+        append_error(error, error_cap, "jpeg_receive", EINVAL, "JPEG channel unavailable or already in that state");
+        leave_call();
+        return -1;
+    }
+    rc = on ? v->sdk.IMP_Encoder_StartRecvPic(v->channel_id) : v->sdk.IMP_Encoder_StopRecvPic(v->channel_id);
+    if (rc != 0) {
+        v->failed = true;
+        append_error(error, error_cap, on ? "IMP_Encoder_StartRecvPic jpeg" : "IMP_Encoder_StopRecvPic jpeg", rc, NULL);
+    } else {
+        v->receiving = on == 1;
+    }
+    leave_call();
+    return rc == 0 ? 0 : -1;
+}
+
 #undef INIT_STAGE
 #undef INIT_CALL
 
@@ -922,11 +1031,12 @@ static int video_next(void *handle, unsigned int channel, unsigned int poll_ms, 
         leave_call();
         return -1;
     }
-    if (channel > 1 || (channel == 1 && owner->sub == NULL)) {
+    if (channel > JPEG_CHANNEL || (channel == 1 && owner->sub == NULL) ||
+        (channel == JPEG_CHANNEL && (owner->jpeg == NULL || !owner->jpeg->encoder_registered))) {
         append_error(error, error_cap, "video channel", EINVAL, NULL);
         leave_call(); return -1;
     }
-    v = channel == 0 ? owner : owner->sub;
+    v = channel == 0 ? owner : channel == 1 ? owner->sub : owner->jpeg;
     if (v->failed || v->closed) { leave_call(); return -1; }
     if (dst == NULL || capacity == 0 || capacity > MAX_FRAME_BYTES ||
         length == NULL || timestamp == NULL ||

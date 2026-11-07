@@ -14,6 +14,33 @@ pub struct Config {
     pub rtsp: Rtsp,
     #[serde(default)]
     pub runtime: Runtime,
+    #[serde(default)]
+    pub onvif: Onvif,
+    #[serde(default)]
+    pub time: Time,
+}
+/// `[onvif]`: the ONVIF service (Profile S, discovery, snapshots), on by default.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Onvif {
+    /// HTTP port of the ONVIF services and `/snapshot.jpg`; 0 turns ONVIF off.
+    #[serde(default = "onvif_port")]
+    pub port: u16,
+}
+/// `[time]`: NTP servers the clock follows (none: the clock is left alone).
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct Time {
+    #[serde(default)]
+    pub ntp: Vec<String>,
+}
+fn onvif_port() -> u16 {
+    80
+}
+impl Default for Onvif {
+    fn default() -> Self {
+        Self { port: onvif_port() }
+    }
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -119,6 +146,12 @@ impl Config {
             || !bounded(&config.rtsp.password, 128)
             || config.rtsp.port == 0
             || (config.runtime.cold_controls && !config.runtime.watchdog)
+            || config.time.ntp.len() > 4
+            || config
+                .time
+                .ntp
+                .iter()
+                .any(|server| !bounded(server, 253) || server.chars().any(char::is_whitespace))
         {
             return Err(io::Error::other(
                 "invalid camera identity, broker or RTSP credentials",
@@ -202,5 +235,19 @@ mod tests {
         assert!(Config::parse(&text).unwrap().runtime.cold_controls);
         assert!(Config::parse(&(text + "watchdog=false\n")).is_err());
         assert!(Config::parse(&format!("{CONFIG}[runtime]\ncold_controls='true'\n")).is_err());
+    }
+
+    #[test]
+    fn onvif_is_on_by_default_and_ntp_servers_are_bounded() {
+        let cfg = Config::parse(CONFIG).unwrap();
+        assert_eq!(cfg.onvif.port, 80);
+        assert!(cfg.time.ntp.is_empty());
+        let cfg = Config::parse(&format!(
+            "{CONFIG}[onvif]\nport=0\n[time]\nntp=['ntp.example']\n"
+        ))
+        .unwrap();
+        assert_eq!((cfg.onvif.port, cfg.time.ntp.len()), (0, 1));
+        assert!(Config::parse(&format!("{CONFIG}[time]\nntp=['bad host']\n")).is_err());
+        assert!(Config::parse(&format!("{CONFIG}[time]\nntp=['a','b','c','d','e']\n")).is_err());
     }
 }

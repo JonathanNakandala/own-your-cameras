@@ -75,7 +75,7 @@ device-dump: build
 
 # `cam serve --diagnostic` for SERVE_SECONDS (RAM-only: no handoff, network or health file; production is
 # `--attempt TOKEN` and never runs beside `cam wdt`). AUTH is a local file with the `user:password` go2rtc uses;
-# probe it from here while it runs (ffprobe rtsp://…@<camera>:554/Preview_01_sub).
+# probe it from here while it runs (ffprobe rtsp://…@<camera>:554/sub).
 SERVE_SECONDS ?= 120
 AUTH ?=
 need-auth = $(if $(AUTH),,$(error AUTH=<file with user:password> is required))
@@ -95,7 +95,7 @@ device-zoom: build
 	mkdir -p target/zoom
 	$(SESSION) --auth $(AUTH) $(BIN) -- sh -c "ssh $(CAMERA) 'cd /mnt/tmp && { ./cam serve --diagnostic --auth /mnt/tmp/cam-rtsp.auth --seconds 300 >serve.log 2>&1 & }; \
 	  sleep 8; ./cam zoom init && ./cam zoom info' | tee target/zoom.out; \
-	  url=\"rtsp://\$$(cat $(AUTH))@$(CAMERA_ADDR):554/Preview_01_main\"; for z in $(ZOOM_ENDS); do \
+	  url=\"rtsp://\$$(cat $(AUTH))@$(CAMERA_ADDR):554/main\"; for z in $(ZOOM_ENDS); do \
 	  ssh $(CAMERA) \"/mnt/tmp/cam zoom \$$z\" | tee -a target/zoom.out; \
 	  ffmpeg -loglevel error -rtsp_transport tcp -i \"\$$url\" -frames:v 1 -y target/zoom/zoom\$$z-before.jpg; \
 	  ssh $(CAMERA) '/mnt/tmp/cam focus' | tee -a target/zoom.out; \
@@ -113,7 +113,7 @@ device-ir: build
 	mkdir -p target/ir
 	$(SESSION) --auth $(AUTH) $(BIN) -- sh -c "ssh $(CAMERA) 'cd /mnt/tmp && { ./cam serve --diagnostic --auth /mnt/tmp/cam-rtsp.auth --seconds 300 >serve.log 2>&1 & }; \
 	  sleep 8; ./cam ir status' | tee target/ir.out; \
-	  url=\"rtsp://\$$(cat $(AUTH))@$(CAMERA_ADDR):554/Preview_01_sub\"; for m in day night day; do \
+	  url=\"rtsp://\$$(cat $(AUTH))@$(CAMERA_ADDR):554/sub\"; for m in day night day; do \
 	  ssh $(CAMERA) \"/mnt/tmp/cam ir \$$m && /mnt/tmp/cam ir status\" | tee -a target/ir.out; sleep 4; \
 	  ffmpeg -loglevel error -rtsp_transport tcp -i \"\$$url\" -frames:v 1 -y target/ir/\$$m-\$$(date +%s).jpg; done; \
 	  ssh $(CAMERA) '/mnt/tmp/cam led off && cat /sys/class/gpio/gpio226/value; /mnt/tmp/cam led on && cat /sys/class/gpio/gpio226/value' | tee -a target/ir.out; \

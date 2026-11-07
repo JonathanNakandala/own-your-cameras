@@ -8,7 +8,7 @@ mqtt_password=MQTT_PASSWORD
 mqtt_prefix=ds-kd8003-ime1
 mqtt_node=ds_kd8003_ime1
 device_name=DS-KD8003-IME1
-# RTSP digest credentials for rtsp://CAMERA_HOST:554/Streaming/Channels/101 and /102.
+# RTSP digest credentials for rtsp://CAMERA_HOST:554/main and /sub (and main_pcmu, sub_pcmu).
 rtsp_user=RTSP_USER
 rtsp_password=RTSP_PASSWORD
 rtsp_port=554
@@ -26,3 +26,7 @@ clips=/home/app/custom/native/clips
 # Read-only diagnostics on this port (GET /state, GET /log); 0 keeps them off. The log names who
 # opened the door and when, so enable it only on a trusted network.
 http_port=0
+# ONVIF (discovery, profiles, snapshot, call button and door events) with the RTSP credentials; 0 is off.
+onvif_port=80
+# NTP servers the clock follows, comma-separated; empty leaves the clock alone.
+ntp=NTP_HOST

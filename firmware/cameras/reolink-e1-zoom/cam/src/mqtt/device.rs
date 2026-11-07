@@ -643,12 +643,17 @@ impl<B: Bus + Send, I: Isp + Send, H: Hw + Send, O: Platform> Hardware for Devic
                 | Command::Reboot
                 | Command::CalibrateFocus
                 | Command::SavePreset(_)
+                | Command::RemovePreset(_)
         ) {
             self.cancel_calibration();
         }
         if !matches!(
             c,
-            Command::Setting(..) | Command::Reboot | Command::Refocus | Command::SavePreset(_)
+            Command::Setting(..)
+                | Command::Reboot
+                | Command::Refocus
+                | Command::SavePreset(_)
+                | Command::RemovePreset(_)
         ) {
             self.cancel_af()?;
         }
@@ -754,6 +759,14 @@ impl<B: Bus + Send, I: Isp + Send, H: Hw + Send, O: Platform> Hardware for Devic
                 }
             }
             Command::SavePreset(name) => self.save_preset(name)?,
+            Command::RemovePreset(name) => {
+                self.presets
+                    .remove(name)
+                    .map_err(|e| format!("preset not removed: {e}"))?;
+                if self.preset.as_deref() == Some(name.as_str()) {
+                    self.preset = None;
+                }
+            }
             Command::Setting(key, text) => self.setting(key, text)?,
             Command::Move(m) => self.start_move(*m)?,
             Command::Velocity(v) => self.start_velocity(*v)?,
@@ -967,6 +980,10 @@ impl<B: Bus + Send, I: Isp + Send, H: Hw + Send, O: Platform> Hardware for Devic
         s.insert("autofocus_state".into(), state);
         Ok(s)
     }
+    fn preset_names(&self) -> Option<Vec<String>> {
+        Some(self.presets.names())
+    }
+
     fn changed(&mut self) -> bool {
         let n = self.media.reports();
         let media = std::mem::replace(&mut self.seen_reports, n) != n;

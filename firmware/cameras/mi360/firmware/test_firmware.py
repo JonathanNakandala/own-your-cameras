@@ -86,19 +86,19 @@ class ImagePolicy(unittest.TestCase):
                 self.assertEqual(result[start:end], base[start:end], name)
         self.assertEqual(padded[21:], b"\xff" * (build.SIZE - 21))
 
-    def test_exact_four_replacements_preserve_729_other_stock_paths(self):
-        before = {f"retained/{index}": {} for index in range(729)}
+    def test_exact_four_replacements_preserve_the_other_stock_paths(self):
+        before = {f"retained/{index}": {} for index in range(build.RETAINED_STOCK_COUNT)}
         before.update({name:{} for name in build.REPLACED_STOCK})
         before["bin/fetch_av"] = {}
         files = {name:None for name in build.REPLACED_STOCK}
         files["bin/cam"] = None
         replaced, retained = build.retained_scope(before,{"bin/fetch_av"},files)
         self.assertEqual(replaced,{"etc/init.d/S00init","etc/init.d/S60service","bin/camera-update","bin/camera-mtd-write"})
-        self.assertEqual(len(retained),729)
+        self.assertEqual(len(retained),build.RETAINED_STOCK_COUNT)
         with self.assertRaisesRegex(ValueError,"four stock replacements"):
             build.retained_scope(before,{"bin/fetch_av"},dict(files, **{"retained/0":None}))
         before.pop("retained/0")
-        with self.assertRaisesRegex(ValueError,"729 retained"):
+        with self.assertRaisesRegex(ValueError,f"{build.RETAINED_STOCK_COUNT} retained"):
             build.retained_scope(before,{"bin/fetch_av"},files)
 
     def test_wrong_flash_size_and_partition_overflow_fail(self):
@@ -140,16 +140,23 @@ class ImagePolicy(unittest.TestCase):
             with self.assertRaises(ValueError):
                 build.init_script(bad)
 
-    def test_removal_is_explicit_and_never_libraries_tuning_or_recovery(self):
+    def test_removal_is_explicit_and_never_media_libraries_tuning_or_recovery(self):
         base = {"bin/" + name: {} for name in build.REMOVE_BINS}
-        for name in ("lib/libimp.so", "ko/sensor_sc2336_t31.ko", "etc/sensor/sc2336.bin", "etc/init.d/S99zz_rootssh", "etc/init.d/S15watchdog", "etc/init.d/S99netcheck"):
+        base.update({"lib/" + name: {} for name in build.REMOVE_LIBS})
+        kept = ("lib/libimp.so", "lib/libalog.so", "lib/libaudioProcess.so", "lib/libnl-tiny.so", "lib/libcurl.so.4.4.0",
+                "ko/sensor_sc2336_t31.ko", "etc/sensor/sc2336.bin", "etc/init.d/S99zz_rootssh", "etc/init.d/S15watchdog")
+        for name in kept + ("etc/init.d/S99netcheck",):
             base[name] = {}
         removed = build.removed_paths(base)
         self.assertIn("etc/init.d/S99netcheck", removed)
-        self.assertEqual(removed - {"bin/" + name for name in build.REMOVE_BINS}, {"etc/init.d/S99netcheck"})
-        base.pop("bin/fetch_av")
-        with self.assertRaises(ValueError):
-            build.removed_paths(base)
+        reviewed = {"bin/" + name for name in build.REMOVE_BINS} | {"lib/" + name for name in build.REMOVE_LIBS}
+        self.assertEqual(removed - reviewed, {"etc/init.d/S99netcheck"})
+        self.assertFalse(removed & set(kept))
+        for missing in ("bin/fetch_av", "lib/libpersonDet_inf.so"):
+            partial = dict(base)
+            partial.pop(missing)
+            with self.assertRaises(ValueError):
+                build.removed_paths(partial)
 
 
 class UpdaterPolicy(unittest.TestCase):

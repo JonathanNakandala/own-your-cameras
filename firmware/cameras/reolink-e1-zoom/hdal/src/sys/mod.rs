@@ -504,15 +504,24 @@ impl Backend for Sys {
     }
 }
 
-const PROC_OUT: [u32; 2] = [
+const PROC_OUT: [u32; 3] = [
     h::HD_VIDEOPROC_0_OUT_0 as u32,
     h::HD_VIDEOPROC_0_OUT_1 as u32,
+    h::HD_VIDEOPROC_0_OUT_2 as u32,
 ];
-const ENC_IN: [u32; 2] = [h::HD_VIDEOENC_0_IN_0 as u32, h::HD_VIDEOENC_0_IN_1 as u32];
-const ENC_OUT: [u32; 2] = [h::HD_VIDEOENC_0_OUT_0 as u32, h::HD_VIDEOENC_0_OUT_1 as u32];
+const ENC_IN: [u32; 3] = [
+    h::HD_VIDEOENC_0_IN_0 as u32,
+    h::HD_VIDEOENC_0_IN_1 as u32,
+    h::HD_VIDEOENC_0_IN_2 as u32,
+];
+const ENC_OUT: [u32; 3] = [
+    h::HD_VIDEOENC_0_OUT_0 as u32,
+    h::HD_VIDEOENC_0_OUT_1 as u32,
+    h::HD_VIDEOENC_0_OUT_2 as u32,
+];
 const NO_ID: u32 = 0xffff_ffff;
 
-fn slot(table: &[u32; 2], i: u32, step: Step) -> Result<u32, Error> {
+fn slot(table: &[u32; 3], i: u32, step: Step) -> Result<u32, Error> {
     table
         .get(i as usize)
         .copied()
@@ -740,6 +749,78 @@ impl EncBackend for Sys {
     fn videoenc_retune(&mut self, path: PathId, spec: &EncSpec) -> Result<(), Error> {
         self.forward(Step::VideoencRetune)?;
         encoder_params(path, spec, Step::VideoencRetune)
+    }
+
+    fn videoenc_configure_jpeg(
+        &mut self,
+        path: PathId,
+        dim: Dim,
+        quality: u32,
+    ) -> Result<(), Error> {
+        let step = Step::VideoencConfigureJpeg;
+        self.forward(step)?;
+        if self.maps.iter().any(|map| map.path == path) {
+            return Err(Error {
+                step,
+                code: h::HD_ERR_IN_USE,
+            });
+        }
+        let mut pc = h::HD_VIDEOENC_PATH_CONFIG::default();
+        pc.max_mem.codec_type = h::HD_CODEC_TYPE_JPEG;
+        pc.max_mem.max_dim.w = dim.w;
+        pc.max_mem.max_dim.h = dim.h;
+        // The ring holds two of the largest pictures: `bitrate × enc_buf_ms` sizes it.
+        pc.max_mem.bitrate = crate::enc::MAX_JPEG_BYTES * 8;
+        pc.max_mem.enc_buf_ms = 2000;
+        pc.max_mem.svc_layer = h::HD_SVC_DISABLE;
+        pc.isp_id = NO_ID;
+        // SAFETY: `pc` is a `HD_VIDEOENC_PATH_CONFIG`, the struct this param id takes.
+        check(
+            step,
+            ioctl_capture::result(|| unsafe {
+                h::hd_videoenc_set(
+                    path.0 as _,
+                    h::HD_VIDEOENC_PARAM_PATH_CONFIG,
+                    (&mut pc as *mut h::HD_VIDEOENC_PATH_CONFIG).cast(),
+                )
+            }),
+        )?;
+        let mut inp = h::HD_VIDEOENC_IN::default();
+        inp.dim.w = dim.w;
+        inp.dim.h = dim.h;
+        inp.pxl_fmt = h::HD_VIDEO_PXLFMT_YUV420;
+        inp.dir = h::HD_VIDEO_DIR_NONE;
+        inp.frc = frc_ratio(1, 1);
+        // SAFETY: `inp` is a `HD_VIDEOENC_IN`, the struct this param id takes.
+        check(
+            step,
+            ioctl_capture::result(|| unsafe {
+                h::hd_videoenc_set(
+                    path.0 as _,
+                    h::HD_VIDEOENC_PARAM_IN,
+                    (&mut inp as *mut h::HD_VIDEOENC_IN).cast(),
+                )
+            }),
+        )?;
+        let mut out = h::HD_VIDEOENC_OUT::default();
+        out.codec_type = h::HD_CODEC_TYPE_JPEG;
+        // SAFETY: the anonymous union is plain data; we write the jpeg member of a zeroed value.
+        unsafe {
+            let c = &mut out.__bindgen_anon_1.jpeg;
+            c.retstart_interval = 0;
+            c.image_quality = quality.clamp(1, 100);
+        }
+        // SAFETY: `out` is the 44-byte `HD_VIDEOENC_OUT` of HDAL 2.00 (abi/ table).
+        check(
+            step,
+            ioctl_capture::result(|| unsafe {
+                h::hd_videoenc_set(
+                    path.0 as _,
+                    h::HD_VIDEOENC_PARAM_OUT_ENC_PARAM,
+                    (&mut out as *mut h::HD_VIDEOENC_OUT).cast(),
+                )
+            }),
+        )
     }
 
     fn videoenc_start(&mut self, path: PathId) -> Result<(), Error> {

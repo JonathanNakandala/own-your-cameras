@@ -1,12 +1,13 @@
 //! Microphone capture into the RTSP hub (PCMU 8 kHz) and speaker playback of named clips. The
-//! codec runs AI and AO at one rate (16 kHz wanted, 8 kHz if the switch fails); the microphone is
-//! decimated to 8 kHz for PCMU and the clips (shipped at 16 kHz) are decimated when the codec is
-//! at 8 kHz.
+//! codec runs AI and AO at one rate (16 kHz wanted, 8 kHz if the switch fails); the shared
+//! microphone fan-out decimates the microphone to 8 kHz for PCMU, and the clips (shipped at 16 kHz)
+//! go through the same decimator when the codec is at 8 kHz.
 use super::Device;
 use super::ffi::*;
 use camera_transport::AudioHub;
 use camera_transport::Talkback;
-use camera_transport::microphone::encode_pcm8k_mono;
+use camera_transport::microphone::MicFanout;
+use camera_transport::resample::Decimator;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, mpsc};
@@ -15,8 +16,6 @@ use std::time::{Duration, Instant};
 
 /// The codec rate asked for at start; clips are shipped at this rate.
 pub const WANTED_RATE: u32 = 16000;
-/// PCMU rate on the RTSP side.
-pub const RATE: u32 = 8000;
 /// Longest clip kept: 10 s.
 const MAX_CLIP_SAMPLES: usize = 10 * WANTED_RATE as usize;
 
@@ -35,15 +34,20 @@ fn frame_len() -> usize {
     codec_rate() as usize / 25
 }
 
-/// 2:1 decimation with a short [1 3 3 1]/8 low-pass; good enough for a doorway microphone.
+/// A 16 kHz clip at 8 kHz, through the shared low-pass decimator. The tail is flushed with silence so
+/// the clip keeps its full length.
 fn halve(samples: &[i16]) -> Vec<i16> {
-    let at = |i: isize| -> i32 { samples[i.clamp(0, samples.len() as isize - 1) as usize] as i32 };
-    (0..samples.len() / 2)
-        .map(|k| {
-            let i = (k * 2) as isize;
-            ((at(i - 1) + 3 * at(i) + 3 * at(i + 1) + at(i + 2)) / 8) as i16
-        })
-        .collect()
+    let Some(mut decimator) = Decimator::new(WANTED_RATE) else {
+        return Vec::new();
+    };
+    let mut padded = samples.to_vec();
+    padded.extend(std::iter::repeat_n(0, 256));
+    let mut out = decimator
+        .push(0, &padded)
+        .map(|(_, s)| s)
+        .unwrap_or_default();
+    out.truncate(samples.len() / 2);
+    out
 }
 
 pub enum Sound {
@@ -53,6 +57,12 @@ pub enum Sound {
 }
 
 pub fn capture_loop(g: Arc<Device>, hub: Arc<AudioHub>) {
+    // PCMU only: the HiSilicon V3 runs no Opus encoder (see the camera README).
+    let Ok(mut fanout) = MicFanout::<camera_opus::Encoder>::new(codec_rate(), None, Some(hub))
+    else {
+        g.log(format!("mic: no PCMU decimation from {} Hz", codec_rate()));
+        return;
+    };
     let mut pcm = vec![0u8; 8192];
     while !g.stop.load(Ordering::Relaxed) {
         let (mut len, mut pts) = (0u32, 0u64);
@@ -78,20 +88,13 @@ pub fn capture_loop(g: Arc<Device>, hub: Arc<AudioHub>) {
         if samples.len() != frame_len() {
             continue;
         }
-        let samples = if codec_rate() == 2 * RATE {
-            halve(&samples)
-        } else {
-            samples
-        };
         let peak = samples.iter().map(|&x| (x as i32).abs()).max().unwrap_or(0);
         {
             let mut s = g.st.lock().unwrap();
             s.audio_frames += 1;
             s.mic_peak = peak as u32;
         }
-        if let Some(law) = encode_pcm8k_mono(&samples) {
-            hub.publish(pts, law);
-        }
+        fanout.push(pts, &samples);
     }
 }
 

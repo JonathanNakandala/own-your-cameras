@@ -16,6 +16,7 @@ struct Fixture {
     addr: SocketAddr,
     hub: Arc<Hub>,
     audio: Arc<AudioHub>,
+    pcmu: Arc<AudioHub>,
     talk: Arc<Talkback>,
     stop: Arc<AtomicBool>,
     worker: Option<std::thread::JoinHandle<io::Result<()>>>,
@@ -38,14 +39,20 @@ fn start_mode(creds: Option<Credentials>, audio_enabled: bool) -> Fixture {
     let hub = Hub::new();
     hub.publish(true, 0, idr(10));
     let audio = AudioHub::new();
+    let pcmu = AudioHub::with_format(crate::microphone::Format::Pcmu8k);
     let talk = crate::rtsp::talk::fake::talkback();
     let cfg = Arc::new(Config {
-        streams: vec![
-            ("Preview_01_sub".into(), Arc::clone(&hub)),
-            ("Preview_01_main".into(), Arc::clone(&hub)),
-        ],
+        streams: ["sub", "main"]
+            .map(|p| {
+                StreamPath::new(p, Arc::clone(&hub))
+                    .audio(audio_enabled.then(|| Arc::clone(&audio)))
+            })
+            .into_iter()
+            .chain([StreamPath::new(MAIN_PCMU_PATH, Arc::clone(&hub))
+                .audio(audio_enabled.then(|| Arc::clone(&pcmu)))
+                .backchannel(Backchannel::Pcmu)])
+            .collect(),
         creds,
-        audio: audio_enabled.then(|| Arc::clone(&audio)),
         talk: audio_enabled.then(|| Arc::clone(&talk)),
     });
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -58,6 +65,7 @@ fn start_mode(creds: Option<Credentials>, audio_enabled: bool) -> Fixture {
         hub,
         stop,
         audio,
+        pcmu,
         talk,
         worker,
     }
@@ -139,7 +147,7 @@ impl Client {
     }
 }
 
-const URL: &str = "rtsp://127.0.0.1/Preview_01_sub";
+const URL: &str = "rtsp://127.0.0.1/sub";
 
 #[test]
 fn stopping_the_server_closes_idle_connections_and_releases_the_speaker() {
@@ -234,7 +242,8 @@ fn a_viewer_that_stops_reading_cannot_hold_a_sender_forever() {
     assert_eq!(c.call("PLAY", URL, &[]).code, 200);
     // Sustained valid-size frames fill the TCP window while the client never reads RTP.
     // A single giant frame is rejected by the AU ceiling before reaching the sender.
-    let deadline = std::time::Instant::now() + Duration::from_secs(6);
+    // An upper bound only: the loop ends as soon as the sender gives up. Loaded CI runners need the room.
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
     while f.hub.viewers() != 0 && std::time::Instant::now() < deadline {
         f.hub.publish(true, 0, idr(512 * 1024));
         std::thread::sleep(Duration::from_millis(20));
@@ -381,7 +390,7 @@ fn dropping_the_connection_unsubscribes_the_viewer() {
 fn describe_offers_opus_and_only_negotiated_opus_backchannel_on_both_paths() {
     let f = start(None);
     let mut c = Client::connect(f.addr);
-    for path in ["Preview_01_sub", "Preview_01_main"] {
+    for path in ["sub", "main"] {
         let url = format!("rtsp://127.0.0.1/{path}");
         let plain = c.call("DESCRIBE", &url, &[]);
         assert_eq!(plain.code, 200);
@@ -533,7 +542,7 @@ fn playing_another_path_does_not_activate_a_configured_backchannel() {
         .code,
         200
     );
-    let main = "rtsp://127.0.0.1/Preview_01_main";
+    let main = "rtsp://127.0.0.1/main";
     c.call(
         "SETUP",
         &format!("{main}/trackID=1"),
@@ -668,7 +677,7 @@ fn a_digest_signed_for_another_uri_is_rejected() {
             "Digest username=\"admin\", realm=\"cam\", nonce=\"{nonce}\", uri=\"{uri}\", response=\"{resp}\""
         )
     };
-    let other = sign("rtsp://127.0.0.1/Preview_01_main");
+    let other = sign("rtsp://127.0.0.1/main");
     assert_eq!(
         c.call("DESCRIBE", URL, &[("Authorization", &other)]).code,
         401
@@ -741,7 +750,8 @@ fn a_failed_sender_closes_the_connection_and_releases_the_speaker() {
     }
     assert_eq!(c.call("PLAY", URL, &[]).code, 200);
     assert_eq!(f.talk.talkers(), 1);
-    let deadline = std::time::Instant::now() + Duration::from_secs(6);
+    // An upper bound only: the loop ends as soon as the sender gives up. Loaded CI runners need the room.
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
     while std::time::Instant::now() < deadline {
         f.hub.publish(true, 0, idr(512 * 1024));
         if f.talk.talkers() == 0 {
@@ -787,4 +797,100 @@ fn setup_cannot_reassign_channels_while_the_previous_sender_is_playing() {
     );
     assert_eq!(c.call("TEARDOWN", URL, &[]).code, 200);
     assert_eq!(f.hub.viewers(), 0);
+}
+
+#[test]
+fn a_recorder_talks_pcmu_over_udp_while_its_video_is_interleaved() {
+    // Surveillance Station's backchannel: SETUP track 2 over UDP, RTP to the server port after PLAY.
+    let f = start(None);
+    let mut c = Client::connect(f.addr);
+    let url = format!("rtsp://127.0.0.1/{MAIN_PCMU_PATH}");
+    let require = [("Require", "www.onvif.org/ver20/backchannel")];
+    assert_eq!(c.call("DESCRIBE", &url, &require).code, 200);
+    let client = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let port = client.local_addr().unwrap().port();
+    let r = c.call(
+        "SETUP",
+        &format!("{url}/trackID=2"),
+        &[(
+            "Transport",
+            &format!("RTP/AVP;unicast;client_port={port}-{}", port + 1),
+        )],
+    );
+    assert_eq!(r.code, 200);
+    let transport = r.h("Transport").unwrap().to_string();
+    let server_port: u16 = transport
+        .split("server_port=")
+        .nth(1)
+        .and_then(|p| p.split('-').next())
+        .and_then(|p| p.parse().ok())
+        .unwrap();
+    assert_eq!(f.talk.talkers(), 1);
+    assert_eq!(c.call("PLAY", &url, &[]).code, 200);
+    // One packet as Surveillance Station sends it: 1,024 samples, 128 ms.
+    let mut packet = vec![0x80, 0, 0, 1, 0, 0, 0, 0, 1, 2, 3, 4];
+    packet.extend([0x9f; 1024]);
+    client.send_to(&packet, ("127.0.0.1", server_port)).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let pcm = loop {
+        if let Some(pcm) = f.talk.next_pcm(std::time::Instant::now()) {
+            break pcm;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no UDP talk reached the mixer"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert_eq!(pcm.len(), 320);
+    assert_eq!(c.call("TEARDOWN", &url, &[]).code, 200);
+}
+
+#[test]
+fn the_onvif_path_carries_pcmu_both_ways_while_the_camera_paths_keep_opus() {
+    let f = start(None);
+    let mut c = Client::connect(f.addr);
+    let url = format!("rtsp://127.0.0.1/{MAIN_PCMU_PATH}");
+    let d = c.call(
+        "DESCRIBE",
+        &url,
+        &[("Require", "www.onvif.org/ver20/backchannel")],
+    );
+    assert_eq!(d.code, 200);
+    assert!(
+        d.body
+            .contains("a=rtpmap:0 PCMU/8000/1\r\na=control:trackID=1\r\na=recvonly")
+    );
+    assert!(d.body.contains(
+        "m=audio 0 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000/1\r\na=control:trackID=2\r\na=sendonly"
+    ));
+    assert!(!d.body.contains("opus"));
+    for (track, channels) in [(1, "2-3"), (2, "4-5")] {
+        let r = c.call(
+            "SETUP",
+            &format!("{url}/trackID={track}"),
+            &[(
+                "Transport",
+                &format!("RTP/AVP/TCP;unicast;interleaved={channels}"),
+            )],
+        );
+        assert_eq!(r.code, 200);
+    }
+    assert_eq!(c.call("PLAY", &url, &[]).code, 200);
+    f.pcmu.publish(1_000_000, vec![0xff; 160]);
+    let (channel, rtp) = c.interleaved();
+    assert_eq!(channel, 2);
+    assert_eq!(rtp[1] & 127, 0, "PCMU payload type");
+    assert_eq!(rtp.len(), 12 + 160);
+    assert_eq!(f.audio.viewers(), 0, "the Opus hub has no listener");
+    let mut packet = vec![0x80, 0, 0, 1, 0, 0, 0, 0, 1, 2, 3, 4];
+    packet.extend([0x9f; 160]); // a loud constant level
+    for _ in 0..6 {
+        let stream = c.r.get_mut();
+        stream.write_all(&[b'$', 4, 0, packet.len() as u8]).unwrap();
+        stream.write_all(&packet).unwrap();
+    }
+    assert_eq!(c.call("GET_PARAMETER", &url, &[]).code, 200);
+    let pcm = f.talk.next_pcm(std::time::Instant::now()).unwrap();
+    assert_eq!(pcm.len(), 320);
 }

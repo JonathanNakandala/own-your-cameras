@@ -26,7 +26,14 @@ audio = true
 watchdog = true
 extended_controls = true
 cold_controls = true
+[onvif]
+port = 80
+[time]
+ntp = ["NTP_HOST"]
 ```
+
+`[onvif]` and `[time]` are optional: ONVIF is on by default on port 80 (0 turns it off,
+[ONVIF](../../../../docs/shared/onvif.md)), and without NTP servers the clock is left alone.
 
 Choose a unique camera ID on your broker: 1–48 lowercase letters, digits or underscores.
 The default `mi360` preserves existing installations. The ID selects `camera/<id>/…` topics,

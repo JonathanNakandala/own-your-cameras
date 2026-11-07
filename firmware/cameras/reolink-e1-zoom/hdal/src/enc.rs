@@ -9,8 +9,10 @@ pub const MAX_AU_BYTES: usize = 7 * 1024 * 1024;
 /// Largest encoder ring mapped: the main ring sized for 2592×1944 is about 9.4 MiB. The ring is
 /// reserved HDAL memory, mapped, not copied; copies stay bounded by [`MAX_AU_BYTES`].
 pub const MAX_RING_BYTES: usize = 16 * 1024 * 1024;
-/// Both rings together.
+/// All rings together.
 pub const MAX_RINGS_BYTES: usize = 20 * 1024 * 1024;
+/// Largest JPEG a snapshot encoder is sized for.
+pub const MAX_JPEG_BYTES: u32 = 1024 * 1024;
 
 /// One H.264 Main-profile CBR stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,4 +79,12 @@ pub trait EncBackend {
     fn videoenc_recv(&mut self, paths: &[PathId], wait_ms: u32) -> Result<Vec<EncFrame>, Error>;
     /// Monotonic milliseconds.
     fn now_ms(&mut self) -> u64;
+    /// Path config, input and codec parameters of a JPEG encoder: one picture of `dim` per input frame at
+    /// `quality` (1–100), each at most [`MAX_JPEG_BYTES`].
+    fn videoenc_configure_jpeg(
+        &mut self,
+        path: PathId,
+        dim: Dim,
+        quality: u32,
+    ) -> Result<(), Error>;
 }

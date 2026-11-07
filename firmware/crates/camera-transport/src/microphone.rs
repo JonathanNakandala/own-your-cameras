@@ -1,9 +1,12 @@
 //! Hardware-neutral microphone path. Opus: 48 kHz mono capture blocks of any size → 20 ms Opus frames →
 //! RTP (RFC 7587: dynamic PT 111, 48 kHz clock, one frame per packet). PCMU: 8 kHz G.711 µ-law blocks →
 //! RTP (RFC 3551: static PT 0, 160 samples per 20 ms packet) for recorders that take no Opus.
-//! Pure: no clock reads, no I/O.
+//! [`MicFanout`] runs both from one capture. Pure: no clock reads, no I/O.
 
 use crate::opus::{MIC_FRAME, MIC_RATE, OpusEncode, PAYLOAD_TYPE};
+use crate::resample::{Decimator, PCMU_RATE};
+use crate::rtsp::audio::AudioHub;
+use std::sync::Arc;
 
 const FRAME_US: u64 = MIC_FRAME as u64 * 1_000_000 / MIC_RATE as u64;
 /// A capture block this far from where the previous one ended is a gap: the remainder is dropped.
@@ -116,35 +119,68 @@ fn linear_to_mulaw(sample: i16) -> u8 {
     !(sign | (exponent << 4) as u8 | mantissa as u8)
 }
 
-/// Regroups capture blocks into exact 960-sample frames, each stamped with its first sample's time.
-#[derive(Default)]
-pub struct Framer {
+/// Regroups blocks of any size into exact `frame`-sample frames at `rate`, each stamped with its first
+/// sample's time. A block that does not continue the previous one restarts the grouping.
+struct Regroup {
+    rate: u32,
+    frame: usize,
     pending: Vec<i16>,
     /// Time of `pending[0]`.
     start_us: u64,
 }
 
-impl Framer {
-    pub fn push(&mut self, pts_us: u64, samples: &[i16]) -> Vec<(u64, Box<[i16; MIC_FRAME]>)> {
-        let expected = self.start_us + self.pending.len() as u64 * 1_000_000 / u64::from(MIC_RATE);
+impl Regroup {
+    const fn new(rate: u32, frame: usize) -> Self {
+        Self {
+            rate,
+            frame,
+            pending: Vec::new(),
+            start_us: 0,
+        }
+    }
+
+    fn push(&mut self, pts_us: u64, samples: &[i16]) -> Vec<(u64, Vec<i16>)> {
+        let expected = self.start_us + self.pending.len() as u64 * 1_000_000 / u64::from(self.rate);
         if self.pending.is_empty() || expected.abs_diff(pts_us) > MAX_SKEW_US {
             self.pending.clear();
             self.start_us = pts_us;
         }
         self.pending.extend_from_slice(samples);
+        let frame_us = self.frame as u64 * 1_000_000 / u64::from(self.rate);
         let mut frames = Vec::new();
-        while self.pending.len() >= MIC_FRAME {
-            let frame: Box<[i16; MIC_FRAME]> = self
-                .pending
-                .drain(..MIC_FRAME)
-                .collect::<Vec<_>>()
-                .try_into()
-                .ok()
-                .unwrap();
-            frames.push((self.start_us, frame));
-            self.start_us += FRAME_US;
+        while self.pending.len() >= self.frame {
+            frames.push((self.start_us, self.pending.drain(..self.frame).collect()));
+            self.start_us += frame_us;
         }
         frames
+    }
+
+    fn reset(&mut self) {
+        self.pending.clear();
+    }
+}
+
+/// Regroups capture blocks into exact 960-sample frames, each stamped with its first sample's time.
+pub struct Framer(Regroup);
+
+impl Default for Framer {
+    fn default() -> Self {
+        Self(Regroup::new(MIC_RATE, MIC_FRAME))
+    }
+}
+
+impl Framer {
+    pub fn push(&mut self, pts_us: u64, samples: &[i16]) -> Vec<(u64, Box<[i16; MIC_FRAME]>)> {
+        self.0
+            .push(pts_us, samples)
+            .into_iter()
+            .filter_map(|(pts, frame)| Some((pts, frame.into_boxed_slice().try_into().ok()?)))
+            .collect()
+    }
+
+    /// Drops a partial frame, so the next block starts a new run.
+    pub fn reset(&mut self) {
+        self.0.reset();
     }
 }
 
@@ -168,6 +204,84 @@ impl<E: OpusEncode> Microphone<E> {
             .into_iter()
             .filter_map(|(pts, frame)| Some((pts, self.encoder.encode(&frame)?)))
             .collect()
+    }
+
+    /// Drops a partial frame (the encoder keeps its state).
+    pub fn reset(&mut self) {
+        self.framer.reset();
+    }
+}
+
+/// Why a [`MicFanout`] cannot run.
+#[derive(Debug, PartialEq, Eq)]
+pub enum FanoutError {
+    /// Opus is encoded from 48 kHz capture only.
+    OpusNeeds48k,
+    /// PCMU is decimated from a whole multiple of 8 kHz only.
+    PcmuNeeds8kMultiple,
+}
+
+/// One microphone capture published as Opus 48 kHz and G.711 µ-law 8 kHz. Each codec runs only while
+/// its hub has a listener, so a camera with nobody listening spends nothing on audio encoding; a
+/// codec that starts again starts from a fresh frame.
+pub struct MicFanout<E: OpusEncode> {
+    opus: Option<(Microphone<E>, Arc<AudioHub>)>,
+    pcmu: Option<PcmuOut>,
+}
+
+struct PcmuOut {
+    decimator: Decimator,
+    frames: Regroup,
+    hub: Arc<AudioHub>,
+}
+
+impl<E: OpusEncode> MicFanout<E> {
+    /// `rate` is the capture rate in Hz. Either output may be absent.
+    pub fn new(
+        rate: u32,
+        opus: Option<(E, Arc<AudioHub>)>,
+        pcmu: Option<Arc<AudioHub>>,
+    ) -> Result<Self, FanoutError> {
+        if opus.is_some() && rate != MIC_RATE {
+            return Err(FanoutError::OpusNeeds48k);
+        }
+        let pcmu = match pcmu {
+            Some(hub) => Some(PcmuOut {
+                decimator: Decimator::new(rate).ok_or(FanoutError::PcmuNeeds8kMultiple)?,
+                frames: Regroup::new(PCMU_RATE, PCMU_SAMPLES),
+                hub,
+            }),
+            None => None,
+        };
+        Ok(Self {
+            opus: opus.map(|(encoder, hub)| (Microphone::new(encoder), hub)),
+            pcmu,
+        })
+    }
+
+    /// One capture block at the capture rate, stamped with its first sample's time.
+    pub fn push(&mut self, pts_us: u64, samples: &[i16]) {
+        if let Some((microphone, hub)) = &mut self.opus {
+            if hub.viewers() == 0 {
+                microphone.reset();
+            } else {
+                for (pts, packet) in microphone.push(pts_us, samples) {
+                    hub.publish(pts, packet);
+                }
+            }
+        }
+        if let Some(out) = &mut self.pcmu {
+            if out.hub.viewers() == 0 {
+                out.decimator.reset();
+                out.frames.reset();
+            } else if let Some((pts, low)) = out.decimator.push(pts_us, samples) {
+                for (pts, frame) in out.frames.push(pts, &low) {
+                    if let Some(law) = encode_pcm8k_mono(&frame) {
+                        out.hub.publish(pts, law);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -350,6 +464,66 @@ mod tests {
 #[cfg(test)]
 mod pcmu_tests {
     use super::*;
+
+    struct Count(Arc<std::sync::atomic::AtomicUsize>);
+    impl OpusEncode for Count {
+        fn encode(&mut self, _: &[i16; MIC_FRAME]) -> Option<Vec<u8>> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Some(vec![1])
+        }
+    }
+
+    #[test]
+    fn the_fanout_encodes_only_codecs_with_listeners_and_pcmu_comes_in_20ms_packets() {
+        let encodes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (opus, pcmu) = (AudioHub::new(), AudioHub::with_format(Format::Pcmu8k));
+        let mut fanout = MicFanout::new(
+            48_000,
+            Some((Count(encodes.clone()), opus.clone())),
+            Some(pcmu.clone()),
+        )
+        .unwrap();
+        let block = |i: u64| (i * 21_333, vec![1000i16; 1024]);
+        for i in 0..20 {
+            let (pts, samples) = block(i);
+            fanout.push(pts, &samples);
+        }
+        assert_eq!(encodes.load(std::sync::atomic::Ordering::Relaxed), 0);
+        let listener = pcmu.subscribe();
+        for i in 20..40 {
+            let (pts, samples) = block(i);
+            fanout.push(pts, &samples);
+        }
+        assert_eq!(
+            encodes.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "no Opus listener"
+        );
+        let first = listener.next(std::time::Duration::ZERO).unwrap();
+        assert_eq!(first.data.len(), 160);
+        let second = listener.next(std::time::Duration::ZERO).unwrap();
+        assert_eq!(second.pts_us - first.pts_us, 20_000);
+        let _opus_listener = opus.subscribe();
+        for i in 40..60 {
+            let (pts, samples) = block(i);
+            fanout.push(pts, &samples);
+        }
+        assert!(encodes.load(std::sync::atomic::Ordering::Relaxed) >= 20);
+    }
+
+    #[test]
+    fn the_fanout_refuses_rates_its_codecs_cannot_take() {
+        let hub = AudioHub::new;
+        assert_eq!(
+            MicFanout::<Count>::new(16_000, Some((Count(Default::default()), hub())), None).err(),
+            Some(FanoutError::OpusNeeds48k)
+        );
+        assert_eq!(
+            MicFanout::<Count>::new(44_100, None, Some(hub())).err(),
+            Some(FanoutError::PcmuNeeds8kMultiple)
+        );
+        assert!(MicFanout::<Count>::new(16_000, None, Some(hub())).is_ok());
+    }
 
     #[test]
     fn a_40ms_block_becomes_two_paced_packets_with_contiguous_timestamps() {

@@ -296,6 +296,7 @@ impl Rig {
                 sub: Arc::clone(&self.hubs.sub),
             },
             audio: AudioHub::new(),
+            pcmu: AudioHub::new(),
             talk: cam::rtsp::opus::talkback(hdal::audio::RATE),
             pipeline: Arc::new(PipelineHealth::default()),
             media_tuning: Default::default(),
@@ -1064,7 +1065,7 @@ fn real_services(
     write(
         "mnt/para/cam.toml",
         &format!(
-            "[mqtt]\nhost='127.0.0.1'\nport={}\n",
+            "[mqtt]\nhost='127.0.0.1'\nport={}\n# Isolated test: no ONVIF on port 80 or WS-Discovery multicast.\n[onvif]\nport = 0\n",
             broker.local_addr().unwrap().port()
         ),
     );
@@ -1112,6 +1113,7 @@ fn real_services(
             media: started.wiring.media,
             hubs: started.wiring.hubs,
             audio: started.wiring.audio,
+            pcmu: started.wiring.pcmu,
             talk: started.wiring.talk,
             pipeline: started.wiring.pipeline,
             media_tuning: started.wiring.media_tuning,

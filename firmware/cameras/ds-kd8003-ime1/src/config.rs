@@ -43,6 +43,10 @@ pub struct Config {
     pub health: PathBuf,
     /// Diagnostic HTTP port (0 disables; off by default).
     pub http_port: u16,
+    /// ONVIF HTTP port (0 disables; on by default).
+    pub onvif_port: u16,
+    /// NTP servers the clock follows (none: left alone).
+    pub ntp: Vec<String>,
 }
 
 impl Default for Config {
@@ -68,6 +72,8 @@ impl Default for Config {
             clips: format!("{DEFAULT_RUNTIME}/clips").into(),
             health: format!("{DEFAULT_BASE}/{HEALTH_MARKER}").into(),
             http_port: 0,
+            onvif_port: 80,
+            ntp: Vec::new(),
         }
     }
 }
@@ -138,6 +144,25 @@ impl Config {
                 "http_port" => {
                     let v = number("http_port")?;
                     c.http_port = u16::try_from(v).map_err(|_| Error::Range("http_port"))?;
+                }
+                "onvif_port" => {
+                    let v = number("onvif_port")?;
+                    c.onvif_port = u16::try_from(v).map_err(|_| Error::Range("onvif_port"))?;
+                }
+                "ntp" => {
+                    c.ntp = value
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(String::from)
+                        .collect();
+                    if c.ntp.len() > 4
+                        || c.ntp
+                            .iter()
+                            .any(|s| s.len() > 253 || s.contains(char::is_whitespace))
+                    {
+                        return Err(Error::Range("ntp"));
+                    }
                 }
                 "open_seconds" => {
                     let v = number("open_seconds")?;

@@ -176,12 +176,13 @@ pub fn diagnostic_with<
     let listener = server::bind(port)?;
     let hubs = VideoHubs::new();
     let audio = AudioHub::new();
+    let pcmu = AudioHub::with_format(camera_transport::microphone::Format::Pcmu8k);
     let talk = crate::rtsp::opus::talkback(hdal::audio::RATE);
-    let mut microphone = crate::rtsp::opus::microphone()?;
+    let mut microphone = crate::rtsp::opus::fanout(Arc::clone(&audio), Arc::clone(&pcmu))?;
+    let onvif_creds = creds.clone();
     let cfg = Arc::new(Config {
-        streams: hubs.streams(),
+        streams: hubs.paths(Some(audio), Some(pcmu)),
         creds,
-        audio: Some(Arc::clone(&audio)),
         talk: Some(Arc::clone(&talk)),
     });
     let mut server_args = Some((listener, cfg));
@@ -211,6 +212,16 @@ pub fn diagnostic_with<
         .as_ref()
         .map(|o| std::sync::Arc::clone(&o.media))
         .unwrap_or_default();
+    // The same time keeping, motion queue and ONVIF as production (ONVIF needs credentials and a config).
+    let motion = Arc::new(crate::mqtt::Motion::default());
+    let _onvif = match (&mqtt_config, &onvif_creds) {
+        (Some(c), Some(creds)) => {
+            crate::runtime::production::start_time(c);
+            crate::runtime::production::start_onvif(c, creds, &media_tuning, &motion, port)
+        }
+        _ => None,
+    };
+    let mut mqtt_motion = Some(Arc::clone(&motion));
     let counters = std::sync::Arc::new(crate::telemetry::StreamCounters::default());
     let mut telemetry = Some(crate::runtime::production::telemetry_task(
         std::sync::Arc::clone(&counters),
@@ -221,11 +232,12 @@ pub fn diagnostic_with<
         &PipelineConfig::e1_zoom(),
         &mut || {
             if let Some((listener, cfg)) = server_args.take() {
-                if let (Some(cfg), Some(open), Some(owner), Some(telemetry)) = (
+                if let (Some(cfg), Some(open), Some(owner), Some(telemetry), Some(motion)) = (
                     mqtt_config.take(),
                     open_hardware.take(),
                     owner.take(),
                     telemetry.take(),
+                    mqtt_motion.take(),
                 ) {
                     let health = Arc::clone(&health);
                     if let Err(error) = workers.borrow_mut().spawn("mqtt", move || {
@@ -236,7 +248,15 @@ pub fn diagnostic_with<
                         if stop.load(Ordering::Acquire) {
                             return Ok(());
                         }
-                        crate::mqtt::run_full(cfg, hw, health, stop, None, Some(telemetry))
+                        crate::mqtt::run_full(
+                            cfg,
+                            hw,
+                            health,
+                            stop,
+                            None,
+                            Some(telemetry),
+                            Some(motion),
+                        )
                     }) {
                         fail(error);
                         return;
@@ -268,9 +288,7 @@ pub fn diagnostic_with<
             hubs.publish(f.stream, f.key, f.pts_us, f.data);
         },
         &mut |f| {
-            for (pts_us, packet) in microphone.push(f.pts_us, &f.samples) {
-                audio.publish(pts_us, packet);
-            }
+            microphone.push(f.pts_us, &f.samples);
         },
         &mut || talk.next_pcm(Instant::now()),
         &mut &*media_tuning,
@@ -336,6 +354,8 @@ impl OnHdal for Production {
         }
         println!("serve: production attempt {attempt} starting");
         let network = started.network;
+        // ONVIF serves while production runs and stops (sending Bye) when it returns.
+        let _onvif = started.onvif;
         let outcome = production::run(started.wiring);
         let code = match &outcome.result {
             Ok(report) => {

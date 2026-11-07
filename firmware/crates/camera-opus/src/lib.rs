@@ -1,16 +1,19 @@
 //! libopus adapter for the camera transport: 48 kHz mono microphone encoder, mono speaker decoders at the
 //! camera's speaker rate.
-use camera_transport::microphone::Microphone;
+use camera_transport::AudioHub;
+use camera_transport::microphone::MicFanout;
 use camera_transport::opus::{MIC_FRAME, MIC_RATE, OpusDecode, OpusEncode, speaker_max};
 use camera_transport::rtsp::talk::Talkback;
 use std::ffi::c_int;
 use std::sync::Arc;
 
-/// The microphone path both cameras run: one encoder, its packets shared by every listener.
-pub fn microphone() -> std::io::Result<Microphone<Encoder>> {
-    Encoder::new()
-        .map(Microphone::new)
-        .ok_or_else(|| std::io::Error::other("Opus encoder setup failed"))
+/// The microphone fan-out of a 48 kHz capture: Opus into `opus`, G.711 µ-law 8 kHz into `pcmu`, each
+/// encoded only while it has listeners.
+pub fn fanout(opus: Arc<AudioHub>, pcmu: Arc<AudioHub>) -> std::io::Result<MicFanout<Encoder>> {
+    let encoder =
+        Encoder::new().ok_or_else(|| std::io::Error::other("Opus encoder setup failed"))?;
+    MicFanout::new(MIC_RATE, Some((encoder, opus)), Some(pcmu))
+        .map_err(|e| std::io::Error::other(format!("microphone fan-out: {e:?}")))
 }
 
 /// Speaker input at `rate` Hz with one libopus decoder per talk session.

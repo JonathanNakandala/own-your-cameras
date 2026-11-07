@@ -6,6 +6,7 @@ pub mod h264;
 pub mod media;
 pub mod motion;
 pub mod motor_clock;
+mod onvif;
 pub mod pointing;
 mod presets;
 mod probe;

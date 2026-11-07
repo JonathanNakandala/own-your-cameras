@@ -98,8 +98,8 @@ The OS05A10 runs at its full 2592×1944, 30 fps, over MIPI into `hd_videocap` (w
 
 | Stream | RTSP path | Default | Range |
 |---|---|---|---|
-| main | `Preview_01_main` | 1920×1440, 15 fps, 1024 kbit/s, 1 s GOP | 2592×1944, 1920×1440 or 1280×960; 5–30 fps; 256–8192 kbit/s |
-| sub | `Preview_01_sub` | 640×480, 10 fps, 512 kbit/s, 1 s GOP | fixed |
+| main | `main` | 1920×1440, 15 fps, 1024 kbit/s, 1 s GOP | 2592×1944, 1920×1440 or 1280×960; 5–30 fps; 256–8192 kbit/s |
+| sub | `sub` | 640×480, 10 fps, 512 kbit/s, 1 s GOP | fixed |
 
 The main stream's parameters are settings ([settings.md](settings.md)); a change restarts only the main path, and a
 change that starves either stream is rolled back after 2 s. Audio capture pulls raw 48 kHz mono PCM from the

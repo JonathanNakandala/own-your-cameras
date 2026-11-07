@@ -66,6 +66,9 @@ int t31_video_night(void *handle, int night, char *error, uint32_t error_cap);
 int t31_video_next_channel(void *handle, unsigned int channel, uint8_t *dst,
                            uint32_t capacity, uint32_t *length, int64_t *timestamp,
                            char *error, uint32_t error_cap);
+/* Snapshot channel (video_next channel 2): created once after the graph, receiving only while on. */
+int t31_jpeg_open(void *handle, char *error, uint32_t error_cap);
+int t31_jpeg_receive(void *handle, int on, char *error, uint32_t error_cap);
 
 #ifdef __cplusplus
 }

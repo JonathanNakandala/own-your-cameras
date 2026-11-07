@@ -82,7 +82,7 @@ holds the stock values (AEC and ANR on, mic 80 as stock sets it through ctrl ite
   RMS) [V]. The room was not acoustically controlled: this shows the settings take effect, not good values.
 - Speaker volume is a live ctrl-path set on the running output, no restart.
 - **With the codec's ALC on, HDAL's mic volume and the speaker volume change nothing measurable** [V]. A camera
-  recording replayed at +12 dB through the backchannel and recorded from `Preview_01_sub` (peaks −4…−6 dBFS, no
+  recording replayed at +12 dB through the backchannel and recorded from `sub` (peaks −4…−6 dBFS, no
   clipping) gave −23.1…−24.6 dBFS for HDAL mic volume 100 and 30, and −24.4/−24.5 dBFS for speaker 100 and 40.
 - **The codec runs ALC and a noise gate.** Every capture start leaves the embedded codec (EAC, physical
   `0xF0640000`) with `0x30` bit 0 (ALC) and bit 1 (noise gate) set. Field names and layout come from disassembly
@@ -123,7 +123,7 @@ port 8554, the installed daemon on 554. The steps below need an ffmpeg built wit
 48,000 Hz. Record the microphone:
 
 ```sh
-ffmpeg -rtsp_transport tcp -i 'rtsp://USER:PASSWORD@CAMERA_IP:8554/Preview_01_sub' \
+ffmpeg -rtsp_transport tcp -i 'rtsp://USER:PASSWORD@CAMERA_IP:8554/sub' \
   -map 0:a:0 -t 3 -c:a copy mic.opus
 ```
 

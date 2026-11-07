@@ -9,7 +9,9 @@ use std::time::Duration;
 
 use crate::annexb::nal_types;
 
+use super::audio::AudioHub;
 use super::proto::VideoSdp;
+use super::server::{Backchannel, MAIN_PATH, MAIN_PCMU_PATH, SUB_PATH, SUB_PCMU_PATH, StreamPath};
 
 #[derive(Debug)]
 pub struct Frame {
@@ -298,9 +300,6 @@ pub struct VideoHubs {
 }
 
 impl VideoHubs {
-    pub const MAIN_PATH: &'static str = "Preview_01_main";
-    pub const SUB_PATH: &'static str = "Preview_01_sub";
-
     pub fn new() -> Self {
         Self::with_limits(VideoLimits::REOLINK)
     }
@@ -336,12 +335,22 @@ impl VideoHubs {
         hub.publish(key, pts_us, data);
     }
 
-    /// The RTSP path → hub table `rtsp::server::Config` serves.
-    pub fn streams(&self) -> Vec<(String, Arc<Hub>)> {
-        vec![
-            (Self::MAIN_PATH.into(), Arc::clone(&self.main)),
-            (Self::SUB_PATH.into(), Arc::clone(&self.sub)),
-        ]
+    /// Every RTSP path of a camera with these hubs: its own paths with the Opus microphone and an Opus
+    /// backchannel offer, then the ONVIF paths with the PCMU microphone and a PCMU offer.
+    pub fn paths(
+        &self,
+        opus: Option<Arc<AudioHub>>,
+        pcmu: Option<Arc<AudioHub>>,
+    ) -> Vec<StreamPath> {
+        let own = [(MAIN_PATH, &self.main), (SUB_PATH, &self.sub)]
+            .map(|(path, hub)| StreamPath::new(path, Arc::clone(hub)).audio(opus.clone()));
+        let onvif =
+            [(MAIN_PCMU_PATH, &self.main), (SUB_PCMU_PATH, &self.sub)].map(|(path, hub)| {
+                StreamPath::new(path, Arc::clone(hub))
+                    .audio(pcmu.clone())
+                    .backchannel(Backchannel::Pcmu)
+            });
+        own.into_iter().chain(onvif).collect()
     }
 
     /// Publishes an encoder frame to the hub of pipeline stream `stream` (0 main, otherwise sub).
@@ -524,7 +533,13 @@ mod tests {
         assert_eq!(sub.try_next().unwrap().unwrap().pts_us, 7);
         hubs.publish(0, true, 9, idr());
         assert_eq!(main.try_next().unwrap().unwrap().pts_us, 9);
-        let paths: Vec<_> = hubs.streams().into_iter().map(|(p, _)| p).collect();
-        assert_eq!(paths, ["Preview_01_main", "Preview_01_sub"]);
+        let paths = hubs.paths(None, None);
+        let names: Vec<_> = paths.iter().map(|p| p.path.as_str()).collect();
+        assert_eq!(names, ["main", "sub", "main_pcmu", "sub_pcmu"]);
+        assert!(
+            Arc::ptr_eq(&paths[2].video, &hubs.main),
+            "ONVIF paths share the camera's video"
+        );
+        assert_eq!(paths[3].backchannel, crate::rtsp::server::Backchannel::Pcmu);
     }
 }
