@@ -10,6 +10,7 @@ fast: headers
 	$(PYTHON) -B scripts/fetch-opus.py
 	$(PYTHON) -B scripts/test_link_stubs.py
 	$(PYTHON) -B scripts/test_release.py
+	$(PYTHON) -B scripts/test_download.py
 	cargo test --workspace --locked
 	$(PYTHON) -I -m unittest discover -s $(REOLINK)/scripts
 	$(PYTHON) -B $(MI360)/toolchain/test_elf_compat.py

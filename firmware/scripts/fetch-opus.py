@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
 """Unpack the hash-pinned libopus release into this workspace's ignored .tools directory."""
 import fcntl
-import hashlib
 import json
 from pathlib import Path
-import shutil
 import tarfile
 import tempfile
-import urllib.request
+import download
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -27,11 +25,10 @@ def main():
         with tempfile.TemporaryDirectory(prefix='opus-download-', dir=output.parent) as directory:
             temporary = Path(directory)
             archive = temporary / 'opus.tar.gz'
-            with urllib.request.urlopen(lock['url'], timeout=60) as response:
-                with archive.open('wb') as destination:
-                    shutil.copyfileobj(response, destination)
-            if hashlib.sha256(archive.read_bytes()).hexdigest() != lock['sha256']:
-                raise ValueError('libopus archive SHA-256 does not match the recorded release')
+            try:
+                archive.write_bytes(download.fetch(lock['url'], lock['sha256']))
+            except download.DigestMismatch:
+                raise ValueError('libopus archive SHA-256 does not match the recorded release') from None
             with tarfile.open(archive) as bundle:
                 bundle.extractall(temporary / 'unpacked', filter='data')
             source = temporary / 'unpacked' / ('opus-' + lock['version'])

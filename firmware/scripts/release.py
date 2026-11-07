@@ -16,6 +16,8 @@ import tempfile
 import urllib.error
 import urllib.request
 
+import download
+
 ROOT = Path(__file__).resolve().parents[2]
 DROPBEAR_URLS = (
     'https://matt.ucc.asn.au/dropbear/releases/dropbear-2026.94.tar.bz2',
@@ -54,15 +56,13 @@ def digest(data):
 def download_dropbear(archive):
     failures = []
     for url in DROPBEAR_URLS:
-        request = urllib.request.Request(url, headers={'User-Agent': 'own-your-cameras-build'})
         try:
-            with urllib.request.urlopen(request, timeout=60) as response:
-                data = response.read()
+            data = download.fetch(url, DROPBEAR_SHA256)
+        except download.DigestMismatch:
+            raise ValueError(f'Dropbear source digest mismatch: {url}') from None
         except (OSError, urllib.error.URLError) as error:
             failures.append(f'{url}: {error}')
             continue
-        if digest(data) != DROPBEAR_SHA256:
-            raise ValueError(f'Dropbear source digest mismatch: {url}')
         archive.write_bytes(data)
         return
     raise RuntimeError('Dropbear source download failed: ' + '; '.join(failures))
@@ -72,11 +72,10 @@ def download_openipc(directory):
     """Fetch the pinned MPP libraries; returns their SOURCES.json records."""
     records = []
     for name, expected in OPENIPC_SHA256.items():
-        request = urllib.request.Request(OPENIPC_LIBS + name, headers={'User-Agent': 'own-your-cameras-build'})
-        with urllib.request.urlopen(request, timeout=60) as response:
-            data = response.read()
-        if digest(data) != expected:
-            raise ValueError(f'OpenIPC library digest mismatch: {name}')
+        try:
+            data = download.fetch(OPENIPC_LIBS + name, expected)
+        except download.DigestMismatch:
+            raise ValueError(f'OpenIPC library digest mismatch: {name}') from None
         (directory / name).write_bytes(data)
         records.append(dict(file=name, sha256=expected, url=OPENIPC_LIBS + name,
                             license='HiSilicon SDK binary redistributed by OpenIPC; not covered by this project\'s MIT license'))
