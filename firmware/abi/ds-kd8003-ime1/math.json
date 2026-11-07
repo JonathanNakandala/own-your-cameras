@@ -1,0 +1,1501 @@
+{
+  "schema": 1,
+  "purpose": "link-only; never deploy",
+  "source_sha256": "c009a61027771284757941e719257036b3e54287fcfaa1d53893cd9604a1f60d",
+  "machine": 40,
+  "flags": 83886594,
+  "osabi": 0,
+  "abi_version": 0,
+  "soname": "libm.so.0",
+  "needed": [
+    "libc.so.0",
+    "ld-uClibc.so.0"
+  ],
+  "mips_abiflags": null,
+  "versioned": false,
+  "definitions": [],
+  "requirements": [],
+  "filename": "libm-0.9.33.2.so",
+  "symbols": [
+    {
+      "name": "__stack_chk_guard",
+      "size": 0,
+      "info": 17,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__stack_chk_fail",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "strtod",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "sprintf",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "strtof",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__errno_location",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "strlen",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "raise",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "lgammaf",
+      "size": 76,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "log10f",
+      "size": 76,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "significand",
+      "size": 104,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "lround",
+      "size": 220,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "cbrtf",
+      "size": 76,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "asinhf",
+      "size": 76,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "atan2",
+      "size": 728,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "gammaf",
+      "size": 76,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "log10",
+      "size": 444,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "ilogb",
+      "size": 168,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__isinf",
+      "size": 100,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "acos",
+      "size": 1772,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "cos",
+      "size": 216,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "expm1",
+      "size": 1588,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "log1pf",
+      "size": 76,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "expf",
+      "size": 76,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "sincos",
+      "size": 104,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "sqrt",
+      "size": 532,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "tgamma",
+      "size": 260,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "expm1f",
+      "size": 76,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "fmodf",
+      "size": 108,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__fpclassifyf",
+      "size": 124,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_LIB_VERSION",
+      "size": 4,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "ceilf",
+      "size": 76,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "round",
+      "size": 396,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "ldexp",
+      "size": 232,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "cbrt",
+      "size": 604,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "drem",
+      "size": 576,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pow",
+      "size": 3784,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "llrintf",
+      "size": 72,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "atanhf",
+      "size": 76,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "scalbln",
+      "size": 412,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "ilogbf",
+      "size": 72,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "acoshf",
+      "size": 76,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "sqrtf",
+      "size": 76,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "gamma_r",
+      "size": 4520,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "rint",
+      "size": 412,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "logb",
+      "size": 180,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "fmin",
+      "size": 172,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "scalb",
+      "size": 440,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "floorf",
+      "size": 76,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "scalbf",
+      "size": 108,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "frexpf",
+      "size": 84,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "logf",
+      "size": 76,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__fpclassify",
+      "size": 132,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "tanf",
+      "size": 76,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "tanh",
+      "size": 396,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__signbitf",
+      "size": 68,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "llrint",
+      "size": 428,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "fmax",
+      "size": 172,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "sinhf",
+      "size": 76,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "lrintf",
+      "size": 72,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "nanf",
+      "size": 160,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "scalbn",
+      "size": 412,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "lroundf",
+      "size": 72,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "erf",
+      "size": 2796,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "fma",
+      "size": 84,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "cosf",
+      "size": 76,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "significandf",
+      "size": 76,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "cosh",
+      "size": 512,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__isnan",
+      "size": 92,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "cargf",
+      "size": 120,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "signgam",
+      "size": 4,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "cabsf",
+      "size": 108,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "atanf",
+      "size": 76,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "atanh",
+      "size": 436,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "lgamma",
+      "size": 88,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "fdim",
+      "size": 160,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__isnanf",
+      "size": 80,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__bss_start",
+      "size": 0,
+      "info": 16,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__bss_start__",
+      "size": 0,
+      "info": 16,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "acosf",
+      "size": 76,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "acosh",
+      "size": 508,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "sinf",
+      "size": 76,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "ldexpf",
+      "size": 84,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "roundf",
+      "size": 76,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "sinh",
+      "size": 608,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "nextafterf",
+      "size": 240,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "asin",
+      "size": 1596,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "log1p",
+      "size": 1628,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "lrint",
+      "size": 348,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "nearbyint",
+      "size": 412,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "sin",
+      "size": 228,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "rintf",
+      "size": 76,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "tanhf",
+      "size": 76,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__finitef",
+      "size": 84,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "coshf",
+      "size": 76,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "cexp",
+      "size": 192,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "remainder",
+      "size": 576,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "asinf",
+      "size": 76,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "sincosf",
+      "size": 96,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "asinh",
+      "size": 528,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "remainderf",
+      "size": 108,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "atan2f",
+      "size": 108,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "exp2f",
+      "size": 76,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "gamma",
+      "size": 88,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "powf",
+      "size": 108,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "scalbnf",
+      "size": 84,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_end",
+      "size": 0,
+      "info": 16,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "truncf",
+      "size": 76,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "floor",
+      "size": 436,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__end__",
+      "size": 0,
+      "info": 16,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "erfc",
+      "size": 2848,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "modff",
+      "size": 116,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "log2f",
+      "size": 76,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "exp2",
+      "size": 84,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "erff",
+      "size": 76,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_bss_end__",
+      "size": 0,
+      "info": 16,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "fmod",
+      "size": 876,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_edata",
+      "size": 0,
+      "info": 16,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "carg",
+      "size": 92,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__signbit",
+      "size": 68,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__finite",
+      "size": 84,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "frexp",
+      "size": 212,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "ceil",
+      "size": 432,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "logbf",
+      "size": 76,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "fabs",
+      "size": 68,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "log",
+      "size": 1456,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "trunc",
+      "size": 204,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "cabs",
+      "size": 68,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "atan",
+      "size": 1292,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__bss_end__",
+      "size": 0,
+      "info": 16,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "tan",
+      "size": 172,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "llround",
+      "size": 312,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "copysign",
+      "size": 76,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "remquo",
+      "size": 144,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "cexpf",
+      "size": 196,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__isinff",
+      "size": 84,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "modf",
+      "size": 300,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "erfcf",
+      "size": 76,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "fabsf",
+      "size": 76,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "log2",
+      "size": 1044,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "llroundf",
+      "size": 72,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "nextafter",
+      "size": 472,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "lgamma_r",
+      "size": 4520,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "copysignf",
+      "size": 108,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "hypot",
+      "size": 956,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "exp",
+      "size": 1120,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "hypotf",
+      "size": 108,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "nan",
+      "size": 164,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    }
+  ]
+}

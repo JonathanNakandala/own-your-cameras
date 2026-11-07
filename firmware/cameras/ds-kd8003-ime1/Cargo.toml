@@ -1,0 +1,24 @@
+[package]
+name = "ds-kd8003-ime1-cam"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Hikvision DS-KD8003-IME1 daemon: RTSP video and two-way audio, keypad PIN access, MQTT"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "ds-kd8003-ime1-cam"
+path = "src/main.rs"
+
+[dependencies]
+camera-opus = { path = "../../crates/camera-opus" }
+camera-transport = { path = "../../crates/camera-transport" }
+keypad-protocol = { path = "../../crates/keypad-protocol" }
+libc = "0.2"
+zeroize = { version = "=1.9.1", default-features = false, features = ["alloc"] }
+
+[dev-dependencies]
+serde_json = "1"

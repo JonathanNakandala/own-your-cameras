@@ -259,8 +259,21 @@ fn split_params(s: &str) -> Vec<&str> {
     out
 }
 
+/// The `uri` a client signs must be the request URI or the aggregate (stream) URL it is a track
+/// of: LIVE555 clients (Synology Surveillance Device, VLC) sign every `SETUP` of
+/// `.../Channels/101/trackID=0` with the base `.../Channels/101/` from the SDP.
+fn uri_covers(signed: &str, request_uri: &str) -> bool {
+    if signed == request_uri {
+        return true;
+    }
+    !signed.is_empty()
+        && signed.ends_with('/')
+        && request_uri.starts_with(signed)
+        && !request_uri[signed.len()..].contains('/')
+}
+
 /// Verifies an `Authorization: Digest …` header for `method` and the request-line `request_uri` against
-/// `creds` and the server `nonce`. The signed `uri` must equal the request's; only `qop=auth` is accepted,
+/// `creds` and the server `nonce`. The signed `uri` must cover the request's (see `uri_covers`); only `qop=auth` is accepted,
 /// and a `qop` without `nc` and `cnonce` is refused rather than downgraded to the RFC 2069 form.
 pub fn check_digest(
     header: &str,
@@ -279,7 +292,7 @@ pub fn check_digest(
     ) else {
         return false;
     };
-    if user != creds.user || realm != REALM || n != nonce || uri != request_uri {
+    if user != creds.user || realm != REALM || n != nonce || !uri_covers(uri, request_uri) {
         return false;
     }
     let ha1 = md5_hex(format!("{user}:{realm}:{}", creds.password).as_bytes());
@@ -521,5 +534,24 @@ mod tests {
         let s = String::from_utf8(r.encode("7")).unwrap();
         assert!(s.starts_with("RTSP/1.0 200 OK\r\nCSeq: 7\r\n"));
         assert!(s.contains("Content-Length: 5\r\n\r\nv=0\r\n"));
+    }
+
+    #[test]
+    fn digest_accepts_live555_aggregate_uri() {
+        let base = "rtsp://cam:554/Streaming/Channels/101/";
+        assert!(uri_covers(
+            base,
+            "rtsp://cam:554/Streaming/Channels/101/trackID=0"
+        ));
+        assert!(uri_covers(base, base));
+        assert!(!uri_covers(
+            base,
+            "rtsp://cam:554/Streaming/Channels/101/x/trackID=0"
+        ));
+        assert!(!uri_covers(
+            "rtsp://cam:554/Streaming/Channels/101",
+            "rtsp://cam:554/Streaming/Channels/1011"
+        ));
+        assert!(!uri_covers("", "rtsp://cam:554/a"));
     }
 }

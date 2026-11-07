@@ -9,7 +9,7 @@ They contain no stock firmware, settings, owner key or generated link-only libra
 sha256sum -c MODEL-vVERSION.tar.gz.sha256
 tar -xzf MODEL-vVERSION.tar.gz
 cd MODEL-vVERSION
-python3 build-image.py --help
+cat INSTALL.md
 ```
 
 On macOS, use `shasum -a 256 -c` instead of `sha256sum -c`.
@@ -55,6 +55,7 @@ From a source checkout after [host setup](README.md#host-development):
 make gate
 python3 firmware/scripts/release.py mi360 --version mi360-v0.1.0 --output /path/to/releases
 python3 firmware/scripts/release.py reolink-e1-zoom --version reolink-e1-zoom-v0.1.0 --output /path/to/releases
+python3 firmware/scripts/release.py ds-kd8003-ime1 --version ds-kd8003-ime1-v0.1.0 --output /path/to/releases
 ```
 
 The release command builds the native application and static helpers, fetches the hash-pinned Dropbear
@@ -62,15 +63,15 @@ source (or accepts `--dropbear-source FILE`), and writes a deterministic archive
 Library interface manifests under `abi/` generate build-only ELF metadata; SDK interface declarations
 live with each camera. No vendor library files or header downloads are involved.
 
-`.github/workflows/firmware.yml` runs the host gate and both native builds on source changes.
+`.github/workflows/firmware.yml` runs the host gate and the native builds on source changes.
 `.github/workflows/firmware-release.yml` runs the gate and builds the selected bundle for a pushed
-`mi360-vMAJOR.MINOR.PATCH` or `reolink-e1-zoom-vMAJOR.MINOR.PATCH` tag. It attaches all assets to a
+`MODEL-vMAJOR.MINOR.PATCH` tag (`mi360`, `reolink-e1-zoom` or `ds-kd8003-ime1`). It attaches all assets to a
 draft, then publishes the release. A `-SUFFIX` tag produces a prerelease. Releases are model-specific,
 so they do not set a repository-wide latest release. Manual runs build preview artifacts only.
 
 ### Publish a release
 
-`MODEL` is `mi360` or `reolink-e1-zoom`. `PREV` is that model's latest tag
+`MODEL` is `mi360`, `reolink-e1-zoom` or `ds-kd8003-ime1`. `PREV` is that model's latest tag
 (`git tag --list 'MODEL-v*' --sort=-v:refname | head -1`), `NEW` the next version (`MODEL-vX.Y.Z`, or
 `MODEL-vX.Y.Z-SUFFIX` for a prerelease).
 
@@ -99,3 +100,9 @@ so they do not set a repository-wide latest release. Manual runs build preview a
 
 Compilation/host checks do not qualify hardware. Keep image preservation checks and on-camera
 installation/media/control evidence separate from the release's model/source/build identity.
+
+## DS-KD8003-IME1
+
+Only the original non-B panel on stock V2.2.62 build 230204 is supported. The bundle has an installer
+instead of an image builder: `python3 install.py` reads the panel's own firmware, so no stock download is
+needed. Follow its `INSTALL.md`.

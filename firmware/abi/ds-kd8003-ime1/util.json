@@ -1,0 +1,421 @@
+{
+  "schema": 1,
+  "purpose": "link-only; never deploy",
+  "source_sha256": "455306cda90838c594f1b32e141407aa17e5cf37b48c0ebf0e695dfa37cc0eb2",
+  "machine": 40,
+  "flags": 83886594,
+  "osabi": 0,
+  "abi_version": 0,
+  "soname": "libutil.so.0",
+  "needed": [
+    "libc.so.0",
+    "ld-uClibc.so.0"
+  ],
+  "mips_abiflags": null,
+  "versioned": false,
+  "definitions": [],
+  "requirements": [],
+  "filename": "libutil-0.9.33.2.so",
+  "symbols": [
+    {
+      "name": "strcpy",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "ioctl",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "getutline",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__stack_chk_guard",
+      "size": 0,
+      "info": 17,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "getpid",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "memcpy",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "dup2",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "posix_openpt",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__stack_chk_fail",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "unlockpt",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "endutent",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "strncmp",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "strncpy",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "fork",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "ttyname_r",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "gettimeofday",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "memset",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "grantpt",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pututline",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_exit",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "open",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "ptsname_r",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "updwtmp",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "setutent",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "setsid",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "tcsetattr",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "close",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_bss_end__",
+      "size": 0,
+      "info": 16,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "logwtmp",
+      "size": 220,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "login_tty",
+      "size": 156,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "logout",
+      "size": 196,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_edata",
+      "size": 0,
+      "info": 16,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_end",
+      "size": 0,
+      "info": 16,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "login",
+      "size": 272,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__bss_end__",
+      "size": 0,
+      "info": 16,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__bss_start",
+      "size": 0,
+      "info": 16,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__bss_start__",
+      "size": 0,
+      "info": 16,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "openpty",
+      "size": 332,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "forkpty",
+      "size": 184,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__end__",
+      "size": 0,
+      "info": 16,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    }
+  ]
+}

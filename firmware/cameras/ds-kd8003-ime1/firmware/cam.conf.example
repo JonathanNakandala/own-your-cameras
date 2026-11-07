@@ -1,0 +1,28 @@
+# ds-kd8003-ime1-cam configuration: key=value, no quotes. Keep it mode 0600 next to start.sh.
+mqtt_host=MQTT_HOST
+mqtt_port=1883
+mqtt_user=MQTT_USER
+mqtt_password=MQTT_PASSWORD
+# Topic prefix, Home Assistant device id and device name. Set prefix and node once: changing them
+# later gives Home Assistant a new device.
+mqtt_prefix=ds-kd8003-ime1
+mqtt_node=ds_kd8003_ime1
+device_name=DS-KD8003-IME1
+# RTSP digest credentials for rtsp://CAMERA_HOST:554/Streaming/Channels/101 and /102.
+rtsp_user=RTSP_USER
+rtsp_password=RTSP_PASSWORD
+rtsp_port=554
+# Strike relay pulse on an authorized opening, seconds (1..120).
+open_seconds=5
+# DAC output level (-30..6 dB) and digital clip gain (-40..12 dB); microphone ADC gain (0..40 dB).
+codec_out_db=0
+clip_db=0
+# Extra gain on talkback after the mixer (0..18 dB, clipped): loudness over purity outdoors.
+talk_db=6
+mic_gain_db=20
+keypad_key=/home/config/custom/keypad.key
+pins=/home/config/custom/pins.conf
+clips=/home/app/custom/native/clips
+# Read-only diagnostics on this port (GET /state, GET /log); 0 keeps them off. The log names who
+# opened the door and when, so enable it only on a trusted network.
+http_port=0

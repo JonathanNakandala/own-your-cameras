@@ -3,7 +3,7 @@
 Root is the camera's administrator shell. It lets you inspect files and run your
 own programs. Getting a shell and keeping it after a reboot are separate jobs.
 
-**Applies to:** DS-2CD2T87G2-L G3 and DS-2CD2386G2-ISU/SL G5. The door station
+**Applies to:** DS-2CD2T87G2-L G3 and DS-2CD2386G2-ISU/SL G5. The DS-KD8003-IME1
 has a different [access method](../devices/ds-kd8003-ime1/README.md#get-a-root-shell).
 Examples use `CAMERA_HOST` for your camera's address. Keep credentials and backups
 on your own machine, outside this repository.

@@ -1,0 +1,768 @@
+{
+  "schema": 1,
+  "purpose": "link-only; never deploy",
+  "source_sha256": "801e884aaffa00b3ce95920ee51b488f73279c538cef88513b7d28f34520b958",
+  "machine": 40,
+  "flags": 83886594,
+  "osabi": 0,
+  "abi_version": 0,
+  "soname": "ld-uClibc.so.0",
+  "needed": [],
+  "mips_abiflags": null,
+  "versioned": false,
+  "definitions": [],
+  "requirements": [],
+  "filename": "ld-uClibc-0.9.33.2.so",
+  "symbols": [
+    {
+      "name": "_dl_deallocate_tls",
+      "size": 176,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_unmap_cache",
+      "size": 116,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_initial_dtv",
+      "size": 4,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_strdup",
+      "size": 64,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_fixup",
+      "size": 336,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_handles",
+      "size": 4,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_init_static_tls",
+      "size": 4,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_tls_static_nelem",
+      "size": 4,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_get_tls_static_info",
+      "size": 64,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_malloc_function",
+      "size": 4,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_internal_error_number",
+      "size": 4,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_tls_max_dtv_idx",
+      "size": 4,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_errno",
+      "size": 4,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_realloc_function",
+      "size": 4,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_run_init_array",
+      "size": 68,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_error_catch_tsd",
+      "size": 4,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_allocate_tls",
+      "size": 40,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_loaded_modules",
+      "size": 4,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__stack_chk_guard",
+      "size": 4,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_calloc",
+      "size": 120,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_dprintf",
+      "size": 1068,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_error_number",
+      "size": 4,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_update_slotinfo",
+      "size": 608,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__end__",
+      "size": 0,
+      "info": 16,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_app_fini_array",
+      "size": 48,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_tls_setup",
+      "size": 120,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_add_to_slotinfo",
+      "size": 280,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "init_tls",
+      "size": 336,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_symbol_tables",
+      "size": 4,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_start",
+      "size": 80,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__bss_end__",
+      "size": 0,
+      "info": 16,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_free_function",
+      "size": 4,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_pagesize",
+      "size": 4,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_realloc",
+      "size": 72,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__tls_get_addr",
+      "size": 360,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_load_elf_shared_library",
+      "size": 2864,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_parse_lazy_relocation_information",
+      "size": 56,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_ldsopath",
+      "size": 4,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_allocate_tls_init",
+      "size": 304,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_load_shared_library",
+      "size": 548,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_memalign",
+      "size": 140,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_parse_dynamic_info",
+      "size": 316,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_tls_dtv_slotinfo_list",
+      "size": 4,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_memalign_function",
+      "size": 4,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_library_path",
+      "size": 4,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__libc_stack_end",
+      "size": 4,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_unsetenv",
+      "size": 108,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_app_init_array",
+      "size": 48,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__bss_start__",
+      "size": 0,
+      "info": 16,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_progname",
+      "size": 4,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_add_elf_hash_table",
+      "size": 328,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_parse_relocation_information",
+      "size": 44,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_tls_dtv_gaps",
+      "size": 1,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_tls_generation",
+      "size": 4,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_find_hash",
+      "size": 944,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_malloc",
+      "size": 324,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_edata",
+      "size": 0,
+      "info": 16,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_map_cache",
+      "size": 708,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_protect_relro",
+      "size": 180,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_free",
+      "size": 68,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_end",
+      "size": 0,
+      "info": 16,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_initial_error_catch_tsd",
+      "size": 24,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_linux_resolve",
+      "size": 32,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_bss_end__",
+      "size": 0,
+      "info": 16,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_tls_static_used",
+      "size": 4,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_debug_addr",
+      "size": 4,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_get_ready_to_run",
+      "size": 4900,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_tls_static_align",
+      "size": 4,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_getenv",
+      "size": 96,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_run_fini_array",
+      "size": 68,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_tls_static_size",
+      "size": 4,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_debug_state",
+      "size": 12,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_linux_resolver",
+      "size": 208,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__bss_start",
+      "size": 0,
+      "info": 16,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_dl_calloc_function",
+      "size": 4,
+      "info": 17,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    }
+  ]
+}

@@ -1,5 +1,0 @@
-dissect.cramfs==1.1
-dissect.cstruct==4.7
-dissect.util==3.24
-pycryptodome==3.24.0
-pyelftools==0.33

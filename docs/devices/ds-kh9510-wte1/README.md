@@ -1,4 +1,4 @@
-# DS-KH9510-WTE1 indoor station
+# DS-KH9510-WTE1
 
 <img src="device.png" alt="Hikvision DS-KH9510-WTE1" width="280">
 
@@ -56,7 +56,7 @@ dispatch. A working app observed raw `EV_KEY` 249 without an exclusive grab;
 ordinary Activity callbacks did not provide a reliable press/release pair.
 Root can inspect input devices; ordinary apps need a deliberate access grant.
 
-## Inspect your station
+## Inspect your device
 
 First obtain [root SSH](root-access.md), then connect with a PTY:
 

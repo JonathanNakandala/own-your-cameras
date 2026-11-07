@@ -1,0 +1,292 @@
+//! Microphone capture into the RTSP hub (PCMU 8 kHz) and speaker playback of named clips. The
+//! codec runs AI and AO at one rate (16 kHz wanted, 8 kHz if the switch fails); the microphone is
+//! decimated to 8 kHz for PCMU and the clips (shipped at 16 kHz) are decimated when the codec is
+//! at 8 kHz.
+use super::Device;
+use super::ffi::*;
+use camera_transport::AudioHub;
+use camera_transport::Talkback;
+use camera_transport::microphone::encode_pcm8k_mono;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, mpsc};
+use std::thread;
+use std::time::{Duration, Instant};
+
+/// The codec rate asked for at start; clips are shipped at this rate.
+pub const WANTED_RATE: u32 = 16000;
+/// PCMU rate on the RTSP side.
+pub const RATE: u32 = 8000;
+/// Longest clip kept: 10 s.
+const MAX_CLIP_SAMPLES: usize = 10 * WANTED_RATE as usize;
+
+static CODEC_RATE: AtomicU32 = AtomicU32::new(8000);
+
+pub fn set_codec_rate(rate: u32) {
+    CODEC_RATE.store(rate, Ordering::Relaxed);
+}
+
+pub fn codec_rate() -> u32 {
+    CODEC_RATE.load(Ordering::Relaxed)
+}
+
+/// 40 ms of samples at the codec rate.
+fn frame_len() -> usize {
+    codec_rate() as usize / 25
+}
+
+/// 2:1 decimation with a short [1 3 3 1]/8 low-pass; good enough for a doorway microphone.
+fn halve(samples: &[i16]) -> Vec<i16> {
+    let at = |i: isize| -> i32 { samples[i.clamp(0, samples.len() as isize - 1) as usize] as i32 };
+    (0..samples.len() / 2)
+        .map(|k| {
+            let i = (k * 2) as isize;
+            ((at(i - 1) + 3 * at(i) + 3 * at(i + 1) + at(i + 2)) / 8) as i16
+        })
+        .collect()
+}
+
+pub enum Sound {
+    Clip(String, Arc<Vec<i16>>),
+    /// A short two-tone refusal.
+    Deny,
+}
+
+pub fn capture_loop(g: Arc<Device>, hub: Arc<AudioHub>) {
+    let mut pcm = vec![0u8; 8192];
+    while !g.stop.load(Ordering::Relaxed) {
+        let (mut len, mut pts) = (0u32, 0u64);
+        let rc = {
+            let _guard = g.audio_lock.read().unwrap();
+            // SAFETY: pcm has 8192 bytes; the bridge copies at most cap bytes.
+            unsafe { gm_audio(pcm.as_mut_ptr(), pcm.len() as u32, &mut len, &mut pts) }
+        };
+        if rc != 0 {
+            g.st.lock().unwrap().audio_err = rc;
+            if rc == -9 {
+                g.log("mic: uncertain lease, capture stopped");
+                g.media_dead.store(true, Ordering::Relaxed);
+                return;
+            }
+            thread::sleep(Duration::from_millis(20));
+            continue;
+        }
+        let samples: Vec<i16> = pcm[..len as usize]
+            .chunks_exact(2)
+            .map(|c| i16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        if samples.len() != frame_len() {
+            continue;
+        }
+        let samples = if codec_rate() == 2 * RATE {
+            halve(&samples)
+        } else {
+            samples
+        };
+        let peak = samples.iter().map(|&x| (x as i32).abs()).max().unwrap_or(0);
+        {
+            let mut s = g.st.lock().unwrap();
+            s.audio_frames += 1;
+            s.mic_peak = peak as u32;
+        }
+        if let Some(law) = encode_pcm8k_mono(&samples) {
+            hub.publish(pts, law);
+        }
+    }
+}
+
+/// Loads every `<name>.pcm` (raw s16le mono at `WANTED_RATE`) from the clips directory, decimated
+/// when the codec ended up at 8 kHz.
+pub fn load_clips(g: &Device, dir: &std::path::Path) -> HashMap<String, Arc<Vec<i16>>> {
+    let mut out = HashMap::new();
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        g.log(format!("clips: cannot read {}", dir.display()));
+        return out;
+    };
+    for entry in rd.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if path.extension().and_then(|e| e.to_str()) != Some("pcm") {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
+        let samples: Vec<i16> = bytes
+            .chunks_exact(2)
+            .map(|c| i16::from_le_bytes([c[0], c[1]]))
+            .take(MAX_CLIP_SAMPLES)
+            .collect();
+        if samples.is_empty() {
+            continue;
+        }
+        let samples = if codec_rate() == WANTED_RATE / 2 {
+            halve(&samples)
+        } else {
+            samples
+        };
+        g.log(format!(
+            "clips: {name} {} ms",
+            samples.len() * 1000 / codec_rate() as usize
+        ));
+        out.insert(name.to_string(), Arc::new(samples));
+    }
+    out
+}
+
+fn deny_tone() -> Vec<i16> {
+    let rate = codec_rate() as usize;
+    let n = rate * 6 / 10;
+    (0..n)
+        .map(|i| {
+            let t = i as f32 / rate as f32;
+            let on = (i / (rate / 5)).is_multiple_of(2);
+            if on {
+                (8000.0 * (2.0 * std::f32::consts::PI * 400.0 * t).sin()) as i16
+            } else {
+                0
+            }
+        })
+        .collect()
+}
+
+fn send(g: &Device, frame: &[i16]) -> i32 {
+    let mut bytes = Vec::with_capacity(frame.len() * 2);
+    for s in frame {
+        bytes.extend_from_slice(&s.to_le_bytes());
+    }
+    let _guard = g.audio_lock.read().unwrap();
+    // SAFETY: bytes is alive for the (copying) send.
+    unsafe { gm_ao_send(bytes.as_ptr(), bytes.len() as u32) }
+}
+
+fn amp(g: &Device, on: bool) {
+    // SAFETY: plain ioctl wrapper in the bridge.
+    let rc = unsafe { gm_amp(on as i32) };
+    g.st.lock().unwrap().amp = on && rc == 0;
+}
+
+/// Amplifier stays on this long after the last talk block, so word gaps do not click it.
+const TALK_HOLD: Duration = Duration::from_millis(400);
+/// Talk samples held back while the AO refuses frames, in 40 ms frames.
+const TALK_BUF_FRAMES: usize = 4;
+
+/// One sound at a time; the amplifier is on only while something plays. Between clips the loop
+/// drains the talkback mixer (RTSP backchannel talkers) into the speaker in 40 ms frames.
+pub fn speaker_loop(
+    g: Arc<Device>,
+    rx: mpsc::Receiver<Sound>,
+    clip_db: i32,
+    talk_db: i32,
+    talk: Arc<Talkback>,
+) {
+    let gain = 10f32.powf(clip_db as f32 / 20.0);
+    // Voice must carry across the street: the mixer already holds speech at -12 dBFS RMS with a
+    // -1 dBFS ceiling, so anything more is loudness bought with clipping, deliberately.
+    let talk_gain = 10f32.powf(talk_db as f32 / 20.0);
+    let deny = Arc::new(deny_tone());
+    let frame_len = frame_len();
+    let mut talk_buf: Vec<i16> = Vec::with_capacity(frame_len * 2);
+    let mut talk_amp_until: Option<Instant> = None;
+    loop {
+        let sound = match rx.recv_timeout(Duration::from_millis(5)) {
+            Ok(sound) => Some(sound),
+            Err(mpsc::RecvTimeoutError::Timeout) => None,
+            Err(mpsc::RecvTimeoutError::Disconnected) => return,
+        };
+        let Some(sound) = sound else {
+            // Talk path.
+            // Take every block that is due, not one: `send` blocks for a whole 40 ms frame once the
+            // AO queue is full, and one 20 ms block per pass drained the mixer at half speed (speech
+            // a second late, then chopped as its buffer overflowed).
+            let mut got = false;
+            while let Some(block) = talk.next_pcm(Instant::now()) {
+                got = true;
+                talk_buf.extend(
+                    block
+                        .iter()
+                        .map(|&v| (v as f32 * talk_gain).clamp(-32768.0, 32767.0) as i16),
+                );
+            }
+            let now = Instant::now();
+            if got {
+                if talk_amp_until.is_none() {
+                    amp(&g, true);
+                    g.st.lock().unwrap().speaker_busy = true;
+                    g.log("speaker: talk start");
+                }
+                talk_amp_until = Some(now + TALK_HOLD);
+                while talk_buf.len() >= frame_len {
+                    let frame: Vec<i16> = talk_buf.drain(..frame_len).collect();
+                    let rc = send(&g, &frame);
+                    if rc != 0 {
+                        g.st.lock().unwrap().speaker_rc = rc;
+                        break;
+                    }
+                }
+                // A failing AO must not grow the buffer without bound: keep the latest frames only.
+                if talk_buf.len() > frame_len * TALK_BUF_FRAMES {
+                    let excess = talk_buf.len() - frame_len * TALK_BUF_FRAMES;
+                    talk_buf.drain(..excess);
+                }
+            } else if let Some(until) = talk_amp_until
+                && now >= until
+            {
+                // Pad the tail to a whole frame, then let the amplifier go.
+                if !talk_buf.is_empty() {
+                    talk_buf.resize(frame_len, 0);
+                    let _ = send(&g, &talk_buf);
+                    talk_buf.clear();
+                }
+                amp(&g, false);
+                talk_amp_until = None;
+                g.st.lock().unwrap().speaker_busy = false;
+                g.log("speaker: talk end");
+            }
+            continue;
+        };
+        if talk_amp_until.is_some() {
+            // A clip interrupts the talk tail; the amplifier is already on.
+            talk_buf.clear();
+            talk_amp_until = None;
+        }
+        let (what, samples) = match sound {
+            Sound::Clip(name, s) => (format!("clip {name}"), s),
+            Sound::Deny => ("deny tone".to_string(), deny.clone()),
+        };
+        {
+            let mut s = g.st.lock().unwrap();
+            s.speaker_busy = true;
+        }
+        amp(&g, true);
+        g.log(format!("speaker: start {what}"));
+        let mut rc = 0;
+        let mut i = 0usize;
+        // Six frames of silence after the clip let the amplifier settle before it is switched off.
+        while i < samples.len() + frame_len * 6 && !g.stop.load(Ordering::Relaxed) {
+            let frame: Vec<i16> = (i..i + frame_len)
+                .map(|k| {
+                    samples
+                        .get(k)
+                        .map(|&v| (v as f32 * gain).clamp(-32768.0, 32767.0) as i16)
+                        .unwrap_or(0)
+                })
+                .collect();
+            i += frame_len;
+            rc = send(&g, &frame);
+            if rc != 0 {
+                break;
+            }
+        }
+        amp(&g, false);
+        {
+            let mut s = g.st.lock().unwrap();
+            s.speaker_busy = false;
+            s.speaker_rc = rc;
+            s.speaker_plays += 1;
+        }
+        g.log(format!("speaker: done {what} rc {rc:#x}"));
+    }
+}

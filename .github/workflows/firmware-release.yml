@@ -1,7 +1,7 @@
 name: Firmware binary release
 on:
   push:
-    tags: ['mi360-v*', 'reolink-e1-zoom-v*']
+    tags: ['mi360-v*', 'reolink-e1-zoom-v*', 'ds-kd8003-ime1-v*']
   workflow_dispatch:
     inputs:
       version:
@@ -30,7 +30,7 @@ jobs:
         run: |
           python3 - <<'PY'
           import os, re
-          match = re.fullmatch(r'(mi360|reolink-e1-zoom)-v[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?', os.environ['VERSION'])
+          match = re.fullmatch(r'(mi360|reolink-e1-zoom|ds-kd8003-ime1)-v[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?', os.environ['VERSION'])
           if not match:
               raise SystemExit('Expected a model-specific semantic version tag')
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
@@ -39,7 +39,7 @@ jobs:
       - name: Host tools and Rust
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang llvm make autoconf automake
+          sudo apt-get install -y clang llvm lld make autoconf automake
           rustup toolchain install 1.95.0 --profile minimal --component rustfmt --component clippy --component rust-src
           rustup default 1.95.0
           rustup target add --toolchain 1.95.0 armv7-unknown-linux-gnueabihf

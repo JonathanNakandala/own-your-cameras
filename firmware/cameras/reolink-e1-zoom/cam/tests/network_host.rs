@@ -76,12 +76,22 @@ impl Fixture {
         self.write("proc/modules", "");
         LinuxHost::production_at(&self.0, &Identity::default()).unwrap()
     }
+    /// Writes an executable through a separate `install` process: a file this process writes and then
+    /// executes can fail with ETXTBSY on Linux when another test thread forks while it is still open.
     fn script(&self, name: &str, body: &str) {
-        let path = self.write(
-            &format!("sbin/{name}"),
+        let source = self.write(
+            &format!("script-src/{name}"),
             format!("#!/bin/sh\ncd '{}'\n{body}\n", self.0.display()),
         );
-        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+        let target = self.0.join("sbin").join(name);
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        let status = std::process::Command::new("install")
+            .args(["-m", "700"])
+            .arg(&source)
+            .arg(&target)
+            .status()
+            .unwrap();
+        assert!(status.success(), "install {name}");
     }
 }
 fn until(mut ready: impl FnMut() -> bool) {

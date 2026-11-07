@@ -1,0 +1,19 @@
+/* Key-only SSH server for the DS-KD8003-IME1 (ARM926EJ-S, static musl). */
+#define DROPBEAR_SVR_PASSWORD_AUTH 0
+#define DROPBEAR_SVR_PAM_AUTH 0
+#define DROPBEAR_SVR_PUBKEY_AUTH 1
+#define DROPBEAR_SVR_LOCALTCPFWD 0
+#define DROPBEAR_SVR_REMOTETCPFWD 0
+#define DROPBEAR_SVR_AGENTFWD 0
+#define DROPBEAR_X11FWD 0
+#define DROPBEAR_SFTPSERVER 0
+#define DROPBEAR_RSA 0
+#define DROPBEAR_ECDSA 0
+#define DROPBEAR_ED25519 1
+#define DROPBEAR_ECDH 0
+#define DROPBEAR_DH_GROUP14_SHA256 0
+#define DROPBEAR_SK_KEYS 0
+#define DROPBEAR_SNTRUP761 0
+#define DROPBEAR_MLKEM768 0
+#define DEFAULT_PATH "/usr/sbin:/usr/bin:/sbin:/bin"
+#define DEFAULT_ROOT_PATH "/usr/sbin:/usr/bin:/sbin:/bin"

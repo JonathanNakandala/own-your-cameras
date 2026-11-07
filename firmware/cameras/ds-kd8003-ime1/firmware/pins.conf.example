@@ -1,0 +1,5 @@
+# <digits> <name> [clip]: 4..8 digits; the clip is <clips>/<clip>.pcm, default door_opened.
+# A code opens as soon as its digits are the last ones typed; `#` after the digits also submits.
+# No code may contain another one. Refusals never lock the keypad.
+1234 resident resident
+24680 guest

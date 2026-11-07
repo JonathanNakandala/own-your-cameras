@@ -1,0 +1,4 @@
+FROM python:3.12-slim-bookworm
+WORKDIR /sdk
+ENV LD_LIBRARY_PATH=/sdk
+ENTRYPOINT ["python", "/work/tools/ds-kh9510-wte1/sdk_request.py"]

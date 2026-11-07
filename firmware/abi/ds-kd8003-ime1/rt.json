@@ -1,0 +1,743 @@
+{
+  "schema": 1,
+  "purpose": "link-only; never deploy",
+  "source_sha256": "078bf2501c289861a7c1bc89b8f8628ad33b032414f1b4930704ad6cd722d75a",
+  "machine": 40,
+  "flags": 83886594,
+  "osabi": 0,
+  "abi_version": 0,
+  "soname": "librt.so.0",
+  "needed": [
+    "libc.so.0",
+    "ld-uClibc.so.0",
+    "libdl.so.0",
+    "libpthread.so.0"
+  ],
+  "mips_abiflags": null,
+  "versioned": false,
+  "definitions": [],
+  "requirements": [],
+  "filename": "librt-0.9.33.2.so",
+  "symbols": [
+    {
+      "name": "pthread_attr_destroy",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "recv",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_create",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "sigemptyset",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_attr_init",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_exit",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__stack_chk_guard",
+      "size": 0,
+      "info": 17,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "memcpy",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_cancel",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "malloc",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__dso_handle",
+      "size": 0,
+      "info": 32,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "socket",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_detach",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "abort",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__stack_chk_fail",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_once",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_attr_setstacksize",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "dlopen",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "unlink",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_sigmask",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__register_atfork",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "sigfillset",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "dlsym",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_unwind",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "memset",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_barrier_init",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_mutex_unlock",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_barrier_wait",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "asprintf",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_self",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_mutex_lock",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__errno_location",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "open",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_attr_setdetachstate",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "fcntl",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "close",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "free",
+      "size": 0,
+      "info": 18,
+      "other": 0,
+      "defined": false,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "mq_setattr",
+      "size": 112,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_bss_end__",
+      "size": 0,
+      "info": 16,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "mq_unlink",
+      "size": 168,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "mq_timedsend",
+      "size": 156,
+      "info": 34,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "clock_gettime",
+      "size": 112,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__bss_start__",
+      "size": 0,
+      "info": 16,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "shm_unlink",
+      "size": 100,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "clock_nanosleep",
+      "size": 200,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "mq_receive",
+      "size": 76,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__bss_start",
+      "size": 0,
+      "info": 16,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "mq_timedreceive",
+      "size": 156,
+      "info": 34,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__end__",
+      "size": 0,
+      "info": 16,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_end",
+      "size": 0,
+      "info": 16,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "timer_settime",
+      "size": 116,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "mq_notify",
+      "size": 392,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__gcc_personality_v0",
+      "size": 140,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_edata",
+      "size": 0,
+      "info": 16,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "shm_open",
+      "size": 116,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "mq_getattr",
+      "size": 120,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "timer_create",
+      "size": 624,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "mq_close",
+      "size": 68,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "timer_delete",
+      "size": 252,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "mq_send",
+      "size": 76,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "mq_open",
+      "size": 192,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__pthread_atfork",
+      "size": 88,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__mq_timedreceive_nocancel",
+      "size": 36,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "timer_gettime",
+      "size": 116,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__bss_end__",
+      "size": 0,
+      "info": 16,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "timer_getoverrun",
+      "size": 112,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "clock_getcpuclockid",
+      "size": 124,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__mq_timedsend_nocancel",
+      "size": 36,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__mq_timedreceive",
+      "size": 156,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "__mq_timedsend",
+      "size": 156,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "_Unwind_Resume",
+      "size": 64,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    },
+    {
+      "name": "pthread_atfork",
+      "size": 88,
+      "info": 18,
+      "other": 0,
+      "defined": true,
+      "absolute": false,
+      "absolute_value": 0,
+      "version": 1
+    }
+  ]
+}

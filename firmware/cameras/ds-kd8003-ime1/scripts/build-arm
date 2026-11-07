@@ -1,0 +1,131 @@
+#!/usr/bin/env python3
+"""Cross-build ds-kd8003-ime1-cam for the DS-KD8003-IME1 (ARM926EJ-S, soft float, uClibc 0.9.33).
+
+Links against link-only uClibc interfaces generated from firmware/abi/ds-kd8003-ime1 by
+scripts/link_stubs.py; no device files are needed. The real libraries load on the device.
+Tools: Rust 1.95.0 with rust-src (build-std), clang, ld.lld.
+Output: dist/ds-kd8003-ime1-cam (TLS header reordered for the old loader), dist/libloader_compat.so,
+        dist/libnative_compat.so, dist/libnative_media_group.so (loads the MPP libraries in the stock
+        order), dist/build.json with sizes and SHA-256 sums.
+"""
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+CAM = Path(__file__).resolve().parents[1]
+WORKSPACE = CAM.parents[1]
+TARGET = 'armv5te-unknown-linux-uclibceabi'
+CFLAGS = ['--target=armv5te-linux-gnueabi', '-mcpu=arm926ej-s', '-mfloat-abi=soft', '-Os', '-Wall', '-Wextra', '-Werror',
+          '-ffreestanding', '-fno-builtin', '-fno-stack-protector', '-fno-short-enums', '-fno-unwind-tables',
+          '-fno-asynchronous-unwind-tables']
+
+
+def run(*args, **kwargs):
+    subprocess.run([str(a) for a in args], check=True, **kwargs)
+
+
+def tool(name):
+    path = shutil.which(name) or shutil.which(name, path='/opt/homebrew/bin:/opt/homebrew/opt/llvm/bin:/usr/local/bin')
+    if not path:
+        sys.exit(f'{name} not found')
+    return path
+
+
+# Link names the toolchain asks for, mapped to the generated interface files.
+LINK_NAMES = {'libc.so': 'libuClibc-0.9.33.2.so', 'libm.so': 'libm-0.9.33.2.so', 'libdl.so': 'libdl-0.9.33.2.so',
+              'libdl.so.0': 'libdl-0.9.33.2.so', 'librt.so': 'librt-0.9.33.2.so',
+              'libpthread.so': 'libpthread-0.9.33.2.so', 'libutil.so': 'libutil-0.9.33.2.so',
+              'libgcc_s.so': 'libgcc_s.so.1', 'ld-uClibc.so.0': 'ld-uClibc-0.9.33.2.so'}
+
+
+def link_interfaces():
+    """Generate the uClibc link interfaces and the link names that point at them."""
+    lib = WORKSPACE / '.tools' / 'link-interfaces' / 'ds-kd8003-ime1' / 'lib'
+    run(sys.executable, WORKSPACE / 'scripts' / 'link_stubs.py', 'ds-kd8003-ime1', '--output', lib)
+    for name, target in LINK_NAMES.items():
+        alias = lib / name
+        if alias.is_symlink() or alias.exists():
+            alias.unlink()
+        alias.symlink_to(target)
+    return lib
+
+
+# What media_bridge.c dlopens: the stock ISP access library first, then the compat symbols it imports,
+# the MPP V1 libraries (shipped as third-party files) and the C runtime, in the stock load order.
+MEDIA_GROUP = ['libe3_isp_access.so', 'libnative_compat.so', 'libmpi.so', 'libVoiceEngine.so', 'libdnvqe.so',
+               'libupvqe.so', 'libpthread.so.0', 'libm.so.0', 'libgcc_s.so.1', 'libdl.so.0', 'libc.so.0']
+DIST_FILES = ('ds-kd8003-ime1-cam', 'libloader_compat.so', 'libnative_compat.so', 'libnative_media_group.so')
+
+
+def media_libraries(clang, lld, dist, obj):
+    """Build libnative_compat.so and the code-free group library whose NEEDED list is MEDIA_GROUP."""
+    run(clang, *CFLAGS, '-fPIC', '-c', CAM / 'toolchain/media_compat.c', '-o', obj / 'media_compat.o')
+    run(lld, '-m', 'armelf_linux_eabi', '-shared', '--hash-style=sysv', '-soname', 'libnative_compat.so',
+        '-o', dist / 'libnative_compat.so', obj / 'media_compat.o')
+    # Code-free link placeholders give the group library its NEEDED entries; only the names matter.
+    placeholders = obj / 'group-placeholders'
+    placeholders.mkdir(exist_ok=True)
+    empty = obj / 'empty.o'
+    run(clang, *CFLAGS, '-c', '-x', 'c', '/dev/null', '-o', empty)
+    for name in MEDIA_GROUP:
+        run(lld, '-m', 'armelf_linux_eabi', '-shared', '-soname', name, '-o', placeholders / name, empty)
+    run(lld, '-m', 'armelf_linux_eabi', '-shared', '--hash-style=sysv', '-soname', 'libnative_media_group.so',
+        '--no-as-needed', '-o', dist / 'libnative_media_group.so', empty,
+        *[placeholders / name for name in MEDIA_GROUP])
+
+
+def main():
+    libs = [link_interfaces()]
+    if not subprocess.run(['rustc', '--version'], capture_output=True, text=True).stdout.startswith('rustc 1.95.0'):
+        sys.exit('Build recipe requires Rust 1.95.0 and matching rust-src (see firmware/rust-toolchain.toml)')
+    clang, lld = tool('clang'), tool('ld.lld')
+    dist, obj = CAM / 'dist', CAM / 'target' / 'native'
+    dist.mkdir(exist_ok=True)
+    obj.mkdir(parents=True, exist_ok=True)
+    for src, out in [(CAM / 'toolchain/start.S', 'start.o'), (CAM / 'toolchain/compat.c', 'compat.o'),
+                     (CAM / 'sdk/media_bridge.c', 'media_bridge.o'), (CAM / 'toolchain/loader_compat.c', 'loader_compat.o')]:
+        run(clang, *CFLAGS, '-c', src, '-o', obj / out)
+    # libloader_compat.so is NEEDED before libc so its ioctl/pthreadSpawn win symbol lookup; its own
+    # references (pthread_create, prctl, …) resolve from libc at load time.
+    run(lld, '-m', 'armelf_linux_eabi', '-shared', '--hash-style=sysv', '-soname', 'libloader_compat.so',
+        '-o', dist / 'libloader_compat.so', obj / 'loader_compat.o')
+    linker = obj / 'linker.py'
+    linker.write_text(f'#!/usr/bin/env python3\nimport subprocess, sys\nraise SystemExit(subprocess.call([{lld!r}, *sys.argv[1:]]))\n')
+    linker.chmod(0o700)
+    home = str(Path.home())
+    flags = ['-Zunstable-options', '--remap-path-prefix', f'{WORKSPACE}=/firmware', '--remap-path-prefix', f'{home}=/home', '-C', 'linker-flavor=gnu-lld', '-C', f'linker={linker}', '-C', 'target-cpu=arm926ej-s',
+             '-C', f'link-arg={obj / "start.o"}', '-C', f'link-arg={obj / "compat.o"}',
+             '-Z', f'pre-link-arg=-L{dist}', '-Z', 'pre-link-arg=-l:libloader_compat.so',
+             '-C', f'link-arg={obj / "media_bridge.o"}', '-C', 'link-arg=-l:libdl.so.0',
+             '-C', 'link-arg=--dynamic-linker=/lib/ld-uClibc.so.0',
+             '-C', 'link-arg=--no-undefined', '-C', 'link-arg=--no-allow-shlib-undefined', '-C', 'link-arg=--no-pie',
+             '-C', 'link-arg=-l:ld-uClibc.so.0', '-C', 'link-arg=-z', '-C', 'link-arg=now']
+    for lib in libs:
+        flags += ['-L', f'native={lib}']
+    env = dict(os.environ, RUSTC_BOOTSTRAP='1', CARGO_ENCODED_RUSTFLAGS='\x1f'.join(flags))
+    env.pop('RUSTFLAGS', None)
+    target_dir = Path(env.get('CARGO_TARGET_DIR', WORKSPACE / 'target'))
+    env['CARGO_TARGET_DIR'] = str(target_dir)
+    # media_bridge.o is a link-arg cargo cannot track: force a relink every build.
+    (CAM / 'src/main.rs').touch()
+    run('cargo', 'build', '--locked', '--release', '-p', 'ds-kd8003-ime1-cam', '--target', TARGET, '-Z', 'build-std=std,panic_abort',
+        cwd=WORKSPACE, env=env)
+    built = target_dir / TARGET / 'release' / 'ds-kd8003-ime1-cam'
+    sys.path.insert(0, str(CAM / 'toolchain'))
+    from elf_tls import reorder_tls_last
+    out = dist / 'ds-kd8003-ime1-cam'
+    out.write_bytes(reorder_tls_last(built.read_bytes()))
+    out.chmod(0o755)
+    media_libraries(clang, lld, dist, obj)
+    sha = lambda p: hashlib.sha256(Path(p).read_bytes()).hexdigest()
+    report = {name: {'bytes': (dist / name).stat().st_size, 'sha256': sha(dist / name)} for name in DIST_FILES}
+    (dist / 'build.json').write_text(json.dumps(report, indent=2) + '\n')
+    print(json.dumps(report))
+
+
+if __name__ == '__main__':
+    main()

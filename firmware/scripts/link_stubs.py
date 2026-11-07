@@ -8,6 +8,8 @@ import struct
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
+# ELF machine per camera model: 8 = MIPS, 40 = ARM.
+MACHINES = {'mi360': 8, 'reolink-e1-zoom': 40, 'ds-kd8003-ime1': 40}
 
 
 def validate(m):
@@ -141,7 +143,7 @@ def generate(m):
 
 def install(model, output):
     """Write only deterministic link interfaces into a dedicated generated directory."""
-    if model not in ('mi360', 'reolink-e1-zoom'):
+    if model not in MACHINES:
         raise ValueError('Unknown camera model')
     manifests = ROOT / 'abi' / model
     output = Path(output)
@@ -152,7 +154,7 @@ def install(model, output):
         filename = m.pop('filename')
         if not re.fullmatch(r'[A-Za-z0-9_+.-]+', filename) or filename in ('.', '..'):
             raise ValueError('Unsafe output name')
-        if m['machine'] != (8 if model == 'mi360' else 40):
+        if m['machine'] != MACHINES[model]:
             raise ValueError('Wrong camera architecture')
         data = generate(m)
         target = output / filename
@@ -169,7 +171,7 @@ def install(model, output):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('model', choices=['mi360', 'reolink-e1-zoom'])
+    parser.add_argument('model', choices=sorted(MACHINES))
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     paths = install(args.model, args.output)

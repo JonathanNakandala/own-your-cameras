@@ -1,0 +1,10 @@
+[package]
+name = "keypad-protocol"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+aes = { version = "=0.9.3", default-features = false, features = ["zeroize"] }
+zeroize = { version = "=1.9.1", default-features = false }
