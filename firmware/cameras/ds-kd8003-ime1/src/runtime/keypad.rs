@@ -1,5 +1,5 @@
 //! The DS-KD-KP keypad over RS-485 (`/dev/ttyS1`, direction via `/dev/DDM/misc`): registration,
-//! bootstrap-key version check, fresh session key, then a 100 ms poll loop that reports the entry
+//! bootstrap-key version check, fresh session key, then a 250 ms poll loop that reports the entry
 //! buffer. Digits only ever travel to the PIN engine through a zeroizing channel. Frame shapes and
 //! validation live in `ds_kd8003_ime1_cam::keypad_frames` so they are tested on the host.
 use super::Device;
@@ -24,6 +24,7 @@ struct PollFd {
 }
 
 const DIRECTION_IOCTL: libc::c_ulong = 0x40084d03;
+const POLL_INTERVAL: Duration = Duration::from_millis(250);
 type Result<T> = std::result::Result<T, &'static str>;
 
 /// What the session reports upward: the keypad's current entry text (validated ASCII graphic), or idle.
@@ -314,7 +315,9 @@ fn session(g: &Device, key_path: &std::path::Path, tx: &mpsc::Sender<Report>) ->
                 }
             }
             sequence = sequence.wrapping_add(1);
-            std::thread::sleep(Duration::from_millis(100));
+            // Each exchange costs ~14 ms of CPU (the UART driver writes synchronously); the keypad buffers the
+            // entry itself, so a slower poll only delays when a code is seen.
+            std::thread::sleep(POLL_INTERVAL);
         }
         Ok(())
     })();

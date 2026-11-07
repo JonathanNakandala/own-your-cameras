@@ -18,7 +18,15 @@ unsafe extern "C" {
     pub fn gm_amp(on: i32) -> i32;
     pub fn gm_codec_set(which: i32, db: i32) -> i32;
     pub fn gm_isp(kind: i32, value: i32) -> i32;
-    pub fn gm_video_chn(chn: i32, buf: *mut u8, cap: u32, len: *mut u32, pts: *mut u64) -> i32;
+    pub fn gm_video_chn(
+        chn: i32,
+        buf: *mut u8,
+        cap: u32,
+        len: *mut u32,
+        pts: *mut u64,
+        key: *mut i32,
+    ) -> i32;
+    pub fn gm_video_fd(chn: i32) -> i32;
     pub fn gm_stream_set(
         chn: i32,
         w: u32,
