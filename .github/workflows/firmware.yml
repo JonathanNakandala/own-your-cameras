@@ -18,9 +18,10 @@ jobs:
       - name: Host compiler and Rust
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang llvm
+          sudo apt-get install -y clang llvm lld
           rustup toolchain install 1.95.0 --profile minimal --component rustfmt --component clippy --component rust-src
           rustup default 1.95.0
+          rustup target add --toolchain 1.95.0 armv7-unknown-linux-gnueabihf
       - name: Pinned cross compiler
         run: |
           python3 firmware/scripts/fetch-zig.py
@@ -29,6 +30,4 @@ jobs:
       - name: Host gate
         run: make gate
       - name: Native builds without vendor SDK inputs
-        run: |
-          rustup target add --toolchain 1.95.0 armv7-unknown-linux-gnueabihf
-          make -C firmware build-mi360 build-reolink
+        run: make -C firmware build-mi360 build-reolink build-ds-kd8003-ime1
