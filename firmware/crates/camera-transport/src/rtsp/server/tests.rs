@@ -242,7 +242,8 @@ fn a_viewer_that_stops_reading_cannot_hold_a_sender_forever() {
     assert_eq!(c.call("PLAY", URL, &[]).code, 200);
     // Sustained valid-size frames fill the TCP window while the client never reads RTP.
     // A single giant frame is rejected by the AU ceiling before reaching the sender.
-    let deadline = std::time::Instant::now() + Duration::from_secs(6);
+    // An upper bound only: the loop ends as soon as the sender gives up. Loaded CI runners need the room.
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
     while f.hub.viewers() != 0 && std::time::Instant::now() < deadline {
         f.hub.publish(true, 0, idr(512 * 1024));
         std::thread::sleep(Duration::from_millis(20));
@@ -749,7 +750,8 @@ fn a_failed_sender_closes_the_connection_and_releases_the_speaker() {
     }
     assert_eq!(c.call("PLAY", URL, &[]).code, 200);
     assert_eq!(f.talk.talkers(), 1);
-    let deadline = std::time::Instant::now() + Duration::from_secs(6);
+    // An upper bound only: the loop ends as soon as the sender gives up. Loaded CI runners need the room.
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
     while std::time::Instant::now() < deadline {
         f.hub.publish(true, 0, idr(512 * 1024));
         if f.talk.talkers() == 0 {

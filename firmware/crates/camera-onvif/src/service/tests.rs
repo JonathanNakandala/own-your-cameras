@@ -127,7 +127,15 @@ fn services_name_each_namespace_with_capabilities_on_request() {
         "<IncludeCapability>true</IncludeCapability>",
     );
     let services: Vec<&Element> = r.children_named("Service").collect();
-    assert_eq!(services.len(), 4);
+    assert_eq!(services.len(), 5);
+    let io = services
+        .iter()
+        .find(|s| s.text_of("Namespace") == Some(crate::soap::TMD))
+        .unwrap();
+    assert_eq!(
+        path(io, &["Capabilities", "Capabilities"]).attr("AudioOutputs"),
+        Some("1")
+    );
     let media = services
         .iter()
         .find(|s| s.text_of("Namespace") == Some(TRT))
@@ -144,7 +152,8 @@ fn services_name_each_namespace_with_capabilities_on_request() {
         call(&panel, TDS, "GetServices", "")
             .children_named("Service")
             .count(),
-        3
+        4,
+        "no PTZ service without PTZ"
     );
 }
 
@@ -754,4 +763,25 @@ fn a_camera_without_inputs_has_an_empty_topic_set() {
     let cam = FakeCamera::new(true, &[]);
     let props = call(&cam, TEV, "GetEventProperties", "");
     assert!(path(&props, &["TopicSet"]).children.is_empty());
+}
+
+#[test]
+fn device_io_counts_the_audio_output_recorders_need_for_talkback() {
+    let cam = FakeCamera::new(true, &[]);
+    let caps = call(&cam, TDS, "GetCapabilities", "<Category>All</Category>");
+    let io = path(&caps, &["Capabilities", "Extension", "DeviceIO"]);
+    assert_eq!(io.text_of("AudioOutputs"), Some("1"));
+    assert_eq!(
+        io.text_of("XAddr"),
+        Some("http://CAMERA_HOST:80/onvif/deviceio_service")
+    );
+    let outputs = call(&cam, crate::soap::TMD, "GetAudioOutputs", "");
+    assert_eq!(outputs.text_of("Token"), Some("audio_output"));
+    let media_only = call(&cam, TDS, "GetCapabilities", "<Category>Media</Category>");
+    assert!(
+        media_only
+            .child("Capabilities")
+            .and_then(|c| c.child("Extension"))
+            .is_none()
+    );
 }

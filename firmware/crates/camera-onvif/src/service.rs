@@ -8,7 +8,7 @@
 
 use crate::camera::{MediaProfile, OnvifCamera, PtzError, PtzPort, Velocity};
 use crate::events::{self, EventError, Message, PullPointBook, Termination};
-use crate::soap::{Fault, Request, TDS, TEV, TPTZ, TRT, WSNT};
+use crate::soap::{Fault, Request, TDS, TEV, TMD, TPTZ, TRT, WSNT};
 use crate::time;
 use crate::xml::{Element, escape};
 use std::time::{Duration, SystemTime};
@@ -143,6 +143,7 @@ pub fn handle(req: &Request, ctx: &Context, book: &mut PullPointBook) -> Reply {
             None => Reply::Fault(Fault::action_not_supported()),
         },
         TEV | WSNT => event_service(req, ctx, book),
+        TMD => device_io(req, ctx),
         _ => Reply::Fault(Fault::action_not_supported()),
     }
 }
@@ -154,6 +155,7 @@ fn services(ctx: &Context) -> Vec<(&'static str, &'static str, &'static str)> {
         (TDS, "/onvif/device_service", "tds"),
         (TRT, "/onvif/media_service", "trt"),
         (TEV, "/onvif/events_service", "tev"),
+        (TMD, "/onvif/deviceio_service", "tmd"),
     ];
     if ctx.camera.ptz().is_some() {
         out.push((TPTZ, "/onvif/ptz_service", "tptz"));
@@ -172,6 +174,52 @@ fn media_service_capabilities(profiles: usize) -> String {
     format!(
         "<trt:Capabilities SnapshotUri=\"true\" Rotation=\"false\" VideoSourceMode=\"false\" OSD=\"false\" EXICompression=\"false\"><trt:ProfileCapabilities MaximumNumberOfProfiles=\"{profiles}\"/><trt:StreamingCapabilities RTPMulticast=\"false\" RTP_TCP=\"true\" RTP_RTSP_TCP=\"true\" NonAggregateControl=\"false\" NoRTSPStreaming=\"false\"/></trt:Capabilities>"
     )
+}
+
+/// Device IO: where recorders count audio outputs to offer talkback (Surveillance Station shows no talk
+/// button for a camera whose only audio output is in the Media service).
+fn device_io_service_capabilities(ctx: &Context) -> String {
+    format!(
+        "<tmd:Capabilities VideoSources=\"1\" VideoOutputs=\"0\" AudioSources=\"{}\" AudioOutputs=\"{}\" RelayOutputs=\"0\" SerialPorts=\"0\" DigitalInputs=\"{}\" DigitalInputOptions=\"false\"/>",
+        audio_sources(ctx),
+        audio_outputs(ctx),
+        ctx.camera.digital_inputs().len()
+    )
+}
+
+fn audio_sources(ctx: &Context) -> usize {
+    usize::from(ctx.camera.profiles().iter().any(|p| p.audio))
+}
+
+fn audio_outputs(ctx: &Context) -> usize {
+    usize::from(ctx.camera.audio_output())
+}
+
+fn device_io(req: &Request, ctx: &Context) -> Reply {
+    let action = req.action.as_str();
+    let reply = |inner: String| response(action, "tmd", inner);
+    let token = |n: usize, t: &str| {
+        if n > 0 {
+            text("tmd:Token", t)
+        } else {
+            String::new()
+        }
+    };
+    match action {
+        "GetServiceCapabilities" => reply(device_io_service_capabilities(ctx)),
+        "GetVideoSources" => reply(text("tmd:Token", VIDEO_SOURCE)),
+        "GetAudioSources" => reply(token(audio_sources(ctx), AUDIO_SOURCE)),
+        "GetAudioOutputs" => reply(token(audio_outputs(ctx), AUDIO_OUTPUT)),
+        "GetVideoOutputs" | "GetRelayOutputs" | "GetSerialPorts" => reply(String::new()),
+        "GetDigitalInputs" => reply(
+            ctx.camera
+                .digital_inputs()
+                .iter()
+                .map(|t| format!("<tmd:DigitalInputs token=\"{t}\"/>"))
+                .collect(),
+        ),
+        _ => Reply::Fault(Fault::action_not_supported()),
+    }
 }
 
 fn ptz_service_capabilities() -> String {
@@ -233,6 +281,23 @@ fn capabilities(ctx: &Context, category: &str) -> String {
             text("tt:XAddr", url(ctx, "/onvif/ptz_service")),
         ));
     }
+    if all {
+        out.push_str(&el(
+            "tt:Extension",
+            el(
+                "tt:DeviceIO",
+                format!(
+                    "{}{}{}{}{}{}",
+                    text("tt:XAddr", url(ctx, "/onvif/deviceio_service")),
+                    text("tt:VideoSources", 1),
+                    text("tt:VideoOutputs", 0),
+                    text("tt:AudioSources", audio_sources(ctx)),
+                    text("tt:AudioOutputs", audio_outputs(ctx)),
+                    text("tt:RelayOutputs", 0)
+                ),
+            ),
+        ));
+    }
     out
 }
 
@@ -271,6 +336,7 @@ fn device(req: &Request, ctx: &Context) -> Reply {
                             "tds" => device_service_capabilities(),
                             "trt" => media_service_capabilities(profiles),
                             "tptz" => ptz_service_capabilities(),
+                            "tmd" => device_io_service_capabilities(ctx),
                             _ => event_service_capabilities(),
                         };
                         el("tds:Capabilities", c)
