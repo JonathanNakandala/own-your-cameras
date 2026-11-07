@@ -345,6 +345,8 @@ enum Media {
     Video(Arc<Hub>),
     Audio(Arc<AudioHub>),
     Talk(TalkLease),
+    /// A UDP talker whose lease a receiver thread holds since PLAY.
+    TalkUdp,
 }
 
 struct Setup {
@@ -353,6 +355,53 @@ struct Setup {
     media: Media,
     transport: Transport,
     udp: Option<UdpSocket>,
+}
+
+/// A UDP backchannel (Surveillance Station sets it up over UDP even when video is interleaved): RTP from
+/// the client's address into the talker's lease until the PLAY ends.
+fn udp_talk(sock: UdpSocket, from: IpAddr, mut lease: TalkLease, stop: Arc<AtomicBool>) {
+    if sock
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .is_err()
+    {
+        return;
+    }
+    let mut buf = [0u8; 2048];
+    let (mut taken, mut foreign, mut last_foreign) = (0u64, 0u64, None);
+    let (mut last, mut largest, mut late) = (None, 0usize, 0u64);
+    while !stop.load(Ordering::Relaxed) {
+        match sock.recv_from(&mut buf) {
+            Ok((n, addr)) if addr.ip() == from => {
+                taken += 1;
+                let now = std::time::Instant::now();
+                // Surveillance Station flushes the end of a phrase a second after the talker let go: a short
+                // packet after a pause would play as a lone fragment, so it is dropped.
+                let after_pause = last.is_some_and(|t: std::time::Instant| {
+                    now.duration_since(t) >= super::talk::PAUSE
+                });
+                last = Some(now);
+                if after_pause && n < largest {
+                    late += 1;
+                    continue;
+                }
+                largest = largest.max(n);
+                lease.push_rtp(&buf[..n]);
+            }
+            Ok((_, addr)) => {
+                foreign += 1;
+                last_foreign = Some(addr);
+            }
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) => {}
+            Err(_) => break,
+        }
+    }
+    eprintln!(
+        "talk: udp packets {taken} from the client ({late} late tails dropped), {foreign} from elsewhere (last {last_foreign:?})"
+    );
 }
 
 fn audio_sender(
@@ -443,6 +492,7 @@ fn connection(
     let mut setups: HashMap<String, Setup> = HashMap::new();
     let mut play: Option<Play> = None;
     let mut backchannel = false;
+    let mut trace = TalkTrace::default();
     let mut buf: Vec<u8> = Vec::new();
     let mut chunk = [0u8; 4096];
     loop {
@@ -455,15 +505,25 @@ fn connection(
             if buf.len() < n {
                 break;
             }
+            trace.frames += 1;
             if play.is_some() {
+                let mut taken = false;
                 for setup in setups.values_mut() {
                     if setup.active
                         && matches!(setup.transport, Transport::Tcp { rtp_ch, .. } if rtp_ch == buf[1])
                         && let Media::Talk(input) = &mut setup.media
                     {
                         input.push_rtp(&buf[4..n]);
+                        taken = true;
                     }
                 }
+                if taken {
+                    trace.to_talk += 1;
+                } else {
+                    trace.other.get_or_insert(buf[1]);
+                }
+            } else {
+                trace.before_play += 1;
             }
             buf.drain(..n);
         }
@@ -483,6 +543,7 @@ fn connection(
             }
             Parsed::Request(req, used) => {
                 buf.drain(..used);
+                trace.request(&req);
                 let (resp, teardown) = handle(
                     &req,
                     cfg,
@@ -508,6 +569,50 @@ fn connection(
                     return Ok(());
                 }
             }
+        }
+    }
+}
+
+/// What a client that asked for the backchannel did, logged when its connection ends: its requests
+/// (path and transport only, never the URI, which may carry credentials) and where its interleaved
+/// frames went. Silent for every other client.
+#[derive(Default)]
+struct TalkTrace {
+    requests: Vec<String>,
+    talk: bool,
+    frames: u64,
+    to_talk: u64,
+    before_play: u64,
+    /// The first interleaved channel seen after PLAY that no talk setup owns (RTCP, or a mismatch).
+    other: Option<u8>,
+}
+
+impl TalkTrace {
+    fn request(&mut self, req: &super::proto::Request) {
+        self.talk |= req
+            .header("Require")
+            .is_some_and(|r| r.contains("www.onvif.org/ver20/backchannel"));
+        let transport = req.header("Transport").unwrap_or("");
+        let line: String = format!("{} {} {transport}", req.method, req.path())
+            .trim_end()
+            .into();
+        if self.requests.len() < 12 {
+            self.requests.push(line);
+        }
+    }
+}
+
+impl Drop for TalkTrace {
+    fn drop(&mut self) {
+        if self.talk {
+            eprintln!(
+                "talk: client {} | frames {} to_talk {} before_play {} other_channel {:?}",
+                self.requests.join(" | "),
+                self.frames,
+                self.to_talk,
+                self.before_play,
+                self.other
+            );
         }
     }
 }
@@ -617,9 +722,6 @@ fn handle(
             let Some(transport) = req.header("Transport").and_then(parse_transport) else {
                 return (Response::new(461), false);
             };
-            if matches!(media, Media::Talk(_)) && !matches!(transport, Transport::Tcp { .. }) {
-                return (Response::new(461), false);
-            }
             if let Transport::Tcp { rtp_ch, rtcp_ch } = &transport {
                 let key = format!("{name}/{track}");
                 if rtp_ch == rtcp_ch
@@ -744,7 +846,27 @@ fn handle(
                             Err(_) => return (Response::new(455), false),
                         }
                     }
-                    Media::Talk(_) => {}
+                    Media::Talk(_) | Media::TalkUdp => {}
+                }
+            }
+            // UDP talkers: the lease and the socket go to a receiver thread for this PLAY.
+            for setup in setups.values_mut().filter(|s| s.active) {
+                let (Media::Talk(_), Some(sock)) = (&setup.media, &setup.udp) else {
+                    continue;
+                };
+                let Ok(sock) = sock.try_clone() else {
+                    return (Response::new(455), false);
+                };
+                let Media::Talk(lease) = std::mem::replace(&mut setup.media, Media::TalkUdp) else {
+                    continue;
+                };
+                let st = Arc::clone(&stop);
+                match limits
+                    .thread()
+                    .spawn(move || udp_talk(sock, peer_ip, lease, st))
+                {
+                    Ok(thread) => playing.threads.push(thread),
+                    Err(_) => return (Response::new(455), false),
                 }
             }
             *play = Some(playing);

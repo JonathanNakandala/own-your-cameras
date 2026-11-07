@@ -16,8 +16,14 @@ pub const MAX_TALKERS: usize = 4;
 /// A talker joins the mix (and rejoins after running dry) once this much audio is buffered. Wi-Fi delivery
 /// to the cameras stalls for more than 40 ms now and then, which a 40 ms buffer turned into audible gaps.
 const PREBUFFER_MS: usize = 100;
-/// A talker's FIFO never holds more than this: older samples are dropped rather than played late.
-const MAX_BUFFER_MS: usize = 200;
+/// A talker's FIFO never holds more than this: older samples are dropped rather than played late. Room for
+/// Surveillance Station's bursts (two 140 ms packets every 300 ms) behind their prebuffer.
+const MAX_BUFFER_MS: usize = 800;
+/// A gap between a talker's packets longer than this is a pause in speech, not delivery jitter.
+pub(crate) const PAUSE: Duration = Duration::from_millis(800);
+/// The longest PCMU packet accepted. Recorders pack more than an Opus frame: Surveillance Station sends
+/// 128 ms (1,024 samples) per packet.
+const PCMU_MAX_MS: usize = 1000;
 const TICK: Duration = Duration::from_millis(20);
 /// An output clock this far behind (a stalled hardware loop) restarts instead of bursting to catch up.
 const MAX_LAG: Duration = Duration::from_millis(60);
@@ -35,6 +41,11 @@ struct Fifo {
     /// The session closed: its buffered audio plays out, then the slot is freed.
     closing: bool,
     stats: TalkStats,
+    /// When audio last arrived, and the largest packet so far (in samples).
+    last_push: Option<Instant>,
+    largest: usize,
+    /// The longest gap between packets so far, pauses excluded.
+    max_gap: Duration,
 }
 
 /// What one talk session's audio went through, in speaker samples; logged when the session ends.
@@ -60,6 +71,16 @@ pub struct Mixer {
     max_buffer: usize,
     lead: Duration,
     finished: Vec<TalkStats>,
+}
+
+/// The talker's longest delivery gap once a packet arrives at `now`; a pause in speech does not count.
+fn gap_after(fifo: &Fifo, now: Instant) -> Duration {
+    match fifo.last_push {
+        Some(at) if now.saturating_duration_since(at) < PAUSE => {
+            fifo.max_gap.max(now.saturating_duration_since(at))
+        }
+        _ => fifo.max_gap,
+    }
 }
 
 impl Mixer {
@@ -123,15 +144,45 @@ impl Mixer {
     }
 
     pub fn push(&mut self, slot: usize, samples: &[f32]) {
+        self.push_at(slot, samples, Instant::now());
+    }
+
+    /// A talker's prebuffer: the base one, or for talkers that deliver in bursts (Surveillance Station sends
+    /// two 140 ms PCMU packets every 300 ms) its longest packet or gap and half the base again, so the
+    /// buffer outlasts the wait for the next burst.
+    fn prebuffer_of(&self, fifo: &Fifo) -> usize {
+        let gap = (fifo.max_gap.as_micros() * self.frame as u128 / TICK.as_micros()) as usize;
+        let need = fifo.largest.max(gap);
+        if need <= self.prebuffer {
+            return self.prebuffer;
+        }
+        // Never more than half the FIFO, so the next burst always fits behind it.
+        (need + self.prebuffer / 2)
+            .min(self.max_buffer / 2)
+            .max(self.prebuffer)
+    }
+
+    pub fn push_at(&mut self, slot: usize, samples: &[f32], now: Instant) {
+        let prebuffer = match self.talkers.get(slot) {
+            Some(Some(fifo)) => self.prebuffer_of(&Fifo {
+                largest: fifo.largest.max(samples.len()),
+                max_gap: gap_after(fifo, now),
+                ..Fifo::default()
+            }),
+            _ => return,
+        };
         let Some(Some(fifo)) = self.talkers.get_mut(slot) else {
             return;
         };
+        fifo.largest = fifo.largest.max(samples.len());
+        fifo.max_gap = gap_after(fifo, now);
+        fifo.last_push = Some(now);
         fifo.samples.extend(samples);
         fifo.stats.received += samples.len() as u64;
         let excess = fifo.samples.len().saturating_sub(self.max_buffer);
         fifo.samples.drain(..excess);
         fifo.stats.overflow += excess as u64;
-        if !fifo.playing && fifo.samples.len() >= self.prebuffer {
+        if !fifo.playing && fifo.samples.len() >= prebuffer {
             fifo.playing = true;
         }
     }
@@ -145,6 +196,20 @@ impl Mixer {
                 t.playing = false;
             }
             return None;
+        }
+        // A remainder below the prebuffer that nothing follows plays out now rather than when the session
+        // closes, which recorders do seconds after the talker let go.
+        let quiet = Duration::from_micros(
+            self.prebuffer as u64 * TICK.as_micros() as u64 / self.frame.max(1) as u64,
+        );
+        for t in self.talkers.iter_mut().flatten() {
+            if !t.playing
+                && !t.samples.is_empty()
+                && t.last_push
+                    .is_some_and(|at| now.saturating_duration_since(at) >= quiet)
+            {
+                t.playing = true;
+            }
         }
         if !self.talkers.iter().flatten().any(|t| t.playing) {
             return None;
@@ -194,6 +259,9 @@ pub struct TalkLease {
     slot: usize,
     decoder: TalkDecoder,
     gain: TalkGain,
+    /// Packets refused (not RTP, or a payload type other than Opus or PCMU) and the last refused type.
+    refused: u64,
+    refused_pt: Option<u8>,
 }
 
 /// One talker's decoders, chosen per packet by payload type. PCMU is decoded and interpolated from
@@ -251,6 +319,8 @@ impl Talkback {
             slot,
             decoder: TalkDecoder::new(decoder, self.rate),
             gain: TalkGain::default(),
+            refused: 0,
+            refused_pt: None,
         })
     }
 
@@ -289,12 +359,20 @@ impl TalkLease {
     /// PCMU (0) are ignored.
     pub fn push_rtp(&mut self, packet: &[u8]) {
         let Some((codec, payload)) = rtp_payload(packet) else {
+            self.refused += 1;
+            self.refused_pt = packet.get(1).map(|b| b & 127);
             return;
         };
         let Some(pcm) = self.decoder.decode(codec, payload) else {
             return;
         };
-        if pcm.is_empty() || pcm.len() > speaker_max(self.talk.rate) {
+        let max = match codec {
+            Codec::Opus => speaker_max(self.talk.rate),
+            Codec::Pcmu => self.talk.rate as usize * PCMU_MAX_MS / 1000,
+        };
+        if pcm.is_empty() || pcm.len() > max {
+            self.refused += 1;
+            self.refused_pt = packet.get(1).map(|b| b & 127);
             return;
         }
         let samples = self.gain.process(&pcm);
@@ -304,6 +382,12 @@ impl TalkLease {
 
 impl Drop for TalkLease {
     fn drop(&mut self) {
+        if self.refused > 0 {
+            eprintln!(
+                "talk: refused {} packets (last payload type {:?}): not Opus (111, 96) or PCMU (0), or too long",
+                self.refused, self.refused_pt
+            );
+        }
         let stats = self.talk.mixer().release(self.slot);
         if let Some(stats) = stats {
             self.talk.log(stats);
@@ -460,10 +544,16 @@ mod tests {
         assert!((f32::from(block[100]) / 32768.0 - 0.3).abs() < 1e-3);
         let mut solo = Mixer::with_buffers(16_000, 40, 100);
         let c = solo.claim().unwrap();
-        solo.push(c, &[0.1; 740]);
-        assert!(solo.next(t0).is_some());
-        assert!(solo.next(t0 + ms(20)).is_some());
-        let block = solo.next(t0 + ms(40)).unwrap();
+        // A packet longer than the prebuffer buffers more; with nothing after it, it plays out once the
+        // talker has been quiet for a prebuffer's length (not when the session closes, seconds later).
+        solo.push_at(c, &[0.1; 740], t0);
+        assert!(
+            solo.next(t0).is_none(),
+            "a long packet buffers beyond the base prebuffer"
+        );
+        assert!(solo.next(t0 + ms(40)).is_some());
+        assert!(solo.next(t0 + ms(60)).is_some());
+        let block = solo.next(t0 + ms(80)).unwrap();
         assert!((f32::from(block[0]) / 32768.0 - 0.1).abs() < 1e-3);
         assert_eq!(block[200], 0, "a's underrun is zero-filled");
     }

@@ -800,6 +800,53 @@ fn setup_cannot_reassign_channels_while_the_previous_sender_is_playing() {
 }
 
 #[test]
+fn a_recorder_talks_pcmu_over_udp_while_its_video_is_interleaved() {
+    // Surveillance Station's backchannel: SETUP track 2 over UDP, RTP to the server port after PLAY.
+    let f = start(None);
+    let mut c = Client::connect(f.addr);
+    let url = format!("rtsp://127.0.0.1/{MAIN_PCMU_PATH}");
+    let require = [("Require", "www.onvif.org/ver20/backchannel")];
+    assert_eq!(c.call("DESCRIBE", &url, &require).code, 200);
+    let client = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let port = client.local_addr().unwrap().port();
+    let r = c.call(
+        "SETUP",
+        &format!("{url}/trackID=2"),
+        &[(
+            "Transport",
+            &format!("RTP/AVP;unicast;client_port={port}-{}", port + 1),
+        )],
+    );
+    assert_eq!(r.code, 200);
+    let transport = r.h("Transport").unwrap().to_string();
+    let server_port: u16 = transport
+        .split("server_port=")
+        .nth(1)
+        .and_then(|p| p.split('-').next())
+        .and_then(|p| p.parse().ok())
+        .unwrap();
+    assert_eq!(f.talk.talkers(), 1);
+    assert_eq!(c.call("PLAY", &url, &[]).code, 200);
+    // One packet as Surveillance Station sends it: 1,024 samples, 128 ms.
+    let mut packet = vec![0x80, 0, 0, 1, 0, 0, 0, 0, 1, 2, 3, 4];
+    packet.extend([0x9f; 1024]);
+    client.send_to(&packet, ("127.0.0.1", server_port)).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let pcm = loop {
+        if let Some(pcm) = f.talk.next_pcm(std::time::Instant::now()) {
+            break pcm;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no UDP talk reached the mixer"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert_eq!(pcm.len(), 320);
+    assert_eq!(c.call("TEARDOWN", &url, &[]).code, 200);
+}
+
+#[test]
 fn the_onvif_path_carries_pcmu_both_ways_while_the_camera_paths_keep_opus() {
     let f = start(None);
     let mut c = Client::connect(f.addr);
