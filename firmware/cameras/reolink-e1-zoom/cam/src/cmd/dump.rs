@@ -7,7 +7,6 @@ use std::process::ExitCode;
 
 use super::{CliError, OnHdal, failed, on_hdal};
 use crate::annexb::AnnexB;
-use crate::cpu;
 use crate::pipeline::{self, PipelineConfig};
 
 pub const USAGE: &str = "usage: cam dump [--seconds N] [--out DIR]";
@@ -76,7 +75,9 @@ impl OnHdal for Args {
             }
         };
         let mut sinks = [AnnexB::new(main_f), AnnexB::new(sub_f)];
-        let mut cpu = cpu::Sampler::system();
+        let mut cpu =
+            camera_transport::telemetry::Sampler::new(camera_transport::telemetry::Proc::default());
+        cpu.sample();
         let report = pipeline::dump(
             &mut hdal,
             &PipelineConfig::e1_zoom(),
@@ -84,7 +85,7 @@ impl OnHdal for Args {
             &mut sinks,
         )
         .map_err(failed)?;
-        let busy = cpu.sample_system();
+        let busy = cpu.sample().cpu_busy;
         for (name, s) in ["main", "sub"].iter().zip(report.streams) {
             println!(
                 "{name}: frames={} key_frames={} bytes={}",

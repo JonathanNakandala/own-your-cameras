@@ -2,6 +2,7 @@
 //! same commands MQTT sends (the main loop routes both alike), and snapshots from the media owner's JPEG
 //! channel. Everything else is `camera_onvif`'s, shared with the other cameras.
 
+use crate::catalog::App;
 use crate::media::RustVideoSpec;
 use camera_onvif::snapshot::Waiters;
 use camera_onvif::{
@@ -9,7 +10,9 @@ use camera_onvif::{
     SnapshotError, Velocity, VideoEncoding,
 };
 use camera_transport::motion_control::{self, PresetName};
-use camera_transport::mqtt::Command;
+use camera_transport::mqtt::ptz::Ptz;
+
+type Command = camera_transport::mqtt::Command<App>;
 use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -140,7 +143,7 @@ impl PtzPort for Mi360Onvif {
             return self.send(Command::Stop);
         }
         let velocity = velocity.validate().map_err(PtzError::Failed)?;
-        self.send(Command::Velocity(velocity))
+        self.send(Command::App(App::Ptz(Ptz::Velocity(velocity))))
     }
 
     fn stop(&self) -> Result<(), PtzError> {
@@ -148,7 +151,7 @@ impl PtzPort for Mi360Onvif {
     }
 
     fn home(&self) -> Result<(), PtzError> {
-        self.send(Command::Home)
+        self.send(Command::App(App::Ptz(Ptz::Home)))
     }
 
     fn presets(&self) -> Vec<Preset> {
@@ -166,7 +169,7 @@ impl PtzPort for Mi360Onvif {
             return Err(PtzError::NoSuchPreset);
         }
         let name = PresetName::parse(token).map_err(|_| PtzError::NoSuchPreset)?;
-        self.send(Command::Preset(name))
+        self.send(Command::App(App::Ptz(Ptz::Preset(name))))
     }
 
     /// The preset's token is its name: saving under an existing token overwrites it, a new name creates it.
@@ -181,7 +184,7 @@ impl PtzPort for Mi360Onvif {
         if !known && names.len() >= MAX_PRESETS {
             return Err(PtzError::TooManyPresets);
         }
-        self.send(Command::SavePreset(parsed))?;
+        self.send(Command::App(App::Ptz(Ptz::SavePreset(parsed))))?;
         Ok(text.into())
     }
 
@@ -190,7 +193,7 @@ impl PtzPort for Mi360Onvif {
             return Err(PtzError::NoSuchPreset);
         }
         let name = PresetName::parse(token).map_err(|_| PtzError::NoSuchPreset)?;
-        self.send(Command::RemovePreset(name))
+        self.send(Command::App(App::Ptz(Ptz::RemovePreset(name))))
     }
 
     fn moving(&self) -> bool {

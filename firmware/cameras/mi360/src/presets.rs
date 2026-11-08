@@ -1,10 +1,8 @@
 //! Referenced pan/tilt positions. Persist only real stopped captures; a saved
 //! position is usable only after this boot establishes the physical home frame.
-use crate::{
-    board::{MotorStatus, Position},
-    settings::Store,
-};
+use crate::board::{MotorStatus, Position};
 use camera_transport::motion_control::PresetName;
+use camera_transport::settings::{Disk, FileDisk};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, io};
 
@@ -89,13 +87,13 @@ struct Document {
     positions: BTreeMap<String, Preset>,
 }
 pub struct Presets {
-    store: Store,
+    store: FileDisk,
     positions: BTreeMap<String, Preset>,
 }
 impl Presets {
     pub fn load(path: &str) -> io::Result<Self> {
-        let store = Store::new(path);
-        let positions = match store.read_bytes()? {
+        let mut store = FileDisk::new(path).private_dir();
+        let positions = match store.read()? {
             None => BTreeMap::new(),
             Some(bytes) => Self::decode(&bytes)?,
         };
@@ -154,7 +152,7 @@ impl Presets {
             positions: positions.clone(),
         })
         .map_err(io::Error::other)?;
-        self.store.write_bytes(&bytes)?;
+        self.store.write(&bytes)?;
         self.positions = positions;
         Ok(())
     }
@@ -176,7 +174,7 @@ impl Presets {
             positions: positions.clone(),
         })
         .map_err(io::Error::other)?;
-        self.store.write_bytes(&bytes)?;
+        self.store.write(&bytes)?;
         self.positions = positions;
         Ok(())
     }
@@ -197,7 +195,7 @@ mod tests {
             assert!(Presets::decode(bytes).is_err());
         }
         let p = Presets {
-            store: Store::new("/does-not-exist/presets.json"),
+            store: FileDisk::new("/does-not-exist/presets.json").private_dir(),
             positions: BTreeMap::from([(
                 "1".into(),
                 Preset {

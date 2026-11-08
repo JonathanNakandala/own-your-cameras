@@ -129,11 +129,17 @@ fn section_devices_changed_no_topic_unique_id_or_command_topic() {
             .iter()
             .map(|r| r["topic"].as_str().unwrap())
             .collect();
-        for t in &old_topics {
+        // Telemetry moved to the shared catalog's ids: a retired sensor is cleared at runtime instead.
+        let id_of = |t: &str| t.rsplit('/').nth(1).unwrap_or_default().to_owned();
+        let retired = |t: &str| cam::telemetry::RETIRED.contains(&id_of(t).as_str());
+        for t in old_topics.iter().filter(|t| !retired(t)) {
             assert!(now_topics.contains(t), "{t} vanished");
         }
         for r in old {
             let topic = r["topic"].as_str().unwrap();
+            if retired(topic) {
+                continue;
+            }
             let p = now
                 .as_array()
                 .unwrap()
@@ -148,6 +154,9 @@ fn section_devices_changed_no_topic_unique_id_or_command_topic() {
             let pl: Value = serde_json::from_str(payload).unwrap();
             for field in ["unique_id", "command_topic", "state_topic"] {
                 assert_eq!(pl[field], r[field], "{topic} {field}");
+            }
+            if cam::telemetry::IDS.contains(&id_of(topic).as_str()) {
+                continue; // the shared catalog names it
             }
             let old_name = r["name"].as_str().unwrap();
             let expected = renamed

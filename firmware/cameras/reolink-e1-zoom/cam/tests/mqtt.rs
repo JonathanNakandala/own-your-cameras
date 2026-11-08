@@ -36,7 +36,7 @@ fn discovery_puts_everything_on_one_device_with_settings_named_by_section() {
     // setting + telemetry
     assert_eq!(
         messages.len(),
-        11 + cam::settings::specs().len() + cam::telemetry::SENSORS.len()
+        11 + cam::settings::specs().len() + cam::telemetry::IDS.len()
     );
     let category = |id: &str| {
         messages
@@ -45,7 +45,7 @@ fn discovery_puts_everything_on_one_device_with_settings_named_by_section() {
             .map(|m| m.payload["entity_category"].clone())
     };
     assert_eq!(category("aec"), Some(serde_json::json!("config")));
-    assert_eq!(category("cpu"), Some(serde_json::json!("diagnostic")));
+    assert_eq!(category("cpu_busy"), Some(serde_json::json!("diagnostic")));
     assert_eq!(category("pan"), Some(serde_json::Value::Null));
     assert_eq!(
         category("refocus"),

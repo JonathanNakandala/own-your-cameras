@@ -1,223 +1,124 @@
-//! Hardware capability catalog, confirmed settings and a separate atomic store.
-//! Time is injected; values enter persistent state only after adapter acceptance.
-use camera_transport::mqtt::{Domain, Entity};
-use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
-use std::io::{self, Read, Write};
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-use std::path::{Path, PathBuf};
-use std::time::Duration;
+//! Mi 360's setting catalog and its hardware mapping. Values in force and their persistence are
+//! `camera_transport::settings::Values` (sparse, so only hardware-confirmed values are saved);
+//! probing, readback and rollback are `setting_service`.
+use camera_transport::settings::Spec;
 
-pub const SAVE_DELAY: Duration = Duration::from_secs(10);
 pub const SPEED: u16 = 7;
 pub const START_SPEED: u16 = 27;
 pub const RAMP_UP: u16 = 28;
 pub const RAMP_DOWN: u16 = 29;
 pub const STOCK_HV: i32 = 3;
+/// The settings document, `{"version":1,"values":{…}}` (`JsonCodec`).
+pub const PATH: &str = "/mnt/data/mi360/settings.json";
 
-pub struct Descriptor {
-    pub slot: u16,
-    pub key: &'static str,
-    pub name: &'static str,
-    pub hardware: Option<u32>,
-    pub minimum: i32,
-    pub maximum: i32,
-    pub options: &'static [&'static str],
-    pub unit: Option<&'static str>,
-    pub audio: bool,
+const fn n(
+    slot: u16,
+    key: &'static str,
+    name: &'static str,
+    range: (i32, i32),
+    default: i32,
+) -> Spec {
+    Spec::number(slot, key, name, range, None, default)
 }
-macro_rules! control {
-    ($slot:expr,$key:expr,$name:expr,$hw:expr,$min:expr,$max:expr,$unit:expr,$audio:expr) => {
-        Descriptor {
-            slot: $slot,
-            key: $key,
-            name: $name,
-            hardware: $hw,
-            minimum: $min,
-            maximum: $max,
-            options: &[],
-            unit: $unit,
-            audio: $audio,
-        }
-    };
+const fn u(
+    slot: u16,
+    key: &'static str,
+    name: &'static str,
+    range: (i32, i32),
+    unit: &'static str,
+    default: i32,
+) -> Spec {
+    Spec::number(slot, key, name, range, Some(unit), default)
 }
-pub const CATALOG: &[Descriptor] = &[
-    control!(0, "mirror", "Mirror", Some(0), 0, 1, None, false),
-    control!(1, "flip", "Flip", Some(0), 0, 1, None, false),
-    control!(2, "brightness", "Brightness", Some(1), 0, 255, None, false),
-    control!(3, "contrast", "Contrast", Some(2), 0, 255, None, false),
-    control!(4, "saturation", "Saturation", Some(3), 0, 255, None, false),
-    control!(5, "sharpness", "Sharpness", Some(4), 0, 255, None, false),
-    Descriptor {
-        slot: 6,
-        key: "anti_flicker",
-        name: "Anti-flicker",
-        hardware: Some(5),
-        minimum: 0,
-        maximum: 2,
-        options: &["off", "50hz", "60hz"],
-        unit: None,
-        audio: false,
-    },
-    control!(
-        SPEED,
-        "ptz_speed",
-        "PTZ speed",
-        None,
-        100,
-        900,
-        Some("steps/s"),
-        false
+
+/// The only list of Mi 360's setting keys. Defaults are placeholders for the read API (which does
+/// not say whether a slot is set): nothing is applied or saved that the hardware did not report or
+/// confirm.
+pub const SPECS: &[Spec] = &[
+    Spec::switch(0, "mirror", "Mirror", false),
+    Spec::switch(1, "flip", "Flip", false),
+    n(2, "brightness", "Brightness", (0, 255), 128),
+    n(3, "contrast", "Contrast", (0, 255), 128),
+    n(4, "saturation", "Saturation", (0, 255), 128),
+    n(5, "sharpness", "Sharpness", (0, 255), 128),
+    Spec::select(
+        6,
+        "anti_flicker",
+        "Anti-flicker",
+        &["off", "50hz", "60hz"],
+        0,
     ),
-    control!(
-        8,
-        "mic_volume",
-        "Microphone level",
-        Some(10),
-        -30,
-        120,
-        None,
-        true
-    ),
-    control!(
-        9,
-        "speaker_volume",
-        "Speaker level",
-        Some(11),
-        -30,
-        120,
-        None,
-        true
-    ),
-    control!(
-        10,
-        "main_fps_target",
-        "Main target FPS",
-        Some(20),
-        1,
-        20,
-        Some("fps"),
-        false
-    ),
-    control!(
-        11,
-        "sub_fps_target",
-        "Sub target FPS",
-        Some(21),
-        1,
-        20,
-        Some("fps"),
-        false
-    ),
-    control!(
+    u(SPEED, "ptz_speed", "PTZ speed", (100, 900), "steps/s", 200),
+    n(8, "mic_volume", "Microphone level", (-30, 120), 0),
+    n(9, "speaker_volume", "Speaker level", (-30, 120), 0),
+    u(10, "main_fps_target", "Main target FPS", (1, 20), "fps", 20),
+    u(11, "sub_fps_target", "Sub target FPS", (1, 20), "fps", 20),
+    u(
         12,
         "main_bitrate_target",
         "Main target bitrate",
-        Some(22),
-        32,
+        (32, 800),
+        "kbit/s",
         800,
-        Some("kbit/s"),
-        false
     ),
-    control!(
+    u(
         13,
         "sub_bitrate_target",
         "Sub target bitrate",
-        Some(23),
-        32,
+        (32, 240),
+        "kbit/s",
         240,
-        Some("kbit/s"),
-        false
     ),
-    control!(
-        14,
-        "main_gop",
-        "Main GOP duration",
-        Some(24),
-        1,
-        15,
-        Some("s"),
-        false
-    ),
-    control!(
-        15,
-        "sub_gop",
-        "Sub GOP duration",
-        Some(25),
-        1,
-        15,
-        Some("s"),
-        false
-    ),
-    control!(
+    u(14, "main_gop", "Main GOP duration", (1, 15), "s", 1),
+    u(15, "sub_gop", "Sub GOP duration", (1, 15), "s", 1),
+    n(
         16,
         "main_idr_multiplier",
         "Main keyframe refresh multiplier",
-        Some(26),
+        (1, 3),
         1,
-        3,
-        None,
-        false
     ),
-    control!(
+    n(
         17,
         "sub_idr_multiplier",
         "Sub keyframe refresh multiplier",
-        Some(27),
+        (1, 3),
         1,
-        3,
-        None,
-        false
     ),
-    control!(18, "hue", "Hue", Some(30), 0, 255, None, false),
-    control!(
+    n(18, "hue", "Hue", (0, 255), 128),
+    n(
         19,
         "ae_compensation",
         "Exposure compensation",
-        Some(31),
-        0,
-        255,
-        None,
-        false
+        (0, 255),
+        128,
     ),
-    control!(
+    n(
         20,
         "highlight_suppression",
         "Highlight suppression",
-        Some(32),
+        (0, 10),
         0,
-        10,
-        None,
-        false
     ),
-    control!(
+    n(
         21,
         "defect_pixel_correction",
         "Defect pixel correction strength",
-        Some(33),
-        0,
-        255,
-        None,
-        false
+        (0, 255),
+        128,
     ),
-    control!(
+    n(
         22,
         "dynamic_range_strength",
         "Dynamic range correction strength",
-        Some(34),
-        0,
-        255,
-        None,
-        false
+        (0, 255),
+        128,
     ),
-    Descriptor {
-        slot: 23,
-        key: "white_balance",
-        name: "White balance",
-        hardware: Some(35),
-        minimum: 0,
-        maximum: 7,
-        options: &[
+    Spec::select(
+        23,
+        "white_balance",
+        "White balance",
+        &[
             "auto",
             "daylight",
             "cloudy",
@@ -227,350 +128,224 @@ pub const CATALOG: &[Descriptor] = &[
             "shade",
             "warm_fluorescent",
         ],
-        unit: None,
-        audio: false,
-    },
-    control!(
+        0,
+    ),
+    Spec::switch(
         24,
         "dynamic_range_correction",
         "Dynamic range correction",
-        Some(36),
-        0,
-        1,
-        None,
-        false
+        false,
     ),
-    control!(
+    Spec::switch(
         25,
         "spatial_noise_reduction",
         "Spatial noise reduction",
-        Some(37),
-        0,
-        1,
-        None,
-        false
+        false,
     ),
-    control!(
+    Spec::switch(
         26,
         "temporal_luma_noise_reduction",
         "Temporal luma noise reduction",
-        Some(38),
-        0,
-        1,
-        None,
-        false
+        false,
     ),
-    control!(
+    u(
         START_SPEED,
         "ptz_start_speed",
         "PTZ start speed",
-        None,
+        (100, 900),
+        "steps/s",
         100,
-        900,
-        Some("steps/s"),
-        false
     ),
-    control!(
+    u(
         RAMP_UP,
         "ptz_ramp_up",
         "PTZ acceleration time",
-        None,
-        0,
-        3000,
-        Some("ms"),
-        false
+        (0, 3000),
+        "ms",
+        250,
     ),
-    control!(
+    u(
         RAMP_DOWN,
         "ptz_ramp_down",
         "PTZ deceleration time",
-        None,
-        0,
-        3000,
-        Some("ms"),
-        false
+        (0, 3000),
+        "ms",
+        150,
     ),
 ];
 
-impl Descriptor {
-    fn boolean(&self) -> bool {
-        self.slot <= 1 || matches!(self.hardware, Some(36..=38))
+pub fn spec(slot: u16) -> Option<&'static Spec> {
+    SPECS.iter().find(|s| s.slot == slot)
+}
+
+/// The SDK control behind a slot; `None` for a software setting held by the runtime.
+pub const fn hardware(slot: u16) -> Option<u32> {
+    match slot {
+        0 | 1 => Some(0),
+        2..=6 => Some(slot as u32 - 1),
+        8 | 9 => Some(slot as u32 + 2),
+        10..=17 => Some(slot as u32 + 10),
+        18..=26 => Some(slot as u32 + 12),
+        _ => None,
     }
-    pub fn valid(&self, value: i32) -> bool {
-        (self.minimum..=self.maximum).contains(&value)
+}
+
+/// The slot behind an SDK control (mirror for the shared orientation control).
+pub fn slot_of(control: u32) -> Option<u16> {
+    SPECS
+        .iter()
+        .map(|s| s.slot)
+        .find(|s| hardware(*s) == Some(control))
+}
+
+/// Only present when the runtime has audio.
+pub const fn audio(slot: u16) -> bool {
+    matches!(slot, 8 | 9)
+}
+
+/// The logical value of a hardware reading.
+pub fn decode(slot: u16, hardware: i32) -> i32 {
+    match slot {
+        0 | 1 => ((hardware ^ STOCK_HV) >> slot) & 1,
+        23 => match hardware {
+            0 => 0,
+            2..=8 => hardware - 1,
+            _ => -1,
+        },
+        _ => hardware,
     }
-    pub fn entity(&self) -> Entity {
-        Entity {
-            id: self.key.into(),
-            name: self.name.into(),
-            domain: if self.boolean() {
-                Domain::Switch
-            } else if !self.options.is_empty() {
-                Domain::Select
-            } else {
-                Domain::Number
-            },
-            minimum: self.minimum,
-            maximum: self.maximum,
-            options: self.options.iter().map(|s| (*s).into()).collect(),
-            unit: self.unit.map(str::to_owned),
-            diagnostic: false,
-            control_slot: Some(self.slot),
-        }
-    }
-    pub fn text(&self, value: i32) -> String {
-        if self.boolean() {
-            if value == 0 { "OFF" } else { "ON" }.into()
-        } else if self.options.is_empty() {
-            value.to_string()
-        } else {
-            self.options
-                .get(value as usize)
-                .unwrap_or(&"unknown")
-                .to_string()
-        }
-    }
-    pub fn decode(&self, hardware: i32) -> i32 {
-        if self.slot <= 1 {
-            ((hardware ^ STOCK_HV) >> self.slot) & 1
-        } else if self.hardware == Some(35) {
-            match hardware {
-                0 => 0,
-                2..=8 => hardware - 1,
-                _ => -1,
-            }
-        } else {
-            hardware
-        }
-    }
-    pub fn encode(&self, value: i32, current: i32) -> i32 {
-        if self.slot <= 1 {
-            let bit = 1 << self.slot;
+}
+
+/// The hardware value for `value`; `current` keeps the other orientation axis.
+pub fn encode(slot: u16, value: i32, current: i32) -> i32 {
+    match slot {
+        0 | 1 => {
+            let bit = 1 << slot;
             let logical = current ^ STOCK_HV;
-            ((logical & !bit) | (value << self.slot)) ^ STOCK_HV
-        } else if self.hardware == Some(35) {
-            if value == 0 { 0 } else { value + 1 }
-        } else {
-            value
+            ((logical & !bit) | (value << slot)) ^ STOCK_HV
         }
-    }
-}
-pub fn descriptor(slot: u16) -> Option<&'static Descriptor> {
-    CATALOG.iter().find(|d| d.slot == slot)
-}
-
-#[derive(Default)]
-pub struct Confirmed {
-    values: BTreeMap<u16, i32>,
-    dirty_since: Option<Duration>,
-}
-impl Confirmed {
-    pub fn get(&self, slot: u16) -> Option<i32> {
-        self.values.get(&slot).copied()
-    }
-    pub fn observe(&mut self, slot: u16, value: i32) -> bool {
-        if !descriptor(slot).is_some_and(|d| d.valid(value)) {
-            return false;
+        23 => {
+            if value == 0 {
+                0
+            } else {
+                value + 1
+            }
         }
-        self.values.insert(slot, value);
-        true
-    }
-    pub fn applied(&mut self, slot: u16, value: i32, now: Duration) -> bool {
-        let changed = self.get(slot) != Some(value);
-        if !self.observe(slot, value) {
-            return false;
-        }
-        if changed && self.dirty_since.is_none() {
-            self.dirty_since = Some(now);
-        }
-        true
-    }
-    pub fn due(&self, now: Duration) -> bool {
-        self.dirty_since
-            .is_some_and(|at| now.saturating_sub(at) >= SAVE_DELAY)
-    }
-    pub fn dirty(&self) -> bool {
-        self.dirty_since.is_some()
-    }
-    pub fn saved(&mut self) {
-        self.dirty_since = None;
-    }
-    pub fn records(&self) -> impl Iterator<Item = (&'static Descriptor, i32)> + '_ {
-        CATALOG
-            .iter()
-            .filter_map(|d| self.get(d.slot).map(|v| (d, v)))
-    }
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct Document {
-    version: u32,
-    values: BTreeMap<String, i32>,
-}
-pub struct Store {
-    path: PathBuf,
-    uid: u32,
-}
-impl Store {
-    pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self {
-            path: path.into(),
-            uid: 0,
-        }
-    }
-    fn parent(&self) -> io::Result<&Path> {
-        let parent = self
-            .path
-            .parent()
-            .ok_or_else(|| io::Error::other("settings parent missing"))?;
-        let m = std::fs::symlink_metadata(parent)?;
-        if !m.is_dir() || m.uid() != self.uid || m.mode() & 0o7777 != 0o700 {
-            return Err(io::Error::other(
-                "settings directory must be private and owned by the runtime",
-            ));
-        }
-        Ok(parent)
-    }
-    pub(crate) fn read_bytes(&self) -> io::Result<Option<Vec<u8>>> {
-        self.parent()?;
-        let f = match std::fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(&self.path)
-        {
-            Ok(f) => f,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(e),
-        };
-        let m = f.metadata()?;
-        if !m.is_file()
-            || m.uid() != self.uid
-            || m.mode() & 0o7777 != 0o600
-            || m.nlink() != 1
-            || m.len() > 16384
-        {
-            return Err(io::Error::other(
-                "settings file must be private, regular and bounded",
-            ));
-        }
-        let mut bytes = Vec::new();
-        f.take(16385).read_to_end(&mut bytes)?;
-        Ok(Some(bytes))
-    }
-    pub fn load(&self) -> io::Result<BTreeMap<u16, i32>> {
-        let Some(bytes) = self.read_bytes()? else {
-            return Ok(BTreeMap::new());
-        };
-        let doc: Document = serde_json::from_slice(&bytes)
-            .map_err(|_| io::Error::other("invalid settings document"))?;
-        if doc.version != 1 {
-            return Err(io::Error::other("unsupported settings version"));
-        }
-        Ok(CATALOG
-            .iter()
-            .filter_map(|d| {
-                doc.values
-                    .get(d.key)
-                    .filter(|v| d.valid(**v))
-                    .map(|v| (d.slot, *v))
-            })
-            .collect())
-    }
-    pub fn save(&self, confirmed: &Confirmed) -> io::Result<()> {
-        let values = confirmed
-            .records()
-            .map(|(d, v)| (d.key.into(), v))
-            .collect();
-        let bytes = serde_json::to_vec(&Document { version: 1, values })
-            .map_err(|_| io::Error::other("cannot encode settings"))?;
-        self.write_bytes(&bytes)
-    }
-    pub(crate) fn write_bytes(&self, bytes: &[u8]) -> io::Result<()> {
-        let parent = self.parent()?;
-        if bytes.len() > 16384 {
-            return Err(io::Error::other("private document exceeds limit"));
-        }
-        let temp = parent.join(format!(
-            ".{}-{}.tmp",
-            self.path
-                .file_name()
-                .and_then(|s| s.to_str())
-                .ok_or_else(|| io::Error::other("invalid private document path"))?,
-            std::process::id()
-        ));
-        let mut created = false;
-        let result = (|| {
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-                .open(&temp)?;
-            created = true;
-            file.write_all(bytes)?;
-            file.sync_all()?;
-            std::fs::rename(&temp, &self.path)?;
-            std::fs::File::open(parent)?.sync_all()
-        })();
-        // Only a temporary file created by this call is disposable. Existing
-        // temp data after create_new failure belongs to an earlier operation.
-        if result.is_err() && created {
-            let _ = std::fs::remove_file(&temp);
-        }
-        result
+        _ => value,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use camera_transport::settings::{Disk, JsonCodec, Values, check_catalog};
+
+    #[test]
+    fn the_catalog_is_valid_and_keeps_the_sdk_control_of_every_slot() {
+        check_catalog(SPECS).unwrap();
+        let controls: Vec<_> = SPECS.iter().map(|s| (s.slot, hardware(s.slot))).collect();
+        let expected: Vec<(u16, Option<u32>)> = vec![
+            (0, Some(0)),
+            (1, Some(0)),
+            (2, Some(1)),
+            (3, Some(2)),
+            (4, Some(3)),
+            (5, Some(4)),
+            (6, Some(5)),
+            (7, None),
+            (8, Some(10)),
+            (9, Some(11)),
+            (10, Some(20)),
+            (11, Some(21)),
+            (12, Some(22)),
+            (13, Some(23)),
+            (14, Some(24)),
+            (15, Some(25)),
+            (16, Some(26)),
+            (17, Some(27)),
+            (18, Some(30)),
+            (19, Some(31)),
+            (20, Some(32)),
+            (21, Some(33)),
+            (22, Some(34)),
+            (23, Some(35)),
+            (24, Some(36)),
+            (25, Some(37)),
+            (26, Some(38)),
+            (27, None),
+            (28, None),
+            (29, None),
+        ];
+        assert_eq!(controls, expected);
+        assert_eq!(slot_of(24), Some(14));
+        assert_eq!(slot_of(0), Some(0));
+    }
     #[test]
     fn logical_orientation_matches_stock_and_preserves_the_other_axis() {
         for raw in 0..4 {
             for axis in 0..2 {
-                let d = descriptor(axis).unwrap();
                 for value in 0..2 {
-                    let updated = d.encode(value, raw);
-                    assert_eq!(d.decode(updated), value);
-                    let other = descriptor(1 - axis).unwrap();
-                    assert_eq!(other.decode(updated), other.decode(raw));
+                    let updated = encode(axis, value, raw);
+                    assert_eq!(decode(axis, updated), value);
+                    let other = 1 - axis;
+                    assert_eq!(decode(other, updated), decode(other, raw));
                 }
             }
         }
-        assert_eq!(descriptor(0).unwrap().decode(3), 0);
-        assert_eq!(descriptor(1).unwrap().decode(3), 0);
+        assert_eq!(decode(0, 3), 0);
+        assert_eq!(decode(1, 3), 0);
+    }
+
+    struct Memory(Option<Vec<u8>>);
+    impl Disk for Memory {
+        fn read(&mut self) -> std::io::Result<Option<Vec<u8>>> {
+            Ok(self.0.clone())
+        }
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+            self.0 = Some(bytes.to_vec());
+            Ok(())
+        }
+    }
+
+    const FIXTURES: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/settings-2026-11-07/"
+    );
+
+    #[test]
+    fn existing_settings_files_keep_loading_and_round_trip_byte_for_byte() {
+        let text = std::fs::read(format!("{FIXTURES}settings.json")).unwrap();
+        let (values, problems) = Values::load(SPECS, Memory(Some(text.clone())), JsonCodec);
+        assert!(problems.is_empty(), "{problems:?}");
+        let mut values = values.sparse();
+        let set: Vec<_> = SPECS
+            .iter()
+            .filter(|s| values.is_set(s.slot))
+            .map(|s| s.key)
+            .collect();
+        assert_eq!(
+            set,
+            [
+                "mirror",
+                "flip",
+                "brightness",
+                "white_balance",
+                "ptz_ramp_up"
+            ]
+        );
+        assert_eq!(values.value("white_balance"), Some(2));
+        values.put(2, 130, std::time::Duration::ZERO).unwrap();
+        values.put(2, 129, std::time::Duration::ZERO).unwrap();
+        values.flush().unwrap();
+        assert_eq!(values.disk().0.as_deref(), Some(&text[..]));
     }
     #[test]
-    fn first_dirty_deadline_does_not_slide_and_unconfirmed_or_invalid_values_do_not_save() {
-        let mut s = Confirmed::default();
-        assert!(s.observe(2, 128));
-        assert!(!s.dirty());
-        assert!(!s.applied(2, 256, Duration::ZERO));
-        assert_eq!(s.get(2), Some(128));
-        assert!(s.applied(2, 129, Duration::from_secs(1)));
-        assert!(s.applied(2, 130, Duration::from_secs(9)));
-        assert!(!s.due(Duration::from_secs(10)));
-        assert!(s.due(Duration::from_secs(11)));
-        s.saved();
-        assert!(!s.dirty());
-    }
-    #[test]
-    fn safe_store_roundtrips_actual_confirmed_fields_and_refuses_symlinks() {
-        use std::os::unix::fs::{PermissionsExt, symlink};
-        let root = std::env::temp_dir().join(format!("mi360-settings-test-{}", std::process::id()));
-        std::fs::create_dir(&root).unwrap();
-        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let mut store = Store::new(root.join("settings.json"));
-        store.uid = unsafe { libc::geteuid() };
-        let mut state = Confirmed::default();
-        state.applied(0, 1, Duration::ZERO);
-        state.applied(2, 129, Duration::ZERO);
-        store.save(&state).unwrap();
-        assert_eq!(store.load().unwrap(), BTreeMap::from([(0, 1), (2, 129)]));
-        std::fs::remove_file(&store.path).unwrap();
-        symlink("absent", &store.path).unwrap();
-        assert!(store.load().is_err());
-        std::fs::remove_dir_all(root).unwrap();
+    fn a_partly_invalid_file_keeps_its_valid_fields_and_names_the_others() {
+        let text = std::fs::read(format!("{FIXTURES}settings-invalid-fields.json")).unwrap();
+        let (values, problems) = Values::load(SPECS, Memory(Some(text)), JsonCodec);
+        let values = values.sparse();
+        let named: Vec<_> = problems.iter().filter_map(|p| p.key.as_deref()).collect();
+        assert_eq!(named, ["brightness", "main_fps_target"]);
+        assert!(values.is_set(3) && !values.is_set(2) && !values.is_set(10));
     }
 }

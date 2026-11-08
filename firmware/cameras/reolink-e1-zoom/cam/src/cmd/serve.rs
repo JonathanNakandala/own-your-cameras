@@ -187,7 +187,9 @@ pub fn diagnostic_with<
     });
     let mut server_args = Some((listener, cfg));
 
-    let mut cpu = crate::cpu::Sampler::system();
+    let mut cpu =
+        camera_transport::telemetry::Sampler::new(camera_transport::telemetry::Proc::default());
+    cpu.sample();
     let start = Instant::now();
     let mut open_hardware = Some(open_hardware);
     // RAM-only settings: a diagnostic run never writes /mnt/para.
@@ -293,7 +295,7 @@ pub fn diagnostic_with<
         &mut || talk.next_pcm(Instant::now()),
         &mut &*media_tuning,
     );
-    if let Some(busy) = cpu.sample_system() {
+    if let Some(busy) = cpu.sample().cpu_busy {
         println!("cpu_busy_percent={busy:.1}");
     }
     let mut errors = service_errors.into_inner();

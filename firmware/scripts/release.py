@@ -138,8 +138,8 @@ def rust_notices(model):
         prefix = 'licenses/rust-crates/' + package['name'] + '-' + package['version'] + '/'
         for path in notices: files[prefix + path.relative_to(root).as_posix()] = path
         if not notices:
-            # rumqttc's published crate omits its workspace-root license. Retain the
-            # license from the exact upstream rumqttc-0.25.1 tag locally instead.
+            # A published crate without its license file: keep the license from the
+            # exact upstream tag in releases/licenses/<name>-<version>-LICENSE.txt.
             fallback = workspace / 'releases/licenses' / (package['name'] + '-' + package['version'] + '-LICENSE.txt')
             if not fallback.is_file(): raise ValueError('Missing dependency license: ' + package['name'])
             files[prefix + 'LICENSE'] = fallback

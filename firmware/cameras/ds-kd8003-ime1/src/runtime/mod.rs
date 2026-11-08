@@ -6,17 +6,23 @@ mod http;
 mod hw;
 mod keypad;
 mod link;
+mod live;
 mod onvif;
 mod uart;
 
 use camera_transport::microphone::Format;
+use camera_transport::mqtt;
+use camera_transport::settings::{FileDisk, JsonCodec, Values};
 use camera_transport::{
     AudioHub, Backchannel, Config as RtspConfig, Credentials, Hub, MAIN_PATH, MAIN_PCMU_PATH,
     SUB_PATH, SUB_PCMU_PATH, StreamPath,
 };
 use ds_kd8003_ime1_cam::access::{Access, Decision};
 use ds_kd8003_ime1_cam::config::{self, Config};
-use ds_kd8003_ime1_cam::discovery::{self, DoorCommand};
+use ds_kd8003_ime1_cam::home::DoorCommand;
+use ds_kd8003_ime1_cam::inputs::{Edge, Edges};
+use ds_kd8003_ime1_cam::media::Owner;
+use ds_kd8003_ime1_cam::settings::{self as live_settings, SPECS};
 use ffi::*;
 use hw::*;
 use std::collections::VecDeque;
@@ -57,6 +63,7 @@ pub struct State {
     pub viewers: usize,
     pub streams: [Option<[u32; 7]>; 2],
     pub stream_frames: [u64; 2],
+    pub stream_bytes: [u64; 2],
     pub audio_frames: u64,
     pub audio_err: i32,
     pub mic_peak: u32,
@@ -147,7 +154,8 @@ pub fn main(args: &[String]) {
         std::process::exit(2);
     }
     let runtime_dir = args[2].clone();
-    let cfg = match Config::load(std::path::Path::new(&args[3])) {
+    let config_file = std::path::Path::new(&args[3]);
+    let cfg = match Config::load(config_file) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("config: {e:?}");
@@ -185,11 +193,27 @@ pub fn main(args: &[String]) {
         audio_lock: RwLock::new(()),
         video_lock: [Mutex::new(()), Mutex::new(())],
     });
+    // Live settings: never fail; a bad file or field falls back to defaults and is reported.
+    let settings_file = live_settings::path(config_file);
+    let (mut values, problems) = Values::load(SPECS, FileDisk::new(&settings_file), JsonCodec);
+    for p in &problems {
+        g.log(format!("settings: {p}"));
+    }
+    for line in live_settings::seed(&mut values, &cfg.deprecated, Duration::ZERO) {
+        g.log(line);
+    }
+    let reader = values.reader();
     g.log(format!(
-        "ds-kd8003-ime1-cam {}: start, {} PINs, open {} s",
+        "ds-kd8003-ime1-cam {}: start, {} PINs, open {} s, settings {}{}",
         env!("CARGO_PKG_VERSION"),
         credentials.len(),
-        cfg.open_seconds
+        reader.value("open_seconds").unwrap_or(0),
+        settings_file.display(),
+        if values.first_run() {
+            " (first run)"
+        } else {
+            ""
+        }
     ));
     install_signal_stop(&g);
 
@@ -288,25 +312,20 @@ pub fn main(args: &[String]) {
         std::process::exit(5);
     }
     refresh_stream(&g, 0);
-    set_isp(&g, 8, 1); // AWB auto: without it the image is magenta
-    // Sub stream as the stock firmware offered it: 704x480 at 15 fps.
-    set_stream(
-        &g,
-        1,
-        &StreamSettings {
-            w: 704,
-            h: 480,
-            fps: 15,
-            kbps: 1024,
-            gop: 30,
-            vbr: true,
-            profile: 1,
-        },
-    );
-    // SAFETY: plain acodec ioctl wrappers.
-    unsafe {
-        gm_codec_set(1, cfg.codec_out_db);
-        gm_codec_set(0, cfg.mic_gain_db);
+    // Talkback: the shared Opus backchannel mixer (same crate and decoder as the other cameras),
+    // decoding straight at the speaker's rate.
+    let talk = camera_opus::talkback(audio::codec_rate());
+    let speaker = live::Speaker::new(g.clone(), Arc::clone(&talk));
+    // Codec levels, both streams and the ISP keys (AWB auto among them: without it the image is
+    // magenta) from the settings, through their one owner.
+    let mut owner = Owner::new(values);
+    let mut board = live::Board {
+        g: g.clone(),
+        speaker: speaker.clone(),
+    };
+    owner.boot(&mut board, g.t0.elapsed());
+    for line in owner.take_log() {
+        g.log(line);
     }
     g.beat();
 
@@ -334,9 +353,6 @@ pub fn main(args: &[String]) {
         let (g2, hub) = (g.clone(), mic.clone());
         spawn_named("mic", move || audio::capture_loop(g2, hub));
     }
-    // Talkback: the shared Opus backchannel mixer (same crate and decoder as the other cameras),
-    // decoding straight at the speaker's rate.
-    let talk = camera_opus::talkback(audio::codec_rate());
     match camera_transport::bind(cfg.rtsp_port) {
         Ok(listener) => {
             let rtsp = Arc::new(RtspConfig {
@@ -371,16 +387,12 @@ pub fn main(args: &[String]) {
         Err(e) => g.log(format!("rtsp: bind failed {e}")),
     }
 
-    let (speaker_tx, speaker_rx) = mpsc::channel();
     let clips = audio::load_clips(&g, &cfg.clips);
     if ao_rc == 0 {
-        let g2 = g.clone();
-        let db = cfg.clip_db;
-        let talk_db = cfg.talk_db;
-        let talk = Arc::clone(&talk);
-        spawn_named("speaker", move || {
-            audio::speaker_loop(g2, speaker_rx, db, talk_db, talk)
-        });
+        speaker.start(
+            reader.get(live_settings::CLIP_DB).unwrap_or(0),
+            reader.get(live_settings::TALK_DB).unwrap_or(0),
+        );
     }
 
     // Call button: /dev/event0, ARM32 input_event (16 B), ordinary non-grabbing reads.
@@ -413,9 +425,27 @@ pub fn main(args: &[String]) {
         });
     }
 
-    let (command_tx, command_rx) = mpsc::channel::<DoorCommand>();
-    let (publisher, _mqtt) = link::start(g.clone(), &cfg, command_tx);
-    let topics = discovery::Topics::new(&cfg.mqtt_prefix, &cfg.mqtt_node);
+    // The input loop emits every edge once; MQTT (and later ONVIF) consume them.
+    let edges = Edges::new();
+    let (publisher, commands) = match link::start(g.clone(), &cfg, &edges) {
+        Ok((publisher, commands)) => (Some(publisher), Some(commands)),
+        Err(e) => {
+            g.log(format!("mqtt: not started: {e}"));
+            (None, None)
+        }
+    };
+    let (settings_tx, settings_rx) = mpsc::channel();
+    let settings_thread =
+        live::run_settings(g.clone(), owner, board, settings_rx, publisher.clone());
+    if let Some(p) = publisher {
+        live::run_telemetry(g.clone(), p);
+    }
+    let emit = |edge: Edge| {
+        let missed = edges.emit(edge.clone());
+        if missed > 0 {
+            g.log(format!("inputs: {missed} consumer(s) missed {edge:?}"));
+        }
+    };
     let (keypad_tx, keypad_rx) = mpsc::channel::<keypad::Report>();
     let _keypad = keypad::start(g.clone(), cfg.keypad_key.clone(), keypad_tx);
     if cfg.http_port != 0 {
@@ -434,10 +464,23 @@ pub fn main(args: &[String]) {
     }
 
     let onvif = start_onvif(&g, &cfg, jpeg_rc == 0);
-    let events = onvif.as_ref().map(|service| service.events());
+    // ONVIF is the second consumer of the input edges (MQTT is the first); it ignores inputs it
+    // does not advertise.
+    if let Some(events) = onvif.as_ref().map(|service| service.events()) {
+        let rx = edges.subscribe(64);
+        let g2 = g.clone();
+        spawn_named("onvif-edges", move || {
+            while !g2.stop.load(Ordering::Relaxed) {
+                if let Ok(edge) = rx.recv_timeout(Duration::from_millis(500))
+                    && let Some((input, state)) = edge.binary()
+                {
+                    events.input(input, state);
+                }
+            }
+        });
+    }
 
     let mut access = Access::new(credentials);
-    let open_ms = u64::from(cfg.open_seconds) * 1000;
     let mut last_inputs: Option<(u32, u32)> = None;
     let mut last_ae = Instant::now() - Duration::from_secs(5);
     let mut daynight = DayNight::default();
@@ -452,19 +495,20 @@ pub fn main(args: &[String]) {
             return;
         }
         match clips.get(clip).or_else(|| clips.get("door_opened")) {
-            Some(samples) => {
-                let _ = speaker_tx.send(audio::Sound::Clip(clip.to_string(), samples.clone()));
-            }
+            Some(samples) => speaker.play(audio::Sound::Clip(clip.to_string(), samples.clone())),
             None => g.log(format!("speaker: no clip for {name}")),
         }
     };
     let refuse = || {
-        let _ = speaker_tx.send(match clips.get(DENIED_CLIP) {
+        speaker.play(match clips.get(DENIED_CLIP) {
             Some(samples) => audio::Sound::Clip(DENIED_CLIP.to_string(), samples.clone()),
             None => audio::Sound::Deny,
         });
     };
     let open = |g: &Device, reason: &str| {
+        // The pulse length is a live setting: read it at each opening.
+        let open_ms =
+            u64::from(reader.get(live_settings::OPEN_SECONDS).unwrap_or(5).max(1) as u32) * 1000;
         let rc = set_relay(g, STRIKE, reason);
         let mut s = g.st.lock().unwrap();
         if rc == 0 {
@@ -498,16 +542,18 @@ pub fn main(args: &[String]) {
             };
             if failures >= MAX_RELEASE_FAILURES {
                 g.log("relay: cannot release the strike, exiting so the watchdog resets the board");
+                save_settings(&g, &settings_thread);
                 std::process::exit(6);
             }
         }
         if g.media_dead.load(Ordering::Relaxed) && g.st.lock().unwrap().relay_mask == 0 {
             g.log("media: lease lost, exiting for a reboot");
+            save_settings(&g, &settings_thread);
             std::process::exit(7);
         }
         let unlocked = g.st.lock().unwrap().relay_mask & STRIKE != 0;
         if unlocked_published != Some(unlocked) {
-            publisher.publish(&topics.lock_state, discovery::lock_state(unlocked), true);
+            emit(Edge::Lock(unlocked));
             unlocked_published = Some(unlocked);
         }
 
@@ -531,23 +577,23 @@ pub fn main(args: &[String]) {
                     "input: reed {}",
                     if reed_open { "OPEN" } else { "closed" }
                 ));
-                publisher.publish(&topics.reed, discovery::door_state(reed_open), true);
-                if let Some(events) = &events {
-                    events.input(onvif::DOOR, reed_open);
-                }
+                emit(Edge::Reed(reed_open));
             }
             // The cover is "open" while the strike is released or the leaf is away from the reed:
             // Home Assistant only offers "close" on an open cover, and a released strike is what
             // "close now" ends.
             let cover_open = inputs & 1 != 0 || unlocked;
             if cover_published != Some(cover_open) {
-                publisher.publish(&topics.door_state, discovery::door_state(cover_open), true);
+                emit(Edge::Cover(cover_open));
                 cover_published = Some(cover_open);
             }
             if let Some((_, pt)) = last_inputs
                 && pt != tamper
             {
                 g.log(format!("input: tamper {pt:#x} -> {tamper:#x}"));
+            }
+            if last_inputs.map(|(_, pt)| pt != 0) != Some(tamper != 0) {
+                emit(Edge::Tamper(tamper != 0));
             }
             last_inputs = Some((inputs, tamper));
         }
@@ -561,18 +607,19 @@ pub fn main(args: &[String]) {
             if pressed {
                 g.st.lock().unwrap().button_presses += 1;
             }
-            if let Some(events) = &events {
-                events.input(onvif::CALL_BUTTON, pressed);
-            }
-            publisher.publish(
-                &topics.call_button,
-                discovery::event(if pressed { "press" } else { "release" }, None),
-                false,
-            );
+            emit(Edge::CallButton(pressed));
         }
 
         // Remote commands.
-        while let Ok(cmd) = command_rx.try_recv() {
+        while let Some(command) = commands.as_ref().and_then(|c| c.try_next(Instant::now())) {
+            let cmd = match command {
+                mqtt::Command::App(cmd) => cmd,
+                mqtt::Command::Setting { slot, value } => {
+                    let _ = settings_tx.send(live::Msg::Set { slot, value });
+                    continue;
+                }
+                _ => continue,
+            };
             if cmd == DoorCommand::Close {
                 // Expire the pulse; the release above runs on the next pass with its retry logic.
                 g.log("remote: close");
@@ -586,7 +633,7 @@ pub fn main(args: &[String]) {
             ));
             if open(&g, "remote open") {
                 announce("remote", "door_opened", quiet);
-                publisher.publish(&topics.access, discovery::event("remote", None), false);
+                emit(Edge::Remote);
             }
         }
 
@@ -612,22 +659,14 @@ pub fn main(args: &[String]) {
                                 g.st.lock().unwrap().granted += 1;
                                 g.log(format!("access: granted to {name}"));
                                 announce(&name, &clip, false);
-                                publisher.publish(
-                                    &topics.access,
-                                    discovery::event("granted", Some(&name)),
-                                    false,
-                                );
+                                emit(Edge::Granted(name.clone()));
                             }
                         }
                         Decision::Deny { failures } => {
                             g.st.lock().unwrap().denied += 1;
                             g.log(format!("access: denied, failure {failures}"));
                             refuse();
-                            publisher.publish(
-                                &topics.access,
-                                discovery::event("denied", None),
-                                false,
-                            );
+                            emit(Edge::Denied);
                         }
                     }
                 }
@@ -654,7 +693,7 @@ pub fn main(args: &[String]) {
                         "image: AE says {}",
                         if night { "night" } else { "day" }
                     ));
-                    apply_color(&g);
+                    let _ = settings_tx.send(live::Msg::Night(night));
                     set_ir(&g, if night { 60 } else { 0 });
                     set_call_light(&g, night);
                 }
@@ -679,7 +718,12 @@ pub fn main(args: &[String]) {
     }
 
     g.log("ds-kd8003-ime1-cam: stopping");
+    // The strike is released before anything that can block: a slow or stuck settings save must
+    // never hold the door open.
     set_relay(&g, 0, "shutdown");
+    // The settings thread saves anything unsaved when it sees the stop.
+    drop(settings_tx);
+    let _ = settings_thread.join();
     set_ir(&g, 0);
     // SAFETY: plain ioctl wrapper.
     unsafe { gm_amp(0) };
@@ -759,8 +803,11 @@ fn video_loop(g: Arc<Device>, chn: usize, hub: Arc<Hub>) {
         };
         match rc {
             0 => {
-                hub.publish(key != 0, pts, buf[..len as usize].to_vec());
-                g.st.lock().unwrap().stream_frames[chn] += 1;
+                let au = &buf[..len as usize];
+                hub.publish(key != 0, pts, au.to_vec());
+                let mut s = g.st.lock().unwrap();
+                s.stream_frames[chn] += 1;
+                s.stream_bytes[chn] += u64::from(len);
             }
             // Nothing ready: sleep on the encoder's descriptor (outside the channel lock, bounded so a
             // reconfigured channel is picked up) instead of asking again every 5 ms.
@@ -811,3 +858,15 @@ fn install_signal_stop(g: &Arc<Device>) {
         }
     });
 }
+
+/// Before an error exit: stops the settings thread, which saves anything unsaved, and waits for it
+/// at most [`SAVE_BEFORE_EXIT`] so a stuck write cannot delay the reset.
+fn save_settings(g: &Device, settings: &thread::JoinHandle<()>) {
+    g.stop.store(true, Ordering::Relaxed);
+    let until = Instant::now() + SAVE_BEFORE_EXIT;
+    while !settings.is_finished() && Instant::now() < until {
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+const SAVE_BEFORE_EXIT: Duration = Duration::from_secs(2);

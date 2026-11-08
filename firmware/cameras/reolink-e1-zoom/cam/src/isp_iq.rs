@@ -3,7 +3,7 @@
 //! Applied on the hardware thread through the one `/dev/nvt_isp` owner, always with readback: the
 //! kernel's set path logs a rejected value and still returns 0.
 
-use crate::settings::{Group, Kind, Spec, Value};
+use crate::settings::{Group, Setting, Spec};
 use crate::zoom::{Error, Isp, WORDS};
 
 /// Which `vendor_isp_*` family carries the item.
@@ -118,27 +118,23 @@ pub const ITEMS: &[Item] = &[
 ];
 
 impl Item {
-    pub fn spec(&self) -> Spec {
-        let kind = match self.options {
-            Some(o) => Kind::Select(o),
-            None => Kind::Number {
-                min: self.range.0,
-                max: self.range.1,
-                unit: None,
-                slider: true,
-            },
+    /// The setting of this item; slots are assigned by `settings::specs`.
+    pub fn setting(&self) -> Setting {
+        let (min, max) = (self.range.0 as i32, self.range.1 as i32);
+        let spec = match self.options {
+            Some(o) => Spec::select(0, self.key, self.name, o, self.default as i32),
+            None => Spec::number(
+                0,
+                self.key,
+                self.name,
+                (min, max),
+                None,
+                self.default as i32,
+            ),
         };
-        Spec {
-            key: self.key,
-            name: self.name,
-            kind,
-            group: Group::Picture,
-            default: match self.options {
-                Some(_) => Value::Choice(self.default as usize),
-                None => Value::Int(self.default),
-            },
+        Setting {
             stock: self.stock.map(|(attr, _)| attr),
-            icon: None,
+            ..Setting::new(spec, Group::Picture)
         }
     }
 
@@ -170,15 +166,6 @@ pub fn from_vendor(key: &str, raw: i64) -> i64 {
         .iter()
         .find(|i| i.key == key)
         .map_or(raw, |i| i.convert(raw))
-}
-
-/// The value of a picture setting as the item carries it (a select's index is its value).
-pub fn item_value(v: Value) -> Option<i64> {
-    match v {
-        Value::Int(n) => Some(n),
-        Value::Choice(i) => Some(i as i64),
-        Value::Bool(_) => None,
-    }
 }
 
 /// Sets `key` to `value` and reads it back; a mismatch is an error (the kernel ignores values it
@@ -278,6 +265,6 @@ mod tests {
             assert_eq!(s.picture(k), Some(v), "{k}");
         }
         assert_eq!(s.picture("isp_hue"), Some(0));
-        assert_eq!(s.get("isp_anti_flicker"), Some(Value::Choice(0)));
+        assert_eq!(s.get("isp_anti_flicker"), Some(0));
     }
 }

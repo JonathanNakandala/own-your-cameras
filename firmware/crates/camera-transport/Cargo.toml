@@ -8,6 +8,10 @@ publish.workspace = true
 [dependencies]
 camera-control = { path = "../camera-control" }
 libc = "=0.2.188"
-rumqttc = { version = "=0.25.1", default-features = false }
 serde_json = "=1.0.145"
 serde = { version = "=1.0.228", features = ["derive"] }
+# Reolink's settings file format; off by default, it costs the gate ~150 KB of binary.
+toml = { version = "=0.9.12", optional = true }
+
+[features]
+toml = ["dep:toml"]

@@ -18,13 +18,16 @@ fn store(file: Option<&str>) -> (Store<FakeDisk>, Vec<Problem>) {
 
 #[test]
 fn keys_are_unique_and_every_default_is_valid() {
-    let mut keys: Vec<_> = specs().iter().map(|s| s.key).collect();
+    let mut keys: Vec<_> = specs().iter().map(|s| s.spec.key).collect();
     keys.sort_unstable();
     keys.dedup();
     assert_eq!(keys.len(), specs().len());
-    for s in specs() {
-        assert!(s.check(s.default).is_ok(), "{}", s.key);
+    for (slot, s) in specs().iter().enumerate() {
+        assert!(s.spec.valid(s.spec.default), "{}", s.spec.key);
+        assert_eq!(usize::from(s.spec.slot), slot, "a slot is its place");
+        assert_eq!(s.spec.section, s.section().map(Section::slug));
     }
+    shared::check_catalog(&SPECS).unwrap();
 }
 
 #[test]
@@ -53,8 +56,8 @@ fn absent_file_gives_the_first_run_defaults_alex_chose() {
 #[test]
 fn orientation_is_migrated_from_the_stock_file() {
     let (s, _) = store(None);
-    assert_eq!(s.settings().get("mirror"), Some(Value::Bool(true)));
-    assert_eq!(s.settings().get("flip"), Some(Value::Bool(false)));
+    assert_eq!(s.settings().get("mirror"), Some(1));
+    assert_eq!(s.settings().get("flip"), Some(0));
     assert_eq!(
         s.settings().orientation(),
         crate::orientation::Orientation::new(true, false)
@@ -122,7 +125,7 @@ fn mqtt_payloads_are_validated_against_the_table() {
     assert!(s.set("nope", "1", secs(0)).is_err());
     assert!(!s.dirty(), "rejections change nothing");
     let c = s.set("mic_volume", "40.0", secs(0)).unwrap().unwrap();
-    assert_eq!((c.spec.key, c.value), ("mic_volume", Value::Int(40)));
+    assert_eq!((c.spec.spec.key, c.value), ("mic_volume", 40));
     assert_eq!(s.set("mic_volume", "40", secs(1)).unwrap(), None, "no-op");
     assert!(
         s.set("ir_to_day", "2400", secs(0)).is_err(),
@@ -194,12 +197,12 @@ fn a_saved_file_loads_back_to_the_same_settings() {
 #[test]
 fn a_failed_write_stays_dirty_is_reported_and_retried_a_window_later() {
     let (mut s, _) = store(None);
-    s.disk.fail_write = true;
+    s.disk_mut().fail_write = true;
     s.set("mic_volume", "50", secs(0)).unwrap();
     assert!(s.tick(secs(10)).is_err());
     assert!(s.dirty());
-    assert_eq!(summary(s.problems()), "invalid: file");
-    s.disk.fail_write = false;
+    assert_eq!(summary(&s.problems()), "invalid: file");
+    s.disk_mut().fail_write = false;
     s.tick(secs(15)).unwrap();
     assert!(s.dirty(), "retry waits one window");
     s.tick(secs(20)).unwrap();
@@ -302,7 +305,7 @@ fn autofocus_starts_on_with_a_thirty_second_sixty_percent_watchdog_and_validates
 fn every_setting_but_the_status_led_sits_on_a_section_device_with_a_safe_unique_slug() {
     for s in specs() {
         match s.section() {
-            None => assert_eq!(s.key, "led", "{} has no section", s.key),
+            None => assert_eq!(s.spec.key, "led", "{} has no section", s.spec.key),
             Some(sec) => assert!(!sec.name().is_empty()),
         }
     }
@@ -338,4 +341,77 @@ fn the_tap_delay_is_a_pan_tilt_setting_in_milliseconds() {
     s.set("tap_delay", "250", secs(0)).unwrap();
     assert_eq!(s.settings().tap_delay(), Duration::from_millis(250));
     assert_eq!(spec("tap_delay").unwrap().section(), Some(Section::PanTilt));
+}
+
+const FIXTURES: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/settings-2026-11-07/"
+);
+
+fn fixture(name: &str) -> String {
+    std::fs::read_to_string(format!("{FIXTURES}{name}")).unwrap()
+}
+
+#[test]
+fn files_written_before_the_shared_store_load_and_are_rewritten_byte_for_byte() {
+    for name in ["first-run.toml", "changed.toml"] {
+        let text = fixture(name);
+        let (mut s, problems) = store(Some(&text));
+        assert!(problems.is_empty(), "{name}: {problems:?}");
+        // A change and its undo leave the values as loaded but force a write.
+        let led = if s.settings().led() { "OFF" } else { "ON" };
+        let back = if led == "ON" { "OFF" } else { "ON" };
+        s.set("led", led, secs(0)).unwrap();
+        s.set("led", back, secs(0)).unwrap();
+        s.flush().unwrap();
+        assert_eq!(s.disk().file.as_deref(), Some(text.as_str()), "{name}");
+    }
+    let (s, _) = store(Some(&fixture("changed.toml")));
+    let s = s.settings();
+    assert_eq!(s.audio().mic_volume, 55);
+    assert!(s.audio().aec.enabled);
+    assert_eq!(s.ir_mode(), "night");
+    assert_eq!(s.main_stream().dim.w, 2592);
+    assert_eq!(s.motion().0.max_pps, 600);
+    assert_eq!(s.get("isp_anti_flicker"), Some(1));
+    assert_eq!(s.zoom_speed(), 40);
+    assert!(
+        !s.orientation().mirror(),
+        "the file wins over the stock mirror"
+    );
+    let (s, problems) = store(Some(&fixture("hand-edited.toml")));
+    assert!(problems.is_empty(), "{problems:?}");
+    assert_eq!(s.settings().audio().mic_volume, 55);
+    assert!(
+        s.settings().orientation().mirror(),
+        "absent: the stock value"
+    );
+}
+
+#[test]
+fn values_are_i32_slots_shared_with_the_reader() {
+    let (mut s, _) = store(None);
+    let reader = s.reader();
+    let feed = reader.subscribe();
+    let ir = spec("ir").unwrap();
+    s.set("ir", "day", secs(0)).unwrap();
+    s.set("aec", "ON", secs(0)).unwrap();
+    assert_eq!(
+        reader.get(ir.spec.slot),
+        Some(1),
+        "a select is its option index"
+    );
+    assert_eq!(reader.value("aec"), Some(1), "a switch is 0/1");
+    assert_eq!(reader.text("ir").as_deref(), Some("day"));
+    assert_eq!(
+        feed.try_recv(),
+        Ok(shared::Event::Changed {
+            slot: ir.spec.slot,
+            value: 1
+        })
+    );
+    // A rejected cross-field change reaches neither the snapshot nor the reader.
+    assert!(s.set("ir_to_day", "2400", secs(0)).is_err());
+    assert_eq!(reader.value("ir_to_day"), Some(1900));
+    assert_eq!(s.settings().get("ir_to_day"), Some(1900));
 }

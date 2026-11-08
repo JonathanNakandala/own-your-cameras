@@ -1,5 +1,6 @@
 pub mod board;
 mod capture;
+mod catalog;
 mod config;
 pub mod graph_settings;
 pub mod h264;

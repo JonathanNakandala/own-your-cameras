@@ -1,4 +1,4 @@
-//! Board I/O: vendor stop, strike relay, LEDs, IR, image controls, encoder settings.
+//! Board I/O: vendor stop, strike relay, LEDs, IR, encoder settings.
 use super::Device;
 use super::ffi::*;
 use std::thread;
@@ -10,17 +10,6 @@ const ALARM_OUTPUTS: u32 = 0x4004_4203;
 const IR_DUTY: u32 = 0x4001_4e00;
 /// `/dev/DDM/led`: 20-byte request {selector u8, pad, function u32, on u32, …}.
 const LED_SET: u32 = 0x4014_4c01;
-pub const ISP_NAMES: [&str; 9] = [
-    "brightness",
-    "contrast",
-    "saturation",
-    "sharpness",
-    "denoise",
-    "defog_on",
-    "defog",
-    "antiflicker",
-    "awb",
-];
 /// Strike relay = COM1 = bit 0 of the alarm output mask.
 pub const STRIKE: u32 = 1;
 
@@ -152,24 +141,6 @@ pub fn set_ir(g: &Device, duty: u8) -> i32 {
     let rc = ioctl_buf(g.ir_fd, IR_DUTY, &mut d);
     g.st.lock().unwrap().ir_duty = d[0];
     g.log(format!("ir: duty {}% rc {rc}", d[0]));
-    rc
-}
-
-/// Colour by day, monochrome by night (the AE readings decide).
-pub fn apply_color(g: &Device) {
-    let night = g.st.lock().unwrap().night;
-    // SAFETY: plain value call into the stock ISP context owned by the bridge.
-    let rc = unsafe { gm_saturation(if night { 0 } else { 50 }) };
-    g.log(format!(
-        "image: {} rc {rc}",
-        if night { "monochrome" } else { "colour" }
-    ));
-}
-
-pub fn set_isp(g: &Device, kind: usize, value: i32) -> i32 {
-    // SAFETY: bridge validates kind and the live ISP context.
-    let rc = unsafe { gm_isp(kind as i32, value) };
-    g.log(format!("image: {} = {value} rc {rc}", ISP_NAMES[kind]));
     rc
 }
 

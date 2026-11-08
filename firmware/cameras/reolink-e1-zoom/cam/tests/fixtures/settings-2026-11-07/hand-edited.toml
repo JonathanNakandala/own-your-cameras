@@ -1,0 +1,4 @@
+mic_volume = 55
+aec = true
+main_resolution = "2592x1944"
+future_key = 3

@@ -98,7 +98,9 @@ pub fn capture_loop(g: Arc<Device>, hub: Arc<AudioHub>) {
     }
 }
 
-/// Loads every `<name>.pcm` (raw s16le mono at `WANTED_RATE`) from the clips directory, decimated
+/// Loads every `<name>.pcmd` (lossless residuals, as the installer ships them, see `clip`) or `<name>.pcm`
+/// (raw s16le mono)
+/// at `WANTED_RATE` from the clips directory, decimated
 /// when the codec ended up at 8 kHz.
 pub fn load_clips(g: &Device, dir: &std::path::Path) -> HashMap<String, Arc<Vec<i16>>> {
     let mut out = HashMap::new();
@@ -111,17 +113,23 @@ pub fn load_clips(g: &Device, dir: &std::path::Path) -> HashMap<String, Arc<Vec<
         let Some(name) = path.file_stem().and_then(|s| s.to_str()) else {
             continue;
         };
-        if path.extension().and_then(|e| e.to_str()) != Some("pcm") {
-            continue;
-        }
+        let residual = match path.extension().and_then(|e| e.to_str()) {
+            Some("pcmd") => true,
+            Some("pcm") => false,
+            _ => continue,
+        };
         let Ok(bytes) = std::fs::read(&path) else {
             continue;
         };
-        let samples: Vec<i16> = bytes
-            .chunks_exact(2)
-            .map(|c| i16::from_le_bytes([c[0], c[1]]))
-            .take(MAX_CLIP_SAMPLES)
-            .collect();
+        let samples: Vec<i16> = if residual {
+            ds_kd8003_ime1_cam::clip::decode(&bytes, MAX_CLIP_SAMPLES)
+        } else {
+            bytes
+                .chunks_exact(2)
+                .map(|c| i16::from_le_bytes([c[0], c[1]]))
+                .take(MAX_CLIP_SAMPLES)
+                .collect()
+        };
         if samples.is_empty() {
             continue;
         }

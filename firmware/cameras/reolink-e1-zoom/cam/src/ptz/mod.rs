@@ -261,7 +261,7 @@ impl<B: Bus> Ptz<B> {
         self.stop_owner.as_ref().map(|o| o.path().to_owned())
     }
 
-    pub fn motion_epoch(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicU64>> {
+    pub fn motion_epoch(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicU32>> {
         self.stop_owner
             .as_ref()
             .map(crate::control_stop::Owner::epoch)

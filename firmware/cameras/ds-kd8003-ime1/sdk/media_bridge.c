@@ -14,6 +14,16 @@ extern long read(int,void *,usize),write(int,const void *,usize);
 extern void *memset(void *,int,usize),*memcpy(void *,const void *,usize);
 extern int *__errno_location(void);
 extern int pthread_create(unsigned long *,const void *,void *(*)(void *),void *),pthread_join(unsigned long,void **);
+/* ARMv5 has no exclusive loads/stores: the kernel's cmpxchg helper (CONFIG_KUSER_HELPERS) makes the
+ * two bridge locks. Single core, so a compiler barrier orders the release. Waiters sleep 1 ms. */
+typedef int(*kuser_cmpxchg_t)(unsigned,unsigned,volatile unsigned *);
+#define KUSER_CMPXCHG ((kuser_cmpxchg_t)0xffff0fc0)
+static void lock(volatile unsigned *m){while(KUSER_CMPXCHG(0,1,m))usleep(1000);__asm__ volatile("":::"memory");}
+static void unlock(volatile unsigned *m){__asm__ volatile("":::"memory");*m=0;}
+/* isp_mx: the stock ISP context (key set/get, saturation, the ISP stop). vpss_mx: the VPSS group
+ * as the ISP threads' hooks see it, against its teardown. Never held together by one caller, except
+ * isp_mx then vpss_mx when a key call runs a hook synchronously. */
+static volatile unsigned isp_mx,vpss_mx;static int vpss_live;
 struct legacy_pool {unsigned block_bytes,block_count;unsigned char name[16];};
 struct legacy_vb {unsigned max_pool_count;struct legacy_pool pools[16];};
 struct profile {unsigned magic,version,bytes,alignment;v3_vi_dev vi;v3_vi_chn vi_channel;v3_vpss_grp vpss;v3_vpss_chn vpss_channel;v3_vpss_mode vpss_mode;v3_venc_chn encoder;struct legacy_vb vb;v3_isp_dev isp;v3_snr_dev receiver;};
@@ -162,6 +172,7 @@ static const struct profile qualified_profile={
     .receiver.lvds.syncCode[63] = 5u,
 };
 _Static_assert(sizeof(v3_venc_pack)==136&&sizeof(v3_venc_strm)==376,"VENC lease ABI");
+_Static_assert(sizeof(v3_venc_chn)==0x58,"VENC channel attributes: the 88 B of Create/SetChnAttr");
 struct aio_attr {unsigned rate,width,mode,sound,ex,frames,points,channels,clock;};
 struct audio_frame {unsigned width,sound;unsigned virt[2],phys[2];u64 timestamp;unsigned sequence,length,pool[2];};
 struct aec_frame {struct audio_frame reference;unsigned valid,bind;};
@@ -179,7 +190,10 @@ static struct {
  int(*isp_preinit)(int,int,int),(*isp_register_cb)(void *),(*isp_get_mem)(void *),(*isp_create)(void *,void *,int);
  int(*ai_get)(int,int,struct audio_frame *,struct aec_frame *,int),(*ai_release)(int,int,const struct audio_frame *,const struct aec_frame *);
  int(*ao_set)(int,const struct aio_attr *),(*ao_enable)(int),(*ao_chn_enable)(int,int),(*ao_send)(int,int,const struct audio_frame *,int),(*ao_disable)(int),(*ao_chn_disable)(int,int);
- int(*isp_fn[9])(void *,int);
+ /* Optional: resolved when present, so a missing one disables its feature instead of the media start. */
+ int(*isp_get_key)(void *,int,unsigned *);
+ int(*venc_set_attr)(int,const v3_venc_chn *),(*venc_idr)(int,int);
+ int(*vpss_set_nrs)(int,const void *),(*vpss_get_nrs)(int,void *),(*vpss_set_sharpen)(int,const void *),(*vpss_get_sharpen)(int,void *);
 } a;
 static struct profile p;
 static int vb,sys,vd,vc,sensor,isp,thread,group,started,channel,vi_link,venc,enc_link,receive,ai_dev,ai_chn;
@@ -189,6 +203,7 @@ static int write_all(int fd,const void *raw,usize size){const unsigned char *q=r
 void gm_message(const char *step,int rc){int e=rc?*__errno_location():0;char b[176];int n=snprintf(b,sizeof b,"\n{\"kind\":\"media-core\",\"step\":\"%s\",\"status\":%d,\"errno\":%d}\n",step,rc,e);if(n>0&&(usize)n<sizeof b)write_all(1,b,(usize)n);}
 static int load(const char *d){char q[192];snprintf(q,sizeof q,"%s/libnative_media_group.so",d);void *h=dlopen(q,2|256);if(!h)return -1;
 #define RESOLVE(field,name) do{(void)dlerror();*(void **)(&a.field)=dlsym(h,name);if(!a.field||dlerror())return -1;}while(0)
+#define OPTIONAL(field,name) do{(void)dlerror();*(void **)(&a.field)=dlsym(h,name);if(dlerror())a.field=0;gm_message("resolve_" name,a.field?0:-1);}while(0)
  RESOLVE(sys_exit,"HI_MPI_SYS_Exit");RESOLVE(sys_init,"HI_MPI_SYS_Init");RESOLVE(sys_set,"HI_MPI_SYS_SetConf");RESOLVE(vb_exit,"HI_MPI_VB_Exit");RESOLVE(vb_init,"HI_MPI_VB_Init");
  RESOLVE(vi_dev_set,"HI_MPI_VI_SetDevAttr");RESOLVE(vi_dev_enable,"HI_MPI_VI_EnableDev");RESOLVE(vi_dev_disable,"HI_MPI_VI_DisableDev");RESOLVE(vi_chn_set,"HI_MPI_VI_SetChnAttr");RESOLVE(vi_chn_enable,"HI_MPI_VI_EnableChn");RESOLVE(vi_chn_disable,"HI_MPI_VI_DisableChn");
  RESOLVE(isp_type,"ISP_Set_Sensor_Type");RESOLVE(sensor_register,"sensor_register_callback_ar0237");RESOLVE(sensor_unregister,"sensor_unregister_callback_ar0237");RESOLVE(isp_mem,"HI_MPI_ISP_MemInit");RESOLVE(isp_wdr,"HI_MPI_ISP_SetWDRMode");RESOLVE(isp_pub,"HI_MPI_ISP_SetPubAttr");RESOLVE(isp_init,"HI_MPI_ISP_Init");RESOLVE(isp_run,"HI_MPI_ISP_Run");RESOLVE(isp_exit,"HI_MPI_ISP_Exit");
@@ -197,19 +212,31 @@ static int load(const char *d){char q[192];snprintf(q,sizeof q,"%s/libnative_med
  *(void **)(&a.venc_getfd)=dlsym(h,"HI_MPI_VENC_GetFd"); /* optional: without it the caller polls */
  RESOLVE(capture_mode,"Capture_Mode");RESOLVE(isp_inner,"isplib_inner_param");RESOLVE(isp_saturation,"ISP_Set_Saturation");RESOLVE(isp_set_key,"ISP_SetKeyParam");RESOLVE(isp_preinit,"ISP_PreInit");RESOLVE(isp_register_cb,"ISP_Register_CallBackFunc");RESOLVE(isp_get_mem,"ISP_GetMemSize");RESOLVE(isp_create,"ISP_Create");
  RESOLVE(ao_set,"HI_MPI_AO_SetPubAttr");RESOLVE(ao_enable,"HI_MPI_AO_Enable");RESOLVE(ao_chn_enable,"HI_MPI_AO_EnableChn");RESOLVE(ao_send,"HI_MPI_AO_SendFrame");RESOLVE(ao_disable,"HI_MPI_AO_Disable");RESOLVE(ao_chn_disable,"HI_MPI_AO_DisableChn");
- RESOLVE(isp_fn[0],"ISP_Set_Brightness");RESOLVE(isp_fn[1],"ISP_Set_Contrast");RESOLVE(isp_fn[2],"ISP_Set_Saturation");RESOLVE(isp_fn[3],"ISP_Set_Sharpeness");RESOLVE(isp_fn[4],"ISP_Set_Spatial_Denoise_Strength");RESOLVE(isp_fn[5],"ISP_Set_Anti_Fog_En");RESOLVE(isp_fn[6],"ISP_Set_Anti_Fog_Strength");RESOLVE(isp_fn[7],"ISP_Set_Anti_Flicker_Mode");RESOLVE(isp_fn[8],"ISP_Set_Awb_Mode");
+ OPTIONAL(isp_get_key,"ISP_GetKeyParam");OPTIONAL(venc_set_attr,"HI_MPI_VENC_SetChnAttr");OPTIONAL(venc_idr,"HI_MPI_VENC_RequestIDR");
+ OPTIONAL(vpss_set_nrs,"HI_MPI_VPSS_SetGrpNRSParam");OPTIONAL(vpss_get_nrs,"HI_MPI_VPSS_GetGrpNRSParam");OPTIONAL(vpss_set_sharpen,"HI_MPI_VPSS_SetGrpSharpen");OPTIONAL(vpss_get_sharpen,"HI_MPI_VPSS_GetGrpSharpen");
  RESOLVE(sensor_read,"ISP_Sensor_Reg_Read");RESOLVE(sensor_write,"ISP_Sensor_Reg_Write");
  RESOLVE(ai_set,"HI_MPI_AI_SetPubAttr");RESOLVE(ai_enable,"HI_MPI_AI_Enable");RESOLVE(ai_disable,"HI_MPI_AI_Disable");RESOLVE(ai_chn_enable,"HI_MPI_AI_EnableChn");RESOLVE(ai_chn_disable,"HI_MPI_AI_DisableChn");RESOLVE(ai_get_param,"HI_MPI_AI_GetChnParam");RESOLVE(ai_set_param,"HI_MPI_AI_SetChnParam");RESOLVE(ai_get,"HI_MPI_AI_GetFrame");RESOLVE(ai_release,"HI_MPI_AI_ReleaseFrame");
  return 0;
 }
 /* Stock HAL hooks handed to ISP_Register_CallBackFunc (libhisdk Isp_drvCreateLib layout:
  * [2]Set3dDenoise [3]Get3dDenoise [6]SetSharpen [7]GetSharpen [8]SemPend [9]SemPost, all (dev,ptr)).
- * NR/sharpen values are kept locally (no VPSS write in this trial); SemPend/SemPost return 0 like stock. */
-static unsigned char nr_store[64],sharpen_store[192];static unsigned hook_calls;
-static int set_nr(int dev,const void *q){(void)dev;if(!q)return -1;memcpy(nr_store,q,64);hook_calls++;return 0;}
-static int get_nr(int dev,void *q){(void)dev;if(!q)return -1;memcpy(q,nr_store,64);hook_calls++;return 0;}
-static int set_sharpen(int dev,const void *q){(void)dev;if(!q)return -1;memcpy(sharpen_store,q,192);hook_calls++;return 0;}
-static int get_sharpen(int dev,void *q){(void)dev;if(!q)return -1;memcpy(q,sharpen_store,192);hook_calls++;return 0;}
+ * As libhisdk does: dev is ignored, VPSS group 0, the whole struct straight to the MPI, no
+ * read-modify-write. 3D NR: HI_MPI_VPSS_{Set,Get}GrpNRSParam, 64 B, same ioctl in both MPIs.
+ * Sharpen: HI_MPI_VPSS_{Set,Get}GrpSharpen; the loaded libmpi's request carries 240 B where the
+ * stock driver takes 192 B, so the 192-B struct travels in a 240-B buffer and libloader_compat
+ * rewrites the request number. Until the MPI is there (or VPSS is up), values are kept locally.
+ * SemPend/SemPost return 0 like stock. */
+static unsigned char nr_store[64],sharpen_store[192];static unsigned hook_calls;static int nr_rc=-1,sharpen_rc=-1,nr_have,sharpen_have;
+static int set_nr(int dev,const void *q){(void)dev;if(!q)return -1;lock(&vpss_mx);memcpy(nr_store,q,64);nr_have=1;hook_calls++;int r=0;
+ if(vpss_live&&a.vpss_set_nrs){unsigned char b[64];memcpy(b,q,64);r=nr_rc=a.vpss_set_nrs(0,b);}unlock(&vpss_mx);return r;}
+static int get_nr(int dev,void *q){(void)dev;if(!q)return -1;lock(&vpss_mx);hook_calls++;int r=-1;
+ if(vpss_live&&a.vpss_get_nrs){unsigned char b[64];r=a.vpss_get_nrs(0,b);if(!r)memcpy(q,b,64);}if(r)memcpy(q,nr_store,64);unlock(&vpss_mx);return 0;}
+static int set_sharpen(int dev,const void *q){(void)dev;if(!q)return -1;lock(&vpss_mx);memcpy(sharpen_store,q,192);sharpen_have=1;hook_calls++;int r=0;
+ if(vpss_live&&a.vpss_set_sharpen){unsigned char b[240];memset(b,0,sizeof b);memcpy(b,q,192);r=sharpen_rc=a.vpss_set_sharpen(0,b);}unlock(&vpss_mx);return r;}
+static int get_sharpen(int dev,void *q){(void)dev;if(!q)return -1;lock(&vpss_mx);hook_calls++;int r=-1;
+ if(vpss_live&&a.vpss_get_sharpen){unsigned char b[240];memset(b,0,sizeof b);r=a.vpss_get_sharpen(0,b);if(!r)memcpy(q,b,192);}if(r)memcpy(q,sharpen_store,192);unlock(&vpss_mx);return 0;}
+/* The ISP sets NR/sharpen while it starts, before the VPSS group exists: hand those values over once it does. */
+static void vpss_replay(void){unsigned char t[192];if(nr_have){memcpy(t,nr_store,64);set_nr(0,t);}if(sharpen_have){memcpy(t,sharpen_store,192);set_sharpen(0,t);}gm_message("vpss_hooks_replay",(nr_have&&nr_rc)||(sharpen_have&&sharpen_rc));}
 static int sem_noop(int dev){(void)dev;return 0;}
 extern void *memalign(usize,usize);
 /* Isp_drvInitModule/CreateLib block: {type,mem,size,dev,width,height,0,...}; ISP_Create(devs,&handle,0). */
@@ -247,7 +274,7 @@ int gm_start(const char *dir){
  unsigned dev=0;status=ioctl(fd,0x40046d07UL,&dev);if(!status)status=ioctl(fd,0x40046d05UL,&dev);if(!status)status=ioctl(fd,0x40bc6d01UL,&p.receiver);if(!status)usleep(10000);if(!status)status=ioctl(fd,0x40046d08UL,&dev);if(!status)status=ioctl(fd,0x40046d06UL,&dev);closed=close(fd);gm_message("receiver_config",status?status:closed);if(status||closed)return -1;
  STEP("vi_device_config",a.vi_dev_set(0,&p.vi));STEP("vi_device_enable",a.vi_dev_enable(0));vd=1;STEP("vi_channel_config",a.vi_chn_set(0,&p.vi_channel));STEP("vi_channel_enable",a.vi_chn_enable(0));vc=1;
  STEP("sensor_type",a.isp_type(7));if(stock_isp_start())return -1;
- STEP("vpss_create",a.vpss_create(0,&p.vpss));group=1;STEP("vpss_start",a.vpss_start(0));started=1;STEP("vpss_channel_config",a.vpss_set(0,0,&p.vpss_channel));STEP("vpss_channel_mode",a.vpss_mode(0,0,&p.vpss_mode));STEP("vpss_channel_enable",a.vpss_enable(0,0));channel=1;
+ STEP("vpss_create",a.vpss_create(0,&p.vpss));group=1;STEP("vpss_start",a.vpss_start(0));started=1;lock(&vpss_mx);vpss_live=1;unlock(&vpss_mx);vpss_replay();STEP("vpss_channel_config",a.vpss_set(0,0,&p.vpss_channel));STEP("vpss_channel_mode",a.vpss_mode(0,0,&p.vpss_mode));STEP("vpss_channel_enable",a.vpss_enable(0,0));channel=1;
  STEP("vi_bind",a.bind(&source_vi,&dest_vpss));vi_link=1;STEP("venc_create",a.venc_create(0,&p.encoder));venc=1;STEP("encoder_bind",a.bind(&source_vpss,&dest_venc));enc_link=1;STEP("encoder_receive",a.venc_start(0));receive=1;
  struct aio_attr ai={8000,1,0,0,0,4,320,1,0};
  STEP("ai_attr",a.ai_set(0,&ai));STEP("ai_enable",a.ai_enable(0));ai_dev=1;STEP("ai_chn_enable",a.ai_chn_enable(0,0));ai_chn=1;
@@ -310,15 +337,18 @@ int gm_stop(void){
 #define CLEAN(flag,label,call) do{if(flag){int s_=(call);flag=0;if(s_){gm_message(label,s_);gm_message("teardown_reset_required",1);return -1;}}}while(0)
  CLEAN(ai_chn,"ai_chn_disable",a.ai_chn_disable(0,0));CLEAN(ai_dev,"ai_disable",a.ai_disable(0));
  CLEAN(jpeg_link,"jpeg_unbind",a.unbind(&jpeg_src,&jpeg_dst));CLEAN(jpeg_venc,"jpeg_destroy",a.venc_destroy(2));
- CLEAN(receive,"venc_stop",a.venc_stop(0));CLEAN(enc_link,"encoder_unbind",a.unbind(&source_vpss,&dest_venc));CLEAN(venc,"venc_destroy",a.venc_destroy(0));CLEAN(channel,"vpss_disable",a.vpss_disable(0,0));CLEAN(vi_link,"vi_unbind",a.unbind(&source_vi,&dest_vpss));CLEAN(started,"vpss_stop",a.vpss_stop(0));CLEAN(group,"vpss_destroy",a.vpss_destroy(0));
+ CLEAN(receive,"venc_stop",a.venc_stop(0));CLEAN(enc_link,"encoder_unbind",a.unbind(&source_vpss,&dest_venc));CLEAN(venc,"venc_destroy",a.venc_destroy(0));lock(&vpss_mx);vpss_live=0;unlock(&vpss_mx); /* no hook reaches the group from here on */
+ CLEAN(channel,"vpss_disable",a.vpss_disable(0,0));CLEAN(vi_link,"vi_unbind",a.unbind(&source_vi,&dest_vpss));CLEAN(started,"vpss_stop",a.vpss_stop(0));CLEAN(group,"vpss_destroy",a.vpss_destroy(0));
  /* Stock ISP threads (ISP_Create) have no qualified stop here: leave VI/SYS/VB for the reboot. */
  /* Stock ISP stop: ISP_SetKeyParam key 1 value 0 -> isp_stop (HI_MPI_ISP_Exit + cancel its two threads),
   * then the remaining VI/SYS/VB teardown. Sensor unregister/isp_exit/join belong to the low-level path only. */
  if(stock_isp){
-  char b[96];snprintf(b,sizeof b,"\n{\"kind\":\"media-core\",\"isp_hook_calls\":%u}\n",hook_calls);write_all(1,b,__builtin_strlen(b));
-  unsigned off=0;int st=(a.isp_inner&&*a.isp_inner)?a.isp_set_key(*a.isp_inner,1,&off):-1;gm_message("isp_stop",st);
-  if(st){gm_message("teardown_reset_required",1);return -1;}
-  stock_isp=0;usleep(100000);
+  char b[128];snprintf(b,sizeof b,"\n{\"kind\":\"media-core\",\"isp_hook_calls\":%u,\"nr_rc\":%d,\"sharpen_rc\":%d}\n",hook_calls,nr_rc,sharpen_rc);write_all(1,b,__builtin_strlen(b));
+  lock(&isp_mx);unsigned off=0;int st=(a.isp_inner&&*a.isp_inner)?a.isp_set_key(*a.isp_inner,1,&off):-1;if(!st)stock_isp=0;unlock(&isp_mx);
+  gm_message("isp_stop",st);if(st){gm_message("teardown_reset_required",1);return -1;}
+  usleep(100000);
+  /* The stop cancels the ISP threads; one cancelled inside a hook would leave vpss_mx taken. */
+  unlock(&vpss_mx);
  }CLEAN(isp,"isp_exit",a.isp_exit(0));CLEAN(thread,"isp_join",pthread_join(tid,0));CLEAN(sensor,"sensor_unregister",a.sensor_unregister(0));CLEAN(vc,"vi_chn_disable",a.vi_chn_disable(0));CLEAN(vd,"vi_dev_disable",a.vi_dev_disable(0));CLEAN(sys,"sys_exit",a.sys_exit());CLEAN(vb,"vb_exit",a.vb_exit());
  gm_message("teardown_complete",0);return 0;
 }
@@ -343,8 +373,9 @@ int gm_exposure(unsigned preset){
 
 /* Colour/B&W through the stock ISP context (isplib_inner_param set by ISP_Create); 0 = monochrome. */
 int gm_saturation(int level){
- if(!stock_isp||!a.isp_inner||!*a.isp_inner){gm_message("saturation_no_isp",-1);return -1;}
- int r=a.isp_saturation(*a.isp_inner,level);char b[96];snprintf(b,sizeof b,"\n{\"kind\":\"media-core\",\"saturation\":%d,\"status\":%d}\n",level,r);write_all(1,b,__builtin_strlen(b));return r;
+ lock(&isp_mx);int r=(stock_isp&&a.isp_inner&&*a.isp_inner)?a.isp_saturation(*a.isp_inner,level):-200;unlock(&isp_mx);
+ if(r==-200){gm_message("saturation_no_isp",-1);return -1;}
+ char b[96];snprintf(b,sizeof b,"\n{\"kind\":\"media-core\",\"saturation\":%d,\"status\":%d}\n",level,r);write_all(1,b,__builtin_strlen(b));return r;
 }
 
 /* Read-only AE state from the sensor (same registers as ar0237_set_ae_reg's table). */
@@ -396,10 +427,27 @@ int gm_audio_rate(unsigned rate){
 int gm_codec_set(int which,int db){
  int fd=acodec();if(fd<0)return -1;int v=db;int r=ioctl(fd,which?0xc0044102UL:0xc0044101UL,&v);int c=0;return r?r:c;
 }
-/* Stock ISP image setters on the live stock ISP context; all take (ctx,int). */
-int gm_isp(int kind,int value){
- if(kind<0||kind>8||!stock_isp||!a.isp_inner||!*a.isp_inner)return -100;
- int r=a.isp_fn[kind](*a.isp_inner,value);char b[96];snprintf(b,sizeof b,"\n{\"kind\":\"media-core\",\"isp\":%d,\"value\":%d,\"status\":%d}\n",kind,value,r);write_all(1,b,__builtin_strlen(b));return r;
+/* The vendor image interface: ISP_SetKeyParam / ISP_GetKeyParam on the live stock ISP context, the
+ * values hicore sends through SendCmdToDsp. Unknown key 0x40000003, out of range 0x40000004. Key 1
+ * stops the ISP (gm_stop's path only) and is refused here. */
+static void *isp_ctx(void){return (stock_isp&&a.isp_inner)?*a.isp_inner:0;}
+int gm_isp_key(int key,unsigned value){
+ if(key<=1)return -101;
+ lock(&isp_mx);void *ctx=isp_ctx();unsigned v[4]={value,0,0,0};int r=ctx?a.isp_set_key(ctx,key,v):-100;unlock(&isp_mx);if(!ctx)return -100;
+ char b[112];snprintf(b,sizeof b,"\n{\"kind\":\"media-core\",\"isp_key\":%d,\"value\":%u,\"status\":%d}\n",key,value,r);write_all(1,b,__builtin_strlen(b));return r;
+}
+/* First word of the key's value; the buffer has room for multi-word keys (RGB gains, BLC region).
+ * Some getters return 0 without writing (key 42 only prints its value): a word that keeps its fill
+ * under two different fills is reported as -102, never as a reading; a real 0xa5a5a5a5 survives the
+ * second read. */
+static unsigned isp_word[256]; /* 1 KiB: getter sizes are unverified; isp_mx serializes it */
+static int isp_get_filled(void *ctx,int key,int fill,unsigned *word){
+ memset(isp_word,fill,sizeof isp_word);int r=a.isp_get_key(ctx,key,isp_word);*word=isp_word[0];return r;}
+int gm_isp_get(int key,unsigned *value){
+ if(key<=1)return -101;
+ lock(&isp_mx);void *ctx=isp_ctx();unsigned w=0;int r=(!ctx||!a.isp_get_key)?-100:isp_get_filled(ctx,key,0xa5,&w);
+ if(!r&&w==0xa5a5a5a5u){r=isp_get_filled(ctx,key,0x5a,&w);if(!r&&w==0x5a5a5a5au)r=-102;}
+ unlock(&isp_mx);if(!r)*value=w;return r;
 }
 int gm_amp(int on){
  int fd=open("/dev/DDM/sound",2|ARM_SAFE_READ);if(fd<0)return -1;
@@ -414,6 +462,7 @@ int gm_codec_volume(int *in,int *out){
  * size/fps/bitrate/gop/rate mode; VPSS chn of the same index is (re)sized when needed.
  * Caller must hold its video lock for chn (no concurrent gm_video_chn on that channel). */
 static v3_venc_chn cur_enc[2];static int enc_live[2]={0,0},vchn_live[2]={0,0};static unsigned cur_w[2],cur_h[2];
+static void rate_into(v3_venc_chn *e,unsigned fps,unsigned kbps,unsigned gop,int vbr);
 static int src_chn[2]={0,1};static unsigned vpss_w[3],vpss_h[3];
 static int venc_up(int c,v3_venc_chn *e){
  v3_sys_bind vs={V3_SYS_MOD_VPSS,0,src_chn[c]},ve={V3_SYS_MOD_VENC,0,c};
@@ -423,7 +472,7 @@ static int venc_up(int c,v3_venc_chn *e){
  cur_enc[c]=*e;enc_live[c]=1;if(c==0){receive=enc_link=venc=1;}return 0;
 }
 int gm_stream_set(int c,unsigned w,unsigned h,unsigned fps,unsigned kbps,unsigned gop,int vbr,unsigned profile){
- if(c<0||c>1||w<160||h<120||w>1920||h>1080||(w&15)||(h&7)||fps<1||fps>30||kbps<32||kbps>16384||gop<1||gop>300||profile>2)return -100;
+ if(c<0||c>1||w<160||h<120||w>1920||h>1080||(w&15)||(h&7)||fps<1||fps>30||kbps<32||kbps>16384||gop<1||gop>400||profile>2)return -100;
  if(c==0&&!enc_live[0]){enc_live[0]=receive&&enc_link&&venc;vchn_live[0]=channel;cur_enc[0]=p.encoder;cur_w[0]=1920;cur_h[0]=1080;}
  v3_sys_bind vs={V3_SYS_MOD_VPSS,0,src_chn[c]},ve={V3_SYS_MOD_VENC,0,c};
  int had=enc_live[c];v3_venc_chn prev=cur_enc[c];unsigned pw=cur_w[c],ph=cur_h[c];int psrc=src_chn[c];
@@ -440,9 +489,7 @@ int gm_stream_set(int c,unsigned w,unsigned h,unsigned fps,unsigned kbps,unsigne
  v3_venc_chn e=p.encoder;e.attrib.codec=V3_VENC_CODEC_H264;
  e.attrib.h264.maxPic.width=e.attrib.h264.pic.width=w;e.attrib.h264.maxPic.height=e.attrib.h264.pic.height=h;
  e.attrib.h264.bufSize=w*h;e.attrib.h264.profile=profile;
- unsigned stat=10;
- if(vbr){e.rate.mode=V3_VENC_RATEMODE_H264VBR;memset(&e.rate.h264Vbr,0,sizeof e.rate.h264Vbr);e.rate.h264Vbr.gop=gop;e.rate.h264Vbr.statTime=stat;e.rate.h264Vbr.srcFps=30;e.rate.h264Vbr.dstFps=fps;e.rate.h264Vbr.maxBitrate=kbps;e.rate.h264Vbr.maxQual=50;e.rate.h264Vbr.minQual=10;e.rate.h264Vbr.minIQual=10;}
- else{e.rate.mode=V3_VENC_RATEMODE_H264CBR;memset(&e.rate.h264Cbr,0,sizeof e.rate.h264Cbr);e.rate.h264Cbr.gop=gop;e.rate.h264Cbr.statTime=stat;e.rate.h264Cbr.srcFps=30;e.rate.h264Cbr.dstFps=fps;e.rate.h264Cbr.bitrate=kbps;e.rate.h264Cbr.avgLvl=1;}
+ rate_into(&e,fps,kbps,gop,vbr);
  int rc=venc_up(c,&e);if(!rc)return 0;
  /* Fallback: bring back the previous working encoder (and its VPSS size) so recording never stays off. */
  if(had){
@@ -450,6 +497,28 @@ int gm_stream_set(int c,unsigned w,unsigned h,unsigned fps,unsigned kbps,unsigne
   int r2=venc_up(c,&prev);gm_message("stream_fallback",r2);if(!r2)return rc-1000;
  }
  return rc;
+}
+
+/* Live encoder change as the vendor does it: HI_MPI_VENC_SetChnAttr with new frame rate, bitrate, GOP
+ * and rate control on the channel's current attributes, then an IDR so viewers resync at once. Size
+ * and profile need gm_stream_set. Caller holds the channel's video lock. On failure the channel keeps
+ * its previous attributes (the SDK applies all or nothing). */
+static void rate_into(v3_venc_chn *e,unsigned fps,unsigned kbps,unsigned gop,int vbr){
+ unsigned stat=10;
+ if(vbr){e->rate.mode=V3_VENC_RATEMODE_H264VBR;memset(&e->rate.h264Vbr,0,sizeof e->rate.h264Vbr);e->rate.h264Vbr.gop=gop;e->rate.h264Vbr.statTime=stat;e->rate.h264Vbr.srcFps=30;e->rate.h264Vbr.dstFps=fps;e->rate.h264Vbr.maxBitrate=kbps;e->rate.h264Vbr.maxQual=50;e->rate.h264Vbr.minQual=10;e->rate.h264Vbr.minIQual=10;}
+ else{e->rate.mode=V3_VENC_RATEMODE_H264CBR;memset(&e->rate.h264Cbr,0,sizeof e->rate.h264Cbr);e->rate.h264Cbr.gop=gop;e->rate.h264Cbr.statTime=stat;e->rate.h264Cbr.srcFps=30;e->rate.h264Cbr.dstFps=fps;e->rate.h264Cbr.bitrate=kbps;e->rate.h264Cbr.avgLvl=1;}
+}
+int gm_stream_attr(int c,unsigned fps,unsigned kbps,unsigned gop,int vbr){
+ if(c<0||c>1||fps<1||fps>30||kbps<32||kbps>16384||gop<1||gop>400)return -100;
+ if(!a.venc_set_attr)return -120;
+ if(c==0&&!enc_live[0]&&receive){enc_live[0]=1;cur_enc[0]=p.encoder;cur_w[0]=1920;cur_h[0]=1080;}
+ if(!enc_live[c])return -121;
+ v3_venc_chn e=cur_enc[c];rate_into(&e,fps,kbps,gop,vbr);
+ int r=a.venc_set_attr(c,&e);gm_message("stream_set_attr",r);if(r)return r;
+ cur_enc[c]=e;
+ /* Second argument: instant on SDKs that take it; ignored (r1) where RequestIDR takes the channel only. */
+ if(a.venc_idr){int i=a.venc_idr(c,1);gm_message("stream_idr",i);}
+ return 0;
 }
 
 /* Report the live encoder: w,h,fps,kbps,gop,mode(1 CBR,2 VBR),profile; returns -1 when the channel is off. */

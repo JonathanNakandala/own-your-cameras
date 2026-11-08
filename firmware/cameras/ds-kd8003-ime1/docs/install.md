@@ -38,7 +38,7 @@ compressed on its own in the `lzma` (LZMA-alone) format.
 | `start.sh` | the boot supervisor, from `firmware/start.sh` |
 | `native/ds-kd8003-ime1-cam.lzma`, `libloader_compat.so.lzma`, `libnative_compat.so.lzma`, `libnative_media_group.so.lzma` | [this build](build.md) |
 | `native/libmpi.so.lzma`, `libVoiceEngine.so.lzma`, `libdnvqe.so.lzma`, `libupvqe.so.lzma` | HiSilicon Hi3516CV300 MPP V1 user-space libraries matching the panel's drivers (the stock application links them statically); release bundles carry them in `third-party/`, from OpenIPC at a pinned commit |
-| `native/clips.tar.lzma` | the [clips](configuration.md#clips); the installer adds a chime as `door_opened.pcm` unless you supply your own |
+| `native/clips.tar.lzma` | the [clips](configuration.md#clips) as `<name>.pcmd`; the installer adds a chime as `door_opened.pcmd` unless you supply your own `door_opened.pcm` |
 | `native/dropbearmulti.lzma` | the [key-only SSH server](build.md#maintenance-ssh) |
 | `cam.conf`, `pins.conf` | [configuration](configuration.md) |
 | `keypad.key` | 16 bytes: the bootstrap key the stock application uses with the keypad module, read from the stock `hicore` at a fixed offset of the pinned build and checked by hash. Without it the keypad session cannot start; video and MQTT still run |
@@ -59,7 +59,7 @@ SH
 ```
 
 Expected in `supervisor.log`: `supervisor start`, `dropbear started`, `network <address> via <gateway>`,
-`start ds-kd8003-ime1-cam (boot 1)`; in `cam.log`: `start, N PINs, open 5 s`, `rtsp: serving on 554`,
+`start ds-kd8003-ime1-cam (boot 1)`; in `cam.log`: `start, N PINs, open 5 s, settings …/settings.json` (`(first run)` on the first start), `rtsp: serving on 554`,
 `running`, `mqtt: connected`, `keypad: ready` and, after two minutes of streaming,
 `health: boot marked good`. `native.ok` exists from then on.
 

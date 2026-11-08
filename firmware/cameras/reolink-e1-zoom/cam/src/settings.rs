@@ -4,6 +4,10 @@
 //! [`specs`] is the only list of keys. File parsing, MQTT payload validation, Home Assistant discovery
 //! and the `docs/settings.md` table all derive from it. A bad file or field never fails startup: it
 //! falls back to the field's default and is reported as a [`Problem`].
+//!
+//! The values in force and their file are the shared `camera_transport::settings::Values` with the
+//! TOML codec: every value is an `i32` (a switch 0/1, a select its option index). The apply groups,
+//! the stock first-run defaults and the rules between fields stay here.
 
 use std::collections::BTreeMap;
 use std::io;
@@ -12,35 +16,15 @@ use std::time::Duration;
 
 use crate::pipeline::{MAIN_MAX_BITRATE, MAIN_SIZES, MainStream};
 use crate::ptz::{self, Profile};
+use camera_transport::settings::{self as shared, TomlCodec, Values};
+pub use camera_transport::settings::{Kind, Problem, Rejected, SAVE_WITHIN, Spec};
 use hdal::audio::{Aec, Anr, Tuning};
 
 /// Where the daemon keeps the settings.
 pub const PATH: &str = "/mnt/para/cam-settings.toml";
-/// A change is on disk at most this long after the first unsaved change, and writes are at least
-/// this far apart.
-pub const SAVE_WITHIN: Duration = Duration::from_secs(10);
-const MAX_FILE: u64 = 16 * 1024;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Value {
-    Int(i64),
-    Bool(bool),
-    /// Index into the select's options.
-    Choice(usize),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Kind {
-    Number {
-        min: i64,
-        max: i64,
-        unit: Option<&'static str>,
-        /// Slider in HA; a box otherwise.
-        slider: bool,
-    },
-    Switch,
-    Select(&'static [&'static str]),
-}
+const MAX_FILE: u64 = shared::MAX_FILE as u64;
+/// What the daemon writes first.
+const HEADER: &str = "# Written by cam; edits while it runs are overwritten.\n";
 
 /// Which owner applies a setting. The hardware thread re-applies the whole group on any change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,23 +105,34 @@ impl Section {
     }
 }
 
+/// One setting: the shared spec (its slot is its place in [`specs`]), who applies it, and the stock
+/// attribute that seeds its first-run value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Spec {
-    pub key: &'static str,
-    pub name: &'static str,
-    pub kind: Kind,
+pub struct Setting {
+    pub spec: Spec,
     pub group: Group,
-    /// First-run value, unless `stock` names the vendor config attribute that seeds it.
-    pub default: Value,
-    /// Attribute of `/mnt/para/0_isp.cfg`'s `<channel>` read once for the first-run default.
+    /// Attribute of `/mnt/para/0_isp.cfg`'s `<channel>` read once for the first-run default; the
+    /// spec's default otherwise.
     pub stock: Option<&'static str>,
-    pub icon: Option<&'static str>,
 }
 
-impl Spec {
+impl Setting {
+    pub const fn new(spec: Spec, group: Group) -> Self {
+        Self {
+            spec,
+            group,
+            stock: None,
+        }
+    }
+
     /// The Home Assistant section device this setting sits on; `None` is the camera device.
     pub fn section(&self) -> Option<Section> {
         Section::of(self.group)
+    }
+
+    /// Parses an MQTT payload: a whole number, `ON`/`OFF` or an option.
+    pub fn parse(&self, text: &str) -> Result<i32, String> {
+        self.spec.parse(text).map_err(|e| e.0)
     }
 }
 
@@ -145,36 +140,25 @@ const fn number(
     key: &'static str,
     name: &'static str,
     group: Group,
-    (min, max): (i64, i64),
+    range: (i32, i32),
     unit: Option<&'static str>,
-    default: i64,
-) -> Spec {
-    Spec {
-        key,
-        name,
-        kind: Kind::Number {
-            min,
-            max,
-            unit,
-            slider: true,
-        },
-        group,
-        default: Value::Int(default),
-        stock: None,
-        icon: None,
-    }
+    default: i32,
+) -> Setting {
+    Setting::new(Spec::number(0, key, name, range, unit, default), group)
 }
 
-const fn switch(key: &'static str, name: &'static str, group: Group, on: bool) -> Spec {
-    Spec {
-        key,
-        name,
-        kind: Kind::Switch,
-        group,
-        default: Value::Bool(on),
-        stock: None,
-        icon: None,
-    }
+const fn switch(key: &'static str, name: &'static str, group: Group, on: bool) -> Setting {
+    Setting::new(Spec::switch(0, key, name, on), group)
+}
+
+const fn select(
+    key: &'static str,
+    name: &'static str,
+    group: Group,
+    options: &'static [&'static str],
+    default: i32,
+) -> Setting {
+    Setting::new(Spec::select(0, key, name, options, default), group)
 }
 
 pub const IR_MODES: &[&str] = &["auto", "day", "night"];
@@ -184,16 +168,16 @@ pub const MAIN_RESOLUTIONS: &[&str] = &["2592x1944", "1920x1440", "1280x960"];
 pub const ZOOM_SPEED_OPTIONS: &[&str] = &["20", "40", "60", "80", "100"];
 
 /// ANR parameter ranges accepted by the driver (`docs/settings.md`, established on the camera).
-pub const ANR_SUPPRESS: (i64, i64) = (3, 35);
-pub const ANR_HPF: (i64, i64) = (0, 1000);
-pub const ANR_BIAS: (i64, i64) = (1, 9);
+pub const ANR_SUPPRESS: (i32, i32) = (3, 35);
+pub const ANR_HPF: (i32, i32) = (0, 1000);
+pub const ANR_BIAS: (i32, i32) = (1, 9);
 /// Main frame-rate range: the sensor delivers 30 fps.
-pub const MAIN_FPS: (i64, i64) = (5, 30);
+pub const MAIN_FPS: (i32, i32) = (5, 30);
 /// How far behind the head the dashboard picture runs: a tap is resolved against the pose this long before it
 /// arrived. Measured on the camera's go2rtc stream (`docs/hardware/position3d.md`).
-pub const TAP_DELAY_DEFAULT_MS: i64 = 500;
+pub const TAP_DELAY_DEFAULT_MS: i32 = 500;
 
-const BASE: &[Spec] = &[
+const BASE: &[Setting] = &[
     number(
         "mic_volume",
         "Mic volume",
@@ -274,11 +258,11 @@ const BASE: &[Spec] = &[
         None,
         9,
     ),
-    Spec {
+    Setting {
         stock: Some("mirror"),
         ..switch("mirror", "Mirror", Group::Orientation, false)
     },
-    Spec {
+    Setting {
         stock: Some("flip"),
         ..switch("flip", "Flip", Group::Orientation, false)
     },
@@ -307,29 +291,21 @@ const BASE: &[Spec] = &[
         4,
     ),
     switch("ir_leds_at_night", "IR LEDs at night", Group::Ir, true),
-    Spec {
-        key: "ir",
-        name: "IR mode",
-        kind: Kind::Select(IR_MODES),
-        group: Group::Ir,
-        default: Value::Choice(0),
-        stock: None,
-        icon: None,
-    },
+    select("ir", "IR mode", Group::Ir, IR_MODES, 0),
     switch("led", "Status LED", Group::Led, true),
     number(
         "ptz_speed",
         "Speed",
         Group::Motion,
-        (100, ptz::MAX_PPS as i64),
+        (100, ptz::MAX_PPS as i32),
         Some("pps"),
-        ptz::MAX_PPS as i64,
+        ptz::MAX_PPS as i32,
     ),
     number(
         "ptz_start_speed",
         "Start speed",
         Group::Motion,
-        (100, ptz::MAX_PPS as i64),
+        (100, ptz::MAX_PPS as i32),
         Some("pps"),
         300,
     ),
@@ -357,15 +333,13 @@ const BASE: &[Spec] = &[
         Some("ms"),
         TAP_DELAY_DEFAULT_MS,
     ),
-    Spec {
-        key: "zoom_speed",
-        name: "Zoom speed",
-        kind: Kind::Select(ZOOM_SPEED_OPTIONS),
-        group: Group::Lens,
-        default: Value::Choice(3),
-        stock: None,
-        icon: None,
-    },
+    select(
+        "zoom_speed",
+        "Zoom speed",
+        Group::Lens,
+        ZOOM_SPEED_OPTIONS,
+        3,
+    ),
     switch("autofocus", "Autofocus", Group::Autofocus, true),
     number(
         "af_watch_hold",
@@ -403,19 +377,17 @@ const BASE: &[Spec] = &[
         "main_bitrate",
         "Main bitrate",
         Group::MainStream,
-        (256, MAIN_MAX_BITRATE as i64 / 1000),
+        (256, MAIN_MAX_BITRATE as i32 / 1000),
         Some("kbps"),
         1024,
     ),
-    Spec {
-        key: "main_resolution",
-        name: "Main resolution",
-        kind: Kind::Select(MAIN_RESOLUTIONS),
-        group: Group::MainStream,
-        default: Value::Choice(1),
-        stock: None,
-        icon: None,
-    },
+    select(
+        "main_resolution",
+        "Main resolution",
+        Group::MainStream,
+        MAIN_RESOLUTIONS,
+        1,
+    ),
     number(
         "main_fps",
         "Main frame rate",
@@ -426,92 +398,41 @@ const BASE: &[Spec] = &[
     ),
 ];
 
-static SPECS: LazyLock<Vec<Spec>> = LazyLock::new(|| {
+static SETTINGS: LazyLock<Vec<Setting>> = LazyLock::new(|| {
     let mut all = BASE.to_vec();
-    all.extend(crate::isp_iq::ITEMS.iter().map(crate::isp_iq::Item::spec));
+    all.extend(
+        crate::isp_iq::ITEMS
+            .iter()
+            .map(crate::isp_iq::Item::setting),
+    );
+    for (slot, s) in all.iter_mut().enumerate() {
+        s.spec.slot = slot as u16;
+        if let Some(section) = s.section() {
+            s.spec = s.spec.section(section.slug());
+        }
+    }
     all
 });
 
-/// Every setting, in a fixed order.
-pub fn specs() -> &'static [Spec] {
-    &SPECS
+/// The shared specs of [`specs`], in the same order (what `Values` holds).
+static SPECS: LazyLock<Vec<Spec>> = LazyLock::new(|| SETTINGS.iter().map(|s| s.spec).collect());
+
+/// Every setting, in a fixed order; a setting's slot is its index.
+pub fn specs() -> &'static [Setting] {
+    &SETTINGS
 }
 
-pub fn spec(key: &str) -> Option<&'static Spec> {
-    specs().iter().find(|s| s.key == key)
+pub fn spec(key: &str) -> Option<&'static Setting> {
+    specs().iter().find(|s| s.spec.key == key)
 }
 
-impl Spec {
-    /// Parses an MQTT payload or a file value given as text.
-    pub fn parse(&self, text: &str) -> Result<Value, String> {
-        let text = text.trim();
-        match self.kind {
-            Kind::Number { min, max, .. } => {
-                let n: f64 = text
-                    .parse()
-                    .map_err(|_| format!("{}: not a number", self.key))?;
-                if n.fract() != 0.0 || !n.is_finite() {
-                    return Err(format!("{}: not a whole number", self.key));
-                }
-                self.check(Value::Int(n as i64))
-                    .map_err(|_| format!("{}: {text} outside {min}..={max}", self.key))
-            }
-            Kind::Switch => match text {
-                "ON" => Ok(Value::Bool(true)),
-                "OFF" => Ok(Value::Bool(false)),
-                _ => Err(format!("{}: expected ON or OFF", self.key)),
-            },
-            Kind::Select(options) => options
-                .iter()
-                .position(|o| *o == text)
-                .map(Value::Choice)
-                .ok_or_else(|| format!("{}: unknown option", self.key)),
-        }
-    }
-
-    fn check(&self, v: Value) -> Result<Value, ()> {
-        match (self.kind, v) {
-            (Kind::Number { min, max, .. }, Value::Int(n)) if (min..=max).contains(&n) => Ok(v),
-            (Kind::Switch, Value::Bool(_)) => Ok(v),
-            (Kind::Select(o), Value::Choice(i)) if i < o.len() => Ok(v),
-            _ => Err(()),
-        }
-    }
-
-    /// The MQTT state text of `v`.
-    pub fn render(&self, v: Value) -> String {
-        match (self.kind, v) {
-            (_, Value::Int(n)) => n.to_string(),
-            (_, Value::Bool(b)) => if b { "ON" } else { "OFF" }.into(),
-            (Kind::Select(o), Value::Choice(i)) => o.get(i).copied().unwrap_or_default().into(),
-            (_, Value::Choice(i)) => i.to_string(),
-        }
-    }
-
-    fn read_toml(&self, v: &toml::Value) -> Option<Value> {
-        let v = match (self.kind, v) {
-            (Kind::Number { .. }, toml::Value::Integer(n)) => Value::Int(*n),
-            (Kind::Switch, toml::Value::Boolean(b)) => Value::Bool(*b),
-            (Kind::Select(o), toml::Value::String(s)) => {
-                Value::Choice(o.iter().position(|x| x == s)?)
-            }
-            _ => return None,
-        };
-        self.check(v).ok()
-    }
-
-    fn write_toml(&self, v: Value) -> toml::Value {
-        match (self.kind, v) {
-            (_, Value::Int(n)) => toml::Value::Integer(n),
-            (_, Value::Bool(b)) => toml::Value::Boolean(b),
-            (_, Value::Choice(_)) => toml::Value::String(self.render(v)),
-        }
-    }
+fn index(key: &str) -> Option<usize> {
+    specs().iter().position(|s| s.spec.key == key)
 }
 
 /// First-run defaults that come from the vendor's own configuration.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct StockDefaults(BTreeMap<&'static str, Value>);
+pub struct StockDefaults(BTreeMap<&'static str, i32>);
 
 impl StockDefaults {
     /// Reads every `stock` attribute of the specs from `0_isp.cfg`'s single `<channel>`; an attribute
@@ -529,63 +450,54 @@ impl StockDefaults {
                 let (k, v) = a.split_once('=')?;
                 (k == name).then(|| v.trim_end_matches('/').trim_matches('"'))
             });
-            let value = match (s.kind, raw) {
-                (Kind::Switch, Some("0")) => Some(Value::Bool(false)),
-                (Kind::Switch, Some("1")) => Some(Value::Bool(true)),
-                (Kind::Number { .. }, Some(n)) => n
+            let value = match (s.spec.kind, raw) {
+                (Kind::Switch, Some("0")) => Some(0),
+                (Kind::Switch, Some("1")) => Some(1),
+                (Kind::Number { .. } | Kind::Select(_), Some(n)) => n
                     .parse()
                     .ok()
-                    .map(|n| crate::isp_iq::from_vendor(s.key, n))
-                    .and_then(|v| s.check(Value::Int(v)).ok()),
-                (Kind::Select(_), Some(n)) => n
-                    .parse()
-                    .ok()
-                    .map(|n| crate::isp_iq::from_vendor(s.key, n))
-                    .and_then(|v| s.check(Value::Choice(v.max(0) as usize)).ok()),
+                    .map(|n| crate::isp_iq::from_vendor(s.spec.key, n))
+                    .and_then(|v| i32::try_from(v).ok())
+                    .filter(|v| s.spec.valid(*v)),
                 _ => None,
             };
             if let Some(v) = value {
-                found.insert(s.key, v);
+                found.insert(s.spec.key, v);
             }
         }
         Self(found)
     }
 
-    fn default_of(&self, s: &Spec) -> Value {
-        self.0.get(s.key).copied().unwrap_or(s.default)
+    fn default_of(&self, s: &Setting) -> i32 {
+        self.0.get(s.spec.key).copied().unwrap_or(s.spec.default)
     }
 }
 
-/// The values in force, one per spec, each always valid.
+/// A snapshot of the values in force, one per spec, each always valid.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Settings(Vec<Value>);
+pub struct Settings(Vec<i32>);
 
 impl Settings {
     pub fn defaults(stock: &StockDefaults) -> Self {
         Self(specs().iter().map(|s| stock.default_of(s)).collect())
     }
 
-    pub fn get(&self, key: &str) -> Option<Value> {
-        let i = specs().iter().position(|s| s.key == key)?;
-        self.0.get(i).copied()
+    /// The `i32` value: a number, a switch 0/1, a select's option index.
+    pub fn get(&self, key: &str) -> Option<i32> {
+        self.0.get(index(key)?).copied()
     }
 
-    fn int(&self, key: &str) -> i64 {
-        match self.get(key) {
-            Some(Value::Int(n)) => n,
-            other => unreachable!("{key} is not a number: {other:?}"),
-        }
+    fn int(&self, key: &str) -> i32 {
+        self.get(key)
+            .unwrap_or_else(|| unreachable!("{key} is not a setting"))
     }
 
     fn on(&self, key: &str) -> bool {
-        matches!(self.get(key), Some(Value::Bool(true)))
+        self.get(key) == Some(1)
     }
 
     fn choice(&self, key: &str) -> usize {
-        match self.get(key) {
-            Some(Value::Choice(i)) => i,
-            other => unreachable!("{key} is not a select: {other:?}"),
-        }
+        self.int(key) as usize
     }
 
     /// Every setting with its MQTT state text.
@@ -593,7 +505,7 @@ impl Settings {
         specs()
             .iter()
             .zip(&self.0)
-            .map(|(s, v)| (s.key, s.render(*v)))
+            .map(|(s, v)| (s.spec.key, s.spec.render(*v)))
     }
 
     pub fn audio(&self) -> Tuning {
@@ -602,28 +514,28 @@ impl Settings {
             aec: Aec {
                 enabled: self.on("aec"),
                 leak_estimate: self.on("aec_leak_estimate"),
-                leak_value: self.int("aec_leak_value") as i32,
-                noise_level: self.int("aec_noise_level") as i32,
-                echo_level: self.int("aec_echo_level") as i32,
-                notch_radius: self.int("aec_notch_radius") as i32,
+                leak_value: self.int("aec_leak_value"),
+                noise_level: self.int("aec_noise_level"),
+                echo_level: self.int("aec_echo_level"),
+                notch_radius: self.int("aec_notch_radius"),
             },
             anr: Anr {
                 enabled: self.on("anr"),
-                suppress_level: self.int("anr_suppress_level") as i32,
-                hpf_cutoff: self.int("anr_hpf_cutoff") as i32,
-                bias_sensitive: self.int("anr_bias_sensitive") as i32,
+                suppress_level: self.int("anr_suppress_level"),
+                hpf_cutoff: self.int("anr_hpf_cutoff"),
+                bias_sensitive: self.int("anr_bias_sensitive"),
             },
             mic_volume: pct("mic_volume"),
             speaker_volume: pct("speaker_volume"),
         }
     }
 
-    /// Speed profile of absolute moves and holds, and how long a hold may run without a release.
     /// How long before a tap arrived the picture it was made on was shown.
     pub fn tap_delay(&self) -> Duration {
         Duration::from_millis(self.int("tap_delay") as u64)
     }
 
+    /// Speed profile of absolute moves and holds, and how long a hold may run without a release.
     pub fn motion(&self) -> (Profile, Duration) {
         let ms = |k| Duration::from_millis(self.int(k) as u64);
         (
@@ -686,9 +598,10 @@ impl Settings {
         }
     }
 
-    /// The item value of a picture control.
+    /// The item value of a picture control (a select's index is its value).
     pub fn picture(&self, key: &str) -> Option<i64> {
-        self.get(key).and_then(crate::isp_iq::item_value)
+        spec(key).filter(|s| !matches!(s.spec.kind, Kind::Switch))?;
+        self.get(key).map(i64::from)
     }
 
     /// These settings with the audio and main-stream fields replaced by what the media thread reports
@@ -697,41 +610,39 @@ impl Settings {
         let mut s = self.clone();
         if let Some(a) = audio {
             for (k, v) in [
-                ("mic_volume", Value::Int(a.mic_volume.into())),
-                ("speaker_volume", Value::Int(a.speaker_volume.into())),
-                ("aec", Value::Bool(a.aec.enabled)),
-                ("aec_noise_level", Value::Int(a.aec.noise_level.into())),
-                ("aec_echo_level", Value::Int(a.aec.echo_level.into())),
-                ("aec_notch_radius", Value::Int(a.aec.notch_radius.into())),
-                ("aec_leak_estimate", Value::Bool(a.aec.leak_estimate)),
-                ("aec_leak_value", Value::Int(a.aec.leak_value.into())),
-                ("anr", Value::Bool(a.anr.enabled)),
-                (
-                    "anr_suppress_level",
-                    Value::Int(a.anr.suppress_level.into()),
-                ),
-                ("anr_hpf_cutoff", Value::Int(a.anr.hpf_cutoff.into())),
-                (
-                    "anr_bias_sensitive",
-                    Value::Int(a.anr.bias_sensitive.into()),
-                ),
+                ("mic_volume", i32::from(a.mic_volume)),
+                ("speaker_volume", i32::from(a.speaker_volume)),
+                ("aec", i32::from(a.aec.enabled)),
+                ("aec_noise_level", a.aec.noise_level),
+                ("aec_echo_level", a.aec.echo_level),
+                ("aec_notch_radius", a.aec.notch_radius),
+                ("aec_leak_estimate", i32::from(a.aec.leak_estimate)),
+                ("aec_leak_value", a.aec.leak_value),
+                ("anr", i32::from(a.anr.enabled)),
+                ("anr_suppress_level", a.anr.suppress_level),
+                ("anr_hpf_cutoff", a.anr.hpf_cutoff),
+                ("anr_bias_sensitive", a.anr.bias_sensitive),
             ] {
                 s.set_shown(k, v);
             }
         }
         if let Some(m) = main {
             if let Some(i) = MAIN_SIZES.iter().position(|d| *d == m.dim) {
-                s.set_shown("main_resolution", Value::Choice(i));
+                s.set_shown("main_resolution", i as i32);
             }
-            s.set_shown("main_bitrate", Value::Int((m.bitrate_bps / 1000).into()));
-            s.set_shown("main_fps", Value::Int(m.fps.into()));
+            if let Ok(kbps) = i32::try_from(m.bitrate_bps / 1000) {
+                s.set_shown("main_bitrate", kbps);
+            }
+            if let Ok(fps) = i32::try_from(m.fps) {
+                s.set_shown("main_fps", fps);
+            }
         }
         s
     }
 
     /// Only values the spec accepts; a driver report outside the range keeps the setting.
-    fn set_shown(&mut self, key: &str, v: Value) {
-        if spec(key).is_some_and(|s| s.check(v).is_ok()) {
+    fn set_shown(&mut self, key: &str, v: i32) {
+        if spec(key).is_some_and(|s| s.spec.valid(v)) {
             self.set(key, v);
         }
     }
@@ -747,8 +658,8 @@ impl Settings {
         Ok(())
     }
 
-    fn set(&mut self, key: &str, v: Value) {
-        if let Some(i) = specs().iter().position(|s| s.key == key) {
+    fn set(&mut self, key: &str, v: i32) {
+        if let Some(i) = index(key) {
             self.0[i] = v;
         }
     }
@@ -760,7 +671,7 @@ pub fn markdown_table() -> String {
         "| Key | Name | Section | HA type | Range | First-run default | Applies |\n|---|---|---|---|---|---|---|\n",
     );
     for s in specs() {
-        let (ty, range) = match s.kind {
+        let (ty, range) = match s.spec.kind {
             Kind::Number { min, max, unit, .. } => (
                 "number",
                 format!(
@@ -771,9 +682,10 @@ pub fn markdown_table() -> String {
             Kind::Switch => ("switch", "ON/OFF".into()),
             Kind::Select(o) => ("select", o.join(", ")),
         };
+        let default = s.spec.render(s.spec.default);
         let default = match s.stock {
-            Some(attr) => format!("stock `0_isp.cfg` `{attr}` (else {})", s.render(s.default)),
-            None => s.render(s.default),
+            Some(attr) => format!("stock `0_isp.cfg` `{attr}` (else {default})"),
+            None => default,
         };
         let applies = match s.group {
             Group::Audio => "live, media thread",
@@ -789,27 +701,10 @@ pub fn markdown_table() -> String {
         let section = s.section().map_or("camera", Section::name);
         out.push_str(&format!(
             "| `{}` | {} | {section} | {ty} | {range} | {default} | {applies} |\n",
-            s.key, s.name
+            s.spec.key, s.spec.name
         ));
     }
     out
-}
-
-/// A setting that could not be loaded and fell back to its default.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Problem {
-    /// `None` for the whole file.
-    pub key: Option<String>,
-    pub reason: String,
-}
-
-impl std::fmt::Display for Problem {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &self.key {
-            Some(k) => write!(f, "{k}: {}", self.reason),
-            None => write!(f, "{}", self.reason),
-        }
-    }
 }
 
 /// The text of the diagnostic `settings` sensor.
@@ -827,14 +722,9 @@ pub fn summary(problems: &[Problem]) -> String {
 /// A setting that changed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Change {
-    pub spec: &'static Spec,
-    pub value: Value,
+    pub spec: &'static Setting,
+    pub value: i32,
 }
-
-/// A rejected MQTT command; the settings are unchanged.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("{0}")]
-pub struct Rejected(pub String);
 
 /// The durable-write steps the store performs, in this order: temp file (mode 0600), its fsync, rename
 /// over the settings file, fsync of the directory.
@@ -847,76 +737,72 @@ pub trait Disk: Send {
     fn sync_dir(&mut self) -> io::Result<()>;
 }
 
+/// The shared store's view of a step-wise [`Disk`]: one write is the four durable steps in order.
+pub struct Steps<D>(D);
+
+impl<D: Disk> shared::Disk for Steps<D> {
+    fn read(&mut self) -> io::Result<Option<Vec<u8>>> {
+        Ok(self.0.read()?.map(String::into_bytes))
+    }
+
+    fn write(&mut self, bytes: &[u8]) -> io::Result<()> {
+        self.0.write_temp(bytes)?;
+        self.0.sync_temp()?;
+        self.0.rename_temp()?;
+        self.0.sync_dir()
+    }
+}
+
 /// Owns the values in force and writes them back: within [`SAVE_WITHIN`] of the first unsaved change,
-/// never postponed by later changes, so a burst of slider moves costs one write per window.
+/// never postponed by later changes, so a burst of slider moves costs one write per window; a failed
+/// write is retried one window later. On top of the shared `Values`: stock first-run defaults and the
+/// rules between fields.
 pub struct Store<D: Disk> {
-    disk: D,
+    values: Values<'static, Steps<D>, TomlCodec>,
+    /// The values in force, kept in step with `values` for cheap typed reads.
     settings: Settings,
-    problems: Vec<Problem>,
-    /// When the oldest unsaved change was made.
-    dirty_since: Option<Duration>,
-    /// Deadline of a write that failed, retried one window later.
-    retry_at: Option<Duration>,
+    /// Fields reset because they broke a rule with another.
+    inconsistent: Vec<Problem>,
 }
 
 impl<D: Disk> Store<D> {
     /// Loads the file; never fails. Absent: defaults. Invalid file or field: that default plus a problem.
-    pub fn load(mut disk: D, stock: &StockDefaults) -> (Self, Vec<Problem>) {
-        let mut settings = Settings::defaults(stock);
-        let mut problems = Vec::new();
-        let text = match disk.read() {
-            Ok(t) => t,
-            Err(e) => {
-                problems.push(Problem {
-                    key: None,
-                    reason: format!("unreadable: {e}"),
-                });
-                None
-            }
-        };
-        let table = text.map(|t| {
-            if t.len() as u64 > MAX_FILE {
-                return Err("exceeds size limit".to_string());
-            }
-            // TOML errors may quote input lines; keep only the fact.
-            toml::from_str::<toml::Table>(&t).map_err(|_| "not valid TOML".to_string())
-        });
-        match table {
-            None => {}
-            Some(Err(reason)) => problems.push(Problem { key: None, reason }),
-            Some(Ok(table)) => {
-                for s in specs() {
-                    let Some(v) = table.get(s.key) else { continue };
-                    match s.read_toml(v) {
-                        Some(v) => settings.set(s.key, v),
-                        None => problems.push(Problem {
-                            key: Some(s.key.into()),
-                            reason: "invalid value".into(),
-                        }),
-                    }
-                }
-                // Unknown keys are ignored so a downgrade keeps working.
+    /// Unknown keys are ignored so a downgrade keeps working.
+    pub fn load(disk: D, stock: &StockDefaults) -> (Self, Vec<Problem>) {
+        let (mut values, _) =
+            Values::load(SPECS.as_slice(), Steps(disk), TomlCodec { header: HEADER });
+        let defaults = Settings::defaults(stock);
+        // A first-run value from the stock file is in force and written with the next save.
+        for s in specs() {
+            if !values.is_set(s.spec.slot) {
+                let _ = values.observe(s.spec.slot, stock.default_of(s));
             }
         }
+        let mut settings = Settings(
+            specs()
+                .iter()
+                .map(|s| values.get(s.spec.slot).unwrap_or(s.spec.default))
+                .collect(),
+        );
+        let mut inconsistent = Vec::new();
         if let Err((a, b)) = settings.coherent() {
-            let defaults = Settings::defaults(stock);
             for k in [a, b] {
-                if let Some(v) = defaults.get(k) {
+                if let (Some(s), Some(v)) = (spec(k), defaults.get(k)) {
+                    let _ = values.observe(s.spec.slot, v);
                     settings.set(k, v);
                 }
-                problems.push(Problem {
+                inconsistent.push(Problem {
                     key: Some(k.into()),
                     reason: format!("inconsistent with {}", if k == a { b } else { a }),
                 });
             }
         }
         let store = Self {
-            disk,
+            values,
             settings,
-            problems: problems.clone(),
-            dirty_since: None,
-            retry_at: None,
+            inconsistent,
         };
+        let problems = store.problems();
         (store, problems)
     }
 
@@ -924,9 +810,11 @@ impl<D: Disk> Store<D> {
         &self.settings
     }
 
-    /// Problems from loading, plus the last failed write.
-    pub fn problems(&self) -> &[Problem] {
-        &self.problems
+    /// Problems from loading, plus a failed write until the next one succeeds.
+    pub fn problems(&self) -> Vec<Problem> {
+        let mut all = self.values.problems().to_vec();
+        all.extend(self.inconsistent.iter().cloned());
+        all
     }
 
     /// Validates `text` for `key` and puts it in force. `now` is any monotonic time; it starts the
@@ -938,29 +826,30 @@ impl<D: Disk> Store<D> {
         now: Duration,
     ) -> Result<Option<Change>, Rejected> {
         let spec = spec(key).ok_or_else(|| Rejected(format!("unknown setting {key}")))?;
-        let value = spec.parse(text).map_err(Rejected)?;
+        let value = spec.spec.parse(text)?;
         self.put(spec, value, now)
     }
 
     /// As [`Store::set`] with a value already typed, e.g. what the hardware reports it applied.
     pub fn put(
         &mut self,
-        spec: &'static Spec,
-        value: Value,
+        spec: &'static Setting,
+        value: i32,
         now: Duration,
     ) -> Result<Option<Change>, Rejected> {
-        spec.check(value)
-            .map_err(|_| Rejected(format!("{}: out of range", spec.key)))?;
-        if self.settings.get(spec.key) == Some(value) {
+        if !spec.spec.valid(value) {
+            return Err(Rejected(format!("{}: out of range", spec.spec.key)));
+        }
+        if self.settings.get(spec.spec.key) == Some(value) {
             return Ok(None);
         }
         let mut next = self.settings.clone();
-        next.set(spec.key, value);
+        next.set(spec.spec.key, value);
         if let Err((a, b)) = next.coherent() {
             return Err(Rejected(format!("{a} must stay consistent with {b}")));
         }
+        self.values.put(spec.spec.slot, value, now)?;
         self.settings = next;
-        self.dirty_since.get_or_insert(now);
         Ok(Some(Change { spec, value }))
     }
 
@@ -976,66 +865,30 @@ impl<D: Disk> Store<D> {
     }
 
     pub fn dirty(&self) -> bool {
-        self.dirty_since.is_some()
+        self.values.dirty()
     }
 
     /// Writes the snapshot once the window of the oldest unsaved change has run out.
     pub fn tick(&mut self, now: Duration) -> io::Result<()> {
-        let Some(since) = self.dirty_since else {
-            return Ok(());
-        };
-        let due = self.retry_at.unwrap_or(since + SAVE_WITHIN);
-        if now < due {
-            return Ok(());
-        }
-        match self.write() {
-            Ok(()) => {
-                self.dirty_since = None;
-                self.retry_at = None;
-                self.problems.retain(|p| p.reason != "save failed");
-                Ok(())
-            }
-            Err(e) => {
-                self.retry_at = Some(now + SAVE_WITHIN);
-                if !self.problems.iter().any(|p| p.reason == "save failed") {
-                    self.problems.push(Problem {
-                        key: None,
-                        reason: "save failed".into(),
-                    });
-                }
-                Err(e)
-            }
-        }
+        self.values.tick(now)
     }
 
     /// Writes now if anything is unsaved (orderly shutdown).
     pub fn flush(&mut self) -> io::Result<()> {
-        if self.dirty_since.is_none() {
-            return Ok(());
-        }
-        self.write()?;
-        self.dirty_since = None;
-        self.retry_at = None;
-        Ok(())
+        self.values.flush()
     }
 
-    fn write(&mut self) -> io::Result<()> {
-        let mut table = toml::Table::new();
-        for (s, v) in specs().iter().zip(&self.settings.0) {
-            table.insert(s.key.into(), s.write_toml(*v));
-        }
-        let text = format!(
-            "# Written by cam; edits while it runs are overwritten.\n{}",
-            toml::to_string(&table).map_err(io::Error::other)?
-        );
-        self.disk.write_temp(text.as_bytes())?;
-        self.disk.sync_temp()?;
-        self.disk.rename_temp()?;
-        self.disk.sync_dir()
+    /// Read access and the change feed for another owner (ONVIF).
+    pub fn reader(&self) -> shared::Reader<'static> {
+        self.values.reader()
     }
 
     pub fn disk(&self) -> &D {
-        &self.disk
+        &self.values.disk().0
+    }
+
+    pub fn disk_mut(&mut self) -> &mut D {
+        &mut self.values.disk_mut().0
     }
 }
 

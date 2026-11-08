@@ -59,13 +59,15 @@ SETTINGS = (
     ("device_name", "Name in Home Assistant", MODEL, False),
     ("rtsp_user", "RTSP user for recorders and Home Assistant", "admin", False),
     ("rtsp_password", "RTSP password", None, True),
-    ("open_seconds", "Seconds the door stays unlocked after a code", "5", False),
     ("pins", "PIN table file (<digits> <name> [clip] per line)", None, False),
     ("ssh_key", "SSH public key that may log in after the switch", "~/.ssh/id_ed25519.pub", False),
     ("clips", "Directory with your own <name>.pcm clips (empty for built-in tones)", "", False),
 )
 # Optional cam.conf keys that are never asked: set them with a flag or in --config.
-ADVANCED = ("mqtt_prefix", "mqtt_node", "http_port", "talk_db", "clip_db", "mic_gain_db", "codec_out_db")
+ADVANCED = ("mqtt_prefix", "mqtt_node", "http_port")
+# Live settings in Home Assistant now (settings.json on the panel, kept across installs). Given in
+# --config or as flags, they go into cam.conf so a first start without settings.json seeds them.
+DEPRECATED = ("open_seconds", "talk_db", "clip_db", "mic_gain_db", "codec_out_db")
 SECRET_ENV = {"admin_password": "DS_KD_ADMIN_PASSWORD", "mqtt_password": "DS_KD_MQTT_PASSWORD",
               "rtsp_password": "DS_KD_RTSP_PASSWORD"}
 
@@ -82,8 +84,10 @@ def settings(args):
     for key, env in SECRET_ENV.items():
         if key not in values and os.environ.get(env):
             values[key] = os.environ[env]
-    known = {s[0] for s in SETTINGS} | set(ADVANCED)
+    known = {s[0] for s in SETTINGS} | set(ADVANCED) | set(DEPRECATED)
     values.update({k: v for k, v in vars(args).items() if k in known and v is not None})
+    for key in sorted(set(values) & set(DEPRECATED)):
+        say(f"{key} is a live setting in Home Assistant now; it only seeds a panel without settings.json")
     unknown = set(values) - known
     if unknown:
         raise SystemExit(f"Unknown settings: {', '.join(sorted(unknown))}")
@@ -114,14 +118,24 @@ def cam_conf(v):
         f"mqtt_host={v['mqtt_host']}", f"mqtt_port={int(v['mqtt_port'])}", f"mqtt_user={v['mqtt_user']}",
         f"mqtt_password={v['mqtt_password']}", f"device_name={v['device_name']}",
         f"rtsp_user={v['rtsp_user']}", f"rtsp_password={v['rtsp_password']}",
-        f"open_seconds={int(v['open_seconds'])}",
     ]
-    for key in ADVANCED:
+    for key in ADVANCED + DEPRECATED:
         if v.get(key) not in (None, ""):
             if not re.fullmatch(r"[A-Za-z0-9_/-]+", str(v[key])):
                 raise SystemExit(f"{key} has characters cam.conf does not accept")
             lines.append(f"{key}={v[key]}")
     return ("\n".join(lines) + "\n").encode()
+
+
+def carried_settings(old_conf, v):
+    """Live-setting keys of the panel's current cam.conf that this run does not set: an upgrade from a
+    release without settings.json keeps a custom open_seconds or gain by seeding it once."""
+    carried = {}
+    for line in old_conf.splitlines():
+        key, sep, value = line.strip().partition("=")
+        if sep and key in DEPRECATED and v.get(key) in (None, "") and re.fullmatch(r"-?[0-9]+", value.strip()):
+            carried[key] = value.strip()
+    return carried
 
 
 def pins_conf(path):
@@ -156,11 +170,37 @@ def tone_clip(*notes, rate=16000):
     return bytes(out)
 
 
+def residual_encode(pcm):
+    """Raw s16le mono as second-order prediction residuals, wrapping in 16 bits: lossless.
+
+    The daemon restores the exact samples (src/clip.rs). The residuals compress about a fifth better
+    under LZMA, which matters on the small config partition."""
+    out, p1, p2 = bytearray(), 0, 0
+    for (x,) in struct.iter_unpack("<h", pcm[: len(pcm) // 2 * 2]):
+        r = (x - 2 * p1 + p2 + 32768) % 65536 - 32768
+        out += struct.pack("<h", r)
+        p1, p2 = x, p1
+    return bytes(out)
+
+
+def partition_free(shell):
+    """Bytes free on the config partition."""
+    return int([l for l in shell.check(f"df -k {BASE}").splitlines() if l.strip()][-1].split()[3]) * 1024
+
+
+def existing_size(shell, path):
+    """Size of a file on the panel; 0 when it is absent."""
+    status, out = shell.run(f"/bin/busybox wc -c < {path} 2>/dev/null")
+    words = out.split()
+    return int(words[0]) if status == 0 and words and words[0].isdigit() else 0
+
+
 def clips_tar(directory):
-    clips = {"door_opened.pcm": tone_clip((660, 0.18), (880, 0.35))}
+    pcm = {"door_opened": tone_clip((660, 0.18), (880, 0.35))}
     if directory:
         for path in sorted(Path(directory).expanduser().glob("*.pcm")):
-            clips[path.name] = path.read_bytes()
+            pcm[path.stem] = path.read_bytes()
+    clips = {f"{name}.pcmd": residual_encode(data) for name, data in pcm.items()}
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w", format=tarfile.USTAR_FORMAT) as tar:
         for name, data in clips.items():
@@ -257,8 +297,9 @@ class Shell:
     def run(self, script, timeout=120):
         ch = self.channel()
         try:
-            # The stock shell prints a banner first; only what follows START belongs to the script.
-            ch.sendall(b"echo " + self.START + b"\n" + script.encode() + b"\necho; echo " + self.DONE + b" $?\nexit\n")
+            # The stock shell prints a banner first; only what follows START belongs to the script. The script's
+            # status is saved before the separator echo, which would otherwise be the `$?` reported.
+            ch.sendall(b"echo " + self.START + b"\n" + script.encode() + b"\nrc=$?; echo; echo " + self.DONE + b" $rc\nexit\n")
             out, end = b"", time.monotonic() + timeout
             while not re.search(self.DONE + rb" \d+\n", out):
                 if time.monotonic() > end:
@@ -386,6 +427,8 @@ def main():
             parser.add_argument(f"--{key.replace('_', '-')}", dest=key, help=question)
     for key in ADVANCED:
         parser.add_argument(f"--{key.replace('_', '-')}", dest=key, help=f"cam.conf {key} (optional)")
+    for key in DEPRECATED:
+        parser.add_argument(f"--{key.replace('_', '-')}", dest=key, help=f"deprecated: seeds the live {key} once")
     parser.add_argument("--config", help="TOML file with any of the settings above (secrets included)")
     parser.add_argument("--bundle", type=Path, default=HERE, help="release bundle directory (default: this one)")
     parser.add_argument("--work-dir", type=Path, help="where to keep the firmware read and build evidence")
@@ -465,12 +508,26 @@ def main():
     compressed = {f"native/{n}.lzma": lzma.compress(d, format=lzma.FORMAT_ALONE, preset=9) for n, d in files.items()}
     compressed["native/clips.tar.lzma"] = lzma.compress(clips_tar(v["clips"]), format=lzma.FORMAT_ALONE, preset=9)
     total = sum(len(d) for d in compressed.values()) + len(supervisor)
-    free = int([l for l in shell.check(f"df -k {BASE}").splitlines() if l.strip()][-1].split()[3]) * 1024
-    if total + CONFIG_PARTITION_FREE_MIN > free:
-        raise SystemExit(f"The config partition has {free} bytes free; the application needs {total}")
-    for path, data in compressed.items():
+    # An update replaces files already on the partition: their space comes back, and it must, since the
+    # partition cannot hold the old and the new daemon at once.
+    replaced = sum(existing_size(shell, f"{BASE}/{p}") for p in [*compressed, "start.sh"])
+    free = partition_free(shell)
+    if total + CONFIG_PARTITION_FREE_MIN > free + replaced:
+        raise SystemExit(f"The config partition has {free} bytes free (+{replaced} replaced); the application needs {total}")
+    for path, data in sorted(compressed.items(), key=lambda item: len(item[1])):
+        if len(data) + CONFIG_PARTITION_FREE_MIN > partition_free(shell):
+            # No room beside the old copy. Interrupted from here on, the supervisor cannot unpack the
+            # application and the panel keeps running its stock firmware; installing again completes it.
+            shell.check(f"rm -f {BASE}/{path}")
         shell.write(f"{BASE}/{path}", data)
     shell.write(f"{BASE}/start.sh", supervisor, mode="700")
+    if shell.run(f"test -e {BASE}/settings.json")[0]:
+        # No settings file yet: the live settings still live in the old cam.conf, if any.
+        status, old = shell.run(f"cat {BASE}/cam.conf")
+        carried = carried_settings(old, v) if status == 0 else {}
+        if carried:
+            say(f"Keeping {', '.join(sorted(carried))} from the panel's cam.conf (seeded once into settings.json)")
+            conf = cam_conf({**v, **carried})
     shell.write(f"{BASE}/cam.conf", conf)
     shell.write(f"{BASE}/pins.conf", pins)
     shell.write(f"{BASE}/keypad.key", key)
