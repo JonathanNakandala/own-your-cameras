@@ -266,10 +266,16 @@ mod tests {
     #[test]
     fn the_synced_flag_follows_the_last_round() {
         let synced = AtomicBool::new(false);
-        let keeper = Keeper { servers: vec![loopback_server()], log: |_| {} };
+        let keeper = Keeper {
+            servers: vec![loopback_server()],
+            log: |_| {},
+        };
         assert!(keeper.round(&synced));
         assert!(synced.load(Ordering::Relaxed));
-        let keeper = Keeper { servers: vec![], log: |_| {} };
+        let keeper = Keeper {
+            servers: vec![],
+            log: |_| {},
+        };
         assert!(!keeper.round(&synced));
         assert!(!synced.load(Ordering::Relaxed));
     }
