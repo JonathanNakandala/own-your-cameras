@@ -102,6 +102,12 @@ pub fn tone(notes: &[(f32, u32)], rate: u32, amplitude: f32) -> Vec<i16> {
 /// (`tools/ds-kd8003-ime1/install.py` `level_clip`), so every sound plays equally loud.
 pub const TONE_AMPLITUDE: f32 = 11_600.0;
 
+/// Remote speech is high-passed here before the talk gain control. The horn barely reproduces 500 Hz
+/// (64 % THD+N measured 2026-11-08 by a Mi360 at the gate) and its distortion harmonics return through
+/// the microphone as echo the FM2018 cannot cancel; a 600 Hz corner on a speech-like signal kept the
+/// loudness, cut THD+N 31 → 21 % and the median echo in the gate microphone −54 → −61 dBFS.
+pub const TALK_HIGH_PASS_HZ: u32 = 600;
+
 /// The mock's sounds: answered with the microphone on, declined, hang-up.
 pub const ANSWERED: &[(f32, u32)] = &[(660.0, 120), (880.0, 180)];
 pub const DECLINED: &[(f32, u32)] = &[(523.0, 180), (0.0, 80), (392.0, 300)];

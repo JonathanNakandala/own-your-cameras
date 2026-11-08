@@ -322,6 +322,8 @@ impl Mixer {
 pub struct Talkback {
     decoders: Decoders,
     rate: u32,
+    /// Corner of each talker's high-pass filter ahead of its gain control, 0 for none.
+    high_pass_hz: u32,
     mixer: Mutex<Mixer>,
 }
 
@@ -329,6 +331,7 @@ pub struct TalkLease {
     talk: Arc<Talkback>,
     slot: usize,
     decoder: TalkDecoder,
+    filter: Option<super::highpass::HighPass>,
     gain: TalkGain,
     /// Packets refused (not RTP, or a payload type other than Opus or PCMU) and the last refused type.
     refused: u64,
@@ -367,9 +370,16 @@ impl TalkDecoder {
 impl Talkback {
     /// `decoders` must produce mono samples at `rate`, the speaker's rate.
     pub fn new(decoders: Decoders, rate: u32) -> Arc<Self> {
+        Self::with_high_pass(decoders, rate, 0)
+    }
+
+    /// As [`Talkback::new`], with every talker high-passed at `high_pass_hz` before its gain control
+    /// (see [`super::highpass`]); 0 means no filter.
+    pub fn with_high_pass(decoders: Decoders, rate: u32, high_pass_hz: u32) -> Arc<Self> {
         Arc::new(Self {
             decoders,
             rate,
+            high_pass_hz,
             mixer: Mutex::new(Mixer::new(rate)),
         })
     }
@@ -389,6 +399,7 @@ impl Talkback {
             talk: Arc::clone(self),
             slot,
             decoder: TalkDecoder::new(decoder, self.rate),
+            filter: super::highpass::HighPass::new(self.rate, self.high_pass_hz),
             gain: TalkGain::default(),
             refused: 0,
             refused_pt: None,
@@ -448,6 +459,10 @@ impl TalkLease {
             self.refused_pt = packet.get(1).map(|b| b & 127);
             return;
         }
+        let pcm = match &mut self.filter {
+            Some(filter) => filter.process(&pcm),
+            None => pcm,
+        };
         let samples = self.gain.process(&pcm);
         self.talk.mixer().push(self.slot, &samples);
     }
@@ -583,7 +598,10 @@ mod tests {
         let a = mixer.claim().unwrap();
         mixer.push_at(a, &[0.1; 2 * F], t0);
         assert!(mixer.next(t0).is_some());
-        assert!(mixer.next(t0 + ms(20)).is_some(), "this block empties the buffer: a rebuffer");
+        assert!(
+            mixer.next(t0 + ms(20)).is_some(),
+            "this block empties the buffer: a rebuffer"
+        );
         mixer.push_at(a, &[0.1; 2 * F], t0 + ms(30));
         assert!(mixer.next(t0 + ms(40)).is_none(), "40 ms no longer rejoins");
         mixer.push_at(a, &[0.1; 2 * F], t0 + ms(50));

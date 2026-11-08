@@ -18,9 +18,15 @@ pub fn fanout(opus: Arc<AudioHub>, pcmu: Arc<AudioHub>) -> std::io::Result<MicFa
 
 /// Speaker input at `rate` Hz with one libopus decoder per talk session.
 pub fn talkback(rate: u32) -> Arc<Talkback> {
-    Talkback::new(
+    talkback_high_passed(rate, 0)
+}
+
+/// As [`talkback`], each talker high-passed at `hz` ahead of its gain control (0: no filter).
+pub fn talkback_high_passed(rate: u32, hz: u32) -> Arc<Talkback> {
+    Talkback::with_high_pass(
         Box::new(move || Decoder::new(rate).map(|d| Box::new(d) as Box<dyn OpusDecode>)),
         rate,
+        hz,
     )
 }
 

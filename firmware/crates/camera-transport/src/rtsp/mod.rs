@@ -3,6 +3,7 @@
 
 mod agc;
 pub mod audio;
+pub mod highpass;
 pub mod hub;
 pub mod md5;
 pub mod proto;

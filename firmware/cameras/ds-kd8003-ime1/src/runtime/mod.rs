@@ -320,7 +320,10 @@ pub fn main(args: &[String]) {
     refresh_stream(&g, 0);
     // Talkback: the shared Opus backchannel mixer (same crate and decoder as the other cameras),
     // decoding straight at the speaker's rate.
-    let talk = camera_opus::talkback(audio::codec_rate());
+    let talk = camera_opus::talkback_high_passed(
+        audio::codec_rate(),
+        ds_kd8003_ime1_cam::speaker::TALK_HIGH_PASS_HZ,
+    );
     let speaker = live::Speaker::new(g.clone(), Arc::clone(&talk));
     // Codec levels, both streams and the ISP keys (AWB auto among them: without it the image is
     // magenta) from the settings, through their one owner.
