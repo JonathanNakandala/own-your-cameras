@@ -62,7 +62,11 @@ pub enum Sound {
     Ringback(Option<(Arc<Vec<i16>>, i32)>),
 }
 
-pub fn capture_loop(g: Arc<Device>, hub: Arc<AudioHub>) {
+pub fn capture_loop(
+    g: Arc<Device>,
+    hub: Arc<AudioHub>,
+    reader: camera_transport::settings::Reader<'static>,
+) {
     // PCMU only: the HiSilicon V3 runs no Opus encoder (see the camera README).
     let Ok(mut fanout) = MicFanout::<camera_opus::Encoder>::new(codec_rate(), None, Some(hub))
     else {
@@ -70,6 +74,8 @@ pub fn capture_loop(g: Arc<Device>, hub: Arc<AudioHub>) {
         return;
     };
     let mut pcm = vec![0u8; 8192];
+    let mut presence = ds_kd8003_ime1_cam::presence::Presence::new(codec_rate());
+    let mut frames_seen = 0u32;
     while !g.stop.load(Ordering::Relaxed) {
         let (mut len, mut pts) = (0u32, 0u64);
         let rc = {
@@ -87,7 +93,7 @@ pub fn capture_loop(g: Arc<Device>, hub: Arc<AudioHub>) {
             thread::sleep(Duration::from_millis(20));
             continue;
         }
-        let samples: Vec<i16> = pcm[..len as usize]
+        let mut samples: Vec<i16> = pcm[..len as usize]
             .chunks_exact(2)
             .map(|c| i16::from_le_bytes([c[0], c[1]]))
             .collect();
@@ -100,6 +106,18 @@ pub fn capture_loop(g: Arc<Device>, hub: Arc<AudioHub>) {
             s.audio_frames += 1;
             s.mic_peak = peak as u32;
         }
+        // The presence boost follows the live setting (read about once a second).
+        if frames_seen.is_multiple_of(25) {
+            let db = reader
+                .get(ds_kd8003_ime1_cam::settings::MIC_PRESENCE_DB)
+                .unwrap_or(0);
+            if db != presence.db() {
+                presence.set(db);
+                g.log(format!("mic: presence boost {db} dB"));
+            }
+        }
+        frames_seen = frames_seen.wrapping_add(1);
+        presence.process(&mut samples);
         fanout.push(pts, &samples);
     }
 }

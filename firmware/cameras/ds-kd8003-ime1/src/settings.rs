@@ -110,6 +110,8 @@ pub const CALL_RING_TIMEOUT: u16 = 6;
 pub const CALL_RINGBACK_DB: u16 = 7;
 pub const CALL_PANEL_RING_VOLUME: u16 = 8;
 pub const CALL_MAX_TALK: u16 = 9;
+/// Read by the microphone thread (`presence`).
+pub const MIC_PRESENCE_DB: u16 = 10;
 
 /// Every live setting of the gate.
 #[rustfmt::skip]
@@ -124,6 +126,7 @@ pub const SPECS: &[Spec] = &[
     Spec::number(CALL_RINGBACK_DB, "call_ringback_db", "Ringback level", (-40, 12), Some("dB"), 0).icon("mdi:phone-in-talk"),
     Spec::number(CALL_PANEL_RING_VOLUME, "call_panel_ring_volume", "Panel ring volume", (0, 100), Some("%"), 80).icon("mdi:bell-ring"),
     Spec::number(CALL_MAX_TALK, "call_max_talk", "Max talk time", (1, 10), Some("min"), 3).icon("mdi:timer-sand"),
+    Spec::number(MIC_PRESENCE_DB, "mic_presence_db", "Mic presence boost", (0, 6), Some("dB"), 3).icon("mdi:waveform"),
     // Encoder ranges: the vendor's offer; the maxima of both streams together ran without a frame
     // shortfall on the panel (docs/home-assistant.md).
     Spec::select(20, "main_resolution", "Main resolution", MAIN_SIZES, 0).icon("mdi:video"),
@@ -213,7 +216,7 @@ pub enum Target {
 
 pub fn target(slot: u16) -> Option<Target> {
     Some(match slot {
-        OPEN_SECONDS | CALL_RING_TIMEOUT..=CALL_MAX_TALK => Target::Door,
+        OPEN_SECONDS | CALL_RING_TIMEOUT..=CALL_MAX_TALK | MIC_PRESENCE_DB => Target::Door,
         CODEC_OUT_DB => Target::Codec { output: true },
         MIC_GAIN_DB => Target::Codec { output: false },
         CLIP_DB | TALK_DB => Target::Speaker,

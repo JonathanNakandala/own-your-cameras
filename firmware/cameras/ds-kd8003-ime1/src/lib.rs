@@ -13,6 +13,7 @@ pub mod inputs;
 pub mod keypad_frames;
 pub mod media;
 pub mod pin;
+pub mod presence;
 pub mod settings;
 pub mod speaker;
 pub mod strike;

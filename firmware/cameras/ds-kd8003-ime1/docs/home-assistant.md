@@ -149,6 +149,7 @@ mosquitto_pub -h MQTT_HOST -u MQTT_USER -P MQTT_PASSWORD -t 'ds-kd8003-ime1/main
 | `call_ringback_db` | Ringback level | -40..12 dB | 0 |
 | `call_panel_ring_volume` | Panel ring volume | 0..100 % | 80 |
 | `call_max_talk` | Max talk time | 1..10 min | 3 |
+| `mic_presence_db` | Mic presence boost | 0..6 dB | 3 |
 | `main_resolution` | Main resolution | `1920x1080`, `1280x720`, `640x360` | 1920x1080 |
 | `main_fps` | Main frame rate | 1..30 fps | 30 |
 | `main_kbps` | Main bitrate | 512..4096 kbit/s | 4096 |

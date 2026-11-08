@@ -362,8 +362,8 @@ pub fn main(args: &[String]) {
         spawn_named(&format!("video{chn}"), move || video_loop(g2, chn, hub));
     }
     {
-        let (g2, hub) = (g.clone(), mic.clone());
-        spawn_named("mic", move || audio::capture_loop(g2, hub));
+        let (g2, hub, mic_reader) = (g.clone(), mic.clone(), reader.clone());
+        spawn_named("mic", move || audio::capture_loop(g2, hub, mic_reader));
     }
     match camera_transport::bind(cfg.rtsp_port) {
         Ok(listener) => {
