@@ -3,6 +3,9 @@
 //! its live settings with their apply owner, and its telemetry.
 //! Everything that touches the board lives in the binary and is compiled for the ARM target only.
 pub mod access;
+pub mod call;
+pub mod call_link;
+pub mod call_wire;
 pub mod clip;
 pub mod config;
 pub mod home;
@@ -10,6 +13,8 @@ pub mod inputs;
 pub mod keypad_frames;
 pub mod media;
 pub mod pin;
+pub mod presence;
 pub mod settings;
+pub mod speaker;
 pub mod strike;
 pub mod telemetry;

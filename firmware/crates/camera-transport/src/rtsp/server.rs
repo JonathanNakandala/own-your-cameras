@@ -344,7 +344,7 @@ fn sender(
 enum Media {
     Video(Arc<Hub>),
     Audio(Arc<AudioHub>),
-    Talk(TalkLease),
+    Talk(Box<TalkLease>),
     /// A UDP talker whose lease a receiver thread holds since PLAY.
     TalkUdp,
 }
@@ -714,7 +714,7 @@ fn handle(
                     None => return (Response::new(404), false),
                 },
                 "2" if *backchannel => match cfg.talk.as_ref().and_then(|t| t.claim()) {
-                    Some(input) => Media::Talk(input),
+                    Some(input) => Media::Talk(Box::new(input)),
                     None => return (Response::new(453), false),
                 },
                 _ => return (Response::new(404), false),
@@ -863,7 +863,7 @@ fn handle(
                 let st = Arc::clone(&stop);
                 match limits
                     .thread()
-                    .spawn(move || udp_talk(sock, peer_ip, lease, st))
+                    .spawn(move || udp_talk(sock, peer_ip, *lease, st))
                 {
                     Ok(thread) => playing.threads.push(thread),
                     Err(_) => return (Response::new(455), false),

@@ -4,7 +4,7 @@
 use super::Device;
 use camera_transport::mqtt;
 use ds_kd8003_ime1_cam::config::Config;
-use ds_kd8003_ime1_cam::home::{self, DoorCommand, Out};
+use ds_kd8003_ime1_cam::home::{self, Command, Out};
 use ds_kd8003_ime1_cam::inputs::Edges;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -17,7 +17,7 @@ pub fn start(
     g: Arc<Device>,
     cfg: &Config,
     edges: &Edges,
-) -> std::io::Result<(mqtt::Publisher, mqtt::Commands<DoorCommand>)> {
+) -> std::io::Result<(mqtt::Publisher, mqtt::Commands<Command>)> {
     let (publisher, commands, worker) = mqtt::channel(
         home::transport(cfg, env!("CARGO_PKG_VERSION")),
         home::Parser,

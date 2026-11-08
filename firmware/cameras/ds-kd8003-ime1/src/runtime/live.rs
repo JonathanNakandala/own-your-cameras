@@ -24,6 +24,8 @@ pub struct Speaker {
     talk: Arc<Talkback>,
     tx: Mutex<Option<mpsc::Sender<Sound>>>,
     thread: Mutex<Option<JoinHandle<()>>>,
+    /// The running ringback, handed to a restarted loop so a gain change does not silence a ring.
+    ringback: Mutex<Option<(Arc<Vec<i16>>, i32)>>,
 }
 
 impl Speaker {
@@ -33,12 +35,19 @@ impl Speaker {
             talk,
             tx: Mutex::new(None),
             thread: Mutex::new(None),
+            ringback: Mutex::new(None),
         })
     }
 
     /// Queues a sound; dropped when the speaker never started.
     pub fn play(&self, sound: Sound) {
-        if let Some(tx) = self.tx.lock().unwrap().as_ref() {
+        // The ringback is stored and sent under the queue's lock, so a restart in between cannot
+        // hand the new loop a ringback that was just stopped.
+        let tx = self.tx.lock().unwrap();
+        if let Sound::Ringback(r) = &sound {
+            *self.ringback.lock().unwrap() = r.clone();
+        }
+        if let Some(tx) = tx.as_ref() {
             let _ = tx.send(sound);
         }
     }
@@ -46,8 +55,14 @@ impl Speaker {
     /// Starts the loop with these gains, replacing a running one.
     pub fn start(&self, clip_db: i32, talk_db: i32) {
         let (tx, rx) = mpsc::channel();
-        // Dropping the old sender closes the old loop's queue once it is drained.
-        *self.tx.lock().unwrap() = Some(tx);
+        {
+            let mut current = self.tx.lock().unwrap();
+            if let Some(r) = self.ringback.lock().unwrap().clone() {
+                let _ = tx.send(Sound::Ringback(Some(r)));
+            }
+            // Dropping the old sender closes the old loop's queue once it is drained.
+            *current = Some(tx);
+        }
         let previous = self.thread.lock().unwrap().take();
         let (g, talk) = (self.g.clone(), self.talk.clone());
         let handle = spawn_named("speaker", move || {

@@ -5,7 +5,10 @@
 //!
 //! Topics under `<prefix>`: `availability` (`online`/`offline`), `door/state` (`open`/`closed`: open while
 //! the strike is released or the reed is open), `reed` (the contact alone), `lock/state` (JSON with
-//! `lock_actuator`), `call_button` and `access` (event JSON), `door/command` (incoming).
+//! `lock_actuator`), `call_button` and `access` (event JSON), `door/command` (incoming), and the
+//! intercom call: `call/state` (snapshot, retained), `call/missed` (retained), `call/event`,
+//! `call/command` (incoming), see [`crate::call_wire`].
+use crate::call::{CallId, DeviceId, EventKind, Op};
 use crate::config::Config;
 use crate::inputs::{Edge, LockPulse};
 use camera_transport::mqtt::{self, Domain, Entity, Payloads};
@@ -39,6 +42,23 @@ pub fn parse_command(payload: &[u8]) -> Option<DoorCommand> {
 
 const DOOR: &str = "door";
 const COMMAND: &str = "door/command";
+const CALL: &str = "call";
+
+/// Every command the gate takes over MQTT.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Command {
+    Door(DoorCommand),
+    Call {
+        device: DeviceId,
+        call: Option<CallId>,
+        op: Op,
+    },
+}
+
+/// Ids of the call entities; their state ids name the topics the runtime publishes.
+pub const CALL_STATE: &str = "call";
+pub const CALL_EVENT: &str = "call_event";
+pub const CALL_MISSED: &str = "missed_call";
 
 fn press(id: &str, name: &str, icon: &'static str, payload: &'static str) -> Entity {
     Entity::new(id, name, Domain::Button)
@@ -96,10 +116,47 @@ pub fn entities() -> Vec<Entity> {
     ]
 }
 
+/// The intercom call: its phase (the snapshot as attributes; the command topic is routed but not
+/// advertised, the cards and the panel speak the contract directly), its events and the missed mark.
+pub fn call_entities() -> Vec<Entity> {
+    vec![
+        Entity::new(CALL_STATE, "Call", Domain::Sensor)
+            .icon("mdi:phone-ring")
+            .state_topic("call/state")
+            .attributes(CALL_STATE)
+            .command_topic("call/command")
+            .route(CALL)
+            .payloads(Payloads {
+                value_template: Some("{{ value_json.phase }}"),
+                ..Payloads::default()
+            }),
+        Entity::new(
+            CALL_EVENT,
+            "Call",
+            Domain::Event {
+                types: EventKind::ALL.to_vec(),
+            },
+        )
+        .icon("mdi:phone")
+        .state_topic("call/event"),
+        Entity::new(CALL_MISSED, "Missed call", Domain::Sensor)
+            .device_class("timestamp")
+            .icon("mdi:phone-missed")
+            .state_topic("call/missed")
+            .payloads(Payloads {
+                value_template: Some(
+                    "{{ value_json.at if value_json.at is defined and value_json.at else None }}",
+                ),
+                ..Payloads::default()
+            }),
+    ]
+}
+
 /// Door entities, then one config entity per live setting, then the diagnostic sensors.
 pub fn all_entities() -> Vec<Entity> {
     let mut all = entities();
-    all.extend(crate::settings::SPECS.iter().map(|s| s.entity()));
+    all.extend(call_entities());
+    all.extend(crate::settings::SPECS.iter().map(crate::settings::entity));
     all.extend(
         crate::telemetry::sensors()
             .iter()
@@ -155,14 +212,19 @@ const SUPERSEDED_STATES: [&str; 4] = [
 pub struct Parser;
 
 impl mqtt::Parser for Parser {
-    type App = DoorCommand;
-    fn parse(&self, id: &str, text: &str) -> Result<Option<mqtt::Command<DoorCommand>>, String> {
-        if id != DOOR {
-            return Ok(None);
+    type App = Command;
+    fn parse(&self, id: &str, text: &str) -> Result<Option<mqtt::Command<Command>>, String> {
+        match id {
+            DOOR => parse_command(text.as_bytes())
+                .map(|c| Some(mqtt::Command::App(Command::Door(c))))
+                .ok_or_else(|| "unknown door command".into()),
+            CALL => crate::call_wire::parse_mqtt_command(text)
+                .map(|(device, call, op)| {
+                    Some(mqtt::Command::App(Command::Call { device, call, op }))
+                })
+                .map_err(|e| format!("call command refused: {e:?}")),
+            _ => Ok(None),
         }
-        parse_command(text.as_bytes())
-            .map(|c| Some(mqtt::Command::App(c)))
-            .ok_or_else(|| "unknown door command".into())
     }
 }
 
@@ -359,8 +421,8 @@ mod tests {
     fn settings_are_config_entities_and_sensors_diagnostics() {
         let all = discovery();
         let n = crate::settings::SPECS.len();
-        assert_eq!(all.len(), 8 + n + crate::telemetry::IDS.len());
-        let (settings, sensors) = all[8..].split_at(n);
+        assert_eq!(all.len(), 8 + 3 + n + crate::telemetry::IDS.len());
+        let (settings, sensors) = all[11..].split_at(n);
         for (topic, v) in settings {
             assert_eq!(v["entity_category"], "config", "{topic}");
             let key = v["unique_id"]
@@ -392,6 +454,62 @@ mod tests {
     }
 
     #[test]
+    fn call_entities_publish_the_contract_topics_and_hide_the_command_topic() {
+        let all = discovery();
+        let get = |id: &str| {
+            &all.iter()
+                .find(|(t, _)| t.contains(&format!("/{id}/config")))
+                .unwrap_or_else(|| panic!("{id}"))
+                .1
+        };
+        let call = get("call");
+        assert_eq!(call["state_topic"], "ds-kd8003-ime1/call/state");
+        assert_eq!(call["json_attributes_topic"], "ds-kd8003-ime1/call/state");
+        assert_eq!(call["value_template"], "{{ value_json.phase }}");
+        assert_eq!(call["command_topic"], Value::Null);
+        let event = get("call_event");
+        assert_eq!(event["state_topic"], "ds-kd8003-ime1/call/event");
+        assert_eq!(event["event_types"].as_array().unwrap().len(), 6);
+        let missed = get("missed_call");
+        assert_eq!(missed["state_topic"], "ds-kd8003-ime1/call/missed");
+        assert_eq!(missed["device_class"], "timestamp");
+        let timeout = get("call_ring_timeout");
+        assert_eq!(
+            (
+                timeout["min"].as_i64(),
+                timeout["max"].as_i64(),
+                timeout["step"].as_i64()
+            ),
+            (Some(15), Some(120), Some(5))
+        );
+        assert_eq!(get("call_max_talk")["unit_of_measurement"], "min");
+    }
+
+    #[test]
+    fn call_commands_route_to_the_call_and_the_panel_id_is_refused() {
+        let Ok(Some(mqtt::Command::App(Command::Call { device, call, op }))) = Parser.parse(
+            "call",
+            r#"{"op":"answer","call_id":"a3f9c2e1","device":"dk-7f3a91","mic":true}"#,
+        ) else {
+            panic!()
+        };
+        assert_eq!(
+            (device.as_str(), call, op),
+            (
+                "dk-7f3a91",
+                Some([0xa3, 0xf9, 0xc2, 0xe1]),
+                Op::Answer { mic: true }
+            )
+        );
+        assert!(
+            Parser
+                .parse("call", r#"{"op":"open","device":"panel"}"#)
+                .is_err()
+        );
+        assert!(Parser.parse("call", "open").is_err());
+    }
+
+    #[test]
     fn door_commands_accept_bare_quoted_and_json_payloads() {
         assert_eq!(parse_command(b"open"), Some(DoorCommand::Open));
         assert_eq!(
@@ -407,7 +525,7 @@ mod tests {
         assert_eq!(parse_command(b"\xff"), None);
         assert_eq!(
             Parser.parse("door", "open"),
-            Ok(Some(mqtt::Command::App(DoorCommand::Open)))
+            Ok(Some(mqtt::Command::App(Command::Door(DoorCommand::Open))))
         );
         assert!(Parser.parse("door", "lock").is_err());
         assert_eq!(

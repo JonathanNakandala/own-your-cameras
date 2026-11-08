@@ -104,6 +104,14 @@ pub const CODEC_OUT_DB: u16 = 2;
 pub const CLIP_DB: u16 = 3;
 pub const TALK_DB: u16 = 4;
 pub const MIC_GAIN_DB: u16 = 5;
+/// The intercom call's settings: read where they are used (the call and the speaker), stored here
+/// so they work without Home Assistant.
+pub const CALL_RING_TIMEOUT: u16 = 6;
+pub const CALL_RINGBACK_DB: u16 = 7;
+pub const CALL_PANEL_RING_VOLUME: u16 = 8;
+pub const CALL_MAX_TALK: u16 = 9;
+/// Read by the microphone thread (`presence`).
+pub const MIC_PRESENCE_DB: u16 = 10;
 
 /// Every live setting of the gate.
 #[rustfmt::skip]
@@ -114,6 +122,11 @@ pub const SPECS: &[Spec] = &[
     Spec::number(CLIP_DB, "clip_db", "Announcement gain", (-40, 12), Some("dB"), 0).icon("mdi:bullhorn"),
     Spec::number(TALK_DB, "talk_db", "Talk gain", (0, 18), Some("dB"), 6).icon("mdi:account-voice"),
     Spec::number(MIC_GAIN_DB, "mic_gain_db", "Microphone gain", (-5, 40), Some("dB"), 0).icon("mdi:microphone"),
+    Spec::number(CALL_RING_TIMEOUT, "call_ring_timeout", "Call ring timeout", (15, 120), Some("s"), 45).icon("mdi:phone-ring"),
+    Spec::number(CALL_RINGBACK_DB, "call_ringback_db", "Ringback level", (-40, 12), Some("dB"), 0).icon("mdi:phone-in-talk"),
+    Spec::number(CALL_PANEL_RING_VOLUME, "call_panel_ring_volume", "Panel ring volume", (0, 100), Some("%"), 80).icon("mdi:bell-ring"),
+    Spec::number(CALL_MAX_TALK, "call_max_talk", "Max talk time", (1, 10), Some("min"), 3).icon("mdi:timer-sand"),
+    Spec::number(MIC_PRESENCE_DB, "mic_presence_db", "Mic presence boost", (0, 6), Some("dB"), 3).icon("mdi:waveform"),
     // Encoder ranges: the vendor's offer; the maxima of both streams together ran without a frame
     // shortfall on the panel (docs/home-assistant.md).
     Spec::select(20, "main_resolution", "Main resolution", MAIN_SIZES, 0).icon("mdi:video"),
@@ -142,6 +155,17 @@ pub const SPECS: &[Spec] = &[
     isp(149, "isp_nr_3d", "3D noise reduction", (0, 100), 50),
     isp_switch(153, "isp_hlc", "Highlight compensation", false),
 ];
+
+/// A setting's Home Assistant entity; the ring timeout moves in 5 s steps.
+pub fn entity(spec: &Spec) -> camera_transport::mqtt::Entity {
+    let mut e = spec.entity();
+    if spec.slot == CALL_RING_TIMEOUT
+        && let camera_transport::mqtt::Domain::Number { step, .. } = &mut e.domain
+    {
+        *step = 5;
+    }
+    e
+}
 
 /// ISP keys applied at every start with their stored value, never seeded from the ISP: AWB mode 1
 /// is what keeps the image from turning magenta; saturation may read 0 from a monochrome night.
@@ -192,7 +216,7 @@ pub enum Target {
 
 pub fn target(slot: u16) -> Option<Target> {
     Some(match slot {
-        OPEN_SECONDS => Target::Door,
+        OPEN_SECONDS | CALL_RING_TIMEOUT..=CALL_MAX_TALK | MIC_PRESENCE_DB => Target::Door,
         CODEC_OUT_DB => Target::Codec { output: true },
         MIC_GAIN_DB => Target::Codec { output: false },
         CLIP_DB | TALK_DB => Target::Speaker,

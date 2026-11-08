@@ -475,8 +475,8 @@ fn negotiated_backchannel_decodes_only_rtp_after_play() {
     assert!(f.talk.next_pcm(std::time::Instant::now()).is_none());
     assert_eq!(c.call("PLAY", URL, &[]).code, 200);
     send(&mut c, 5); // RTCP channel: must not reach the speaker.
-    for _ in 0..5 {
-        send(&mut c, 4); // five 20 ms packets fill the 100 ms prebuffer
+    for _ in 0..7 {
+        send(&mut c, 4); // seven 20 ms packets fill the 100 ms prebuffer plus the 40 ms lead
     }
     assert_eq!(c.call("GET_PARAMETER", URL, &[]).code, 200);
     // The fake decoder's level 2048, through the start gain: raised and held under the -1 dBFS ceiling.
@@ -885,7 +885,7 @@ fn the_onvif_path_carries_pcmu_both_ways_while_the_camera_paths_keep_opus() {
     assert_eq!(f.audio.viewers(), 0, "the Opus hub has no listener");
     let mut packet = vec![0x80, 0, 0, 1, 0, 0, 0, 0, 1, 2, 3, 4];
     packet.extend([0x9f; 160]); // a loud constant level
-    for _ in 0..6 {
+    for _ in 0..7 {
         let stream = c.r.get_mut();
         stream.write_all(&[b'$', 4, 0, packet.len() as u8]).unwrap();
         stream.write_all(&packet).unwrap();

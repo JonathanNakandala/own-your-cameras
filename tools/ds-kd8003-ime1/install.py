@@ -195,11 +195,103 @@ def existing_size(shell, path):
     return int(words[0]) if status == 0 and words and words[0].isdigit() else 0
 
 
+# Every sound the speaker plays sits at one loudness, as loud as the speaker takes without clipping:
+# -12 dBFS RMS over the audible part (the level the talk mixer holds speech at), peaks held at
+# -1 dBFS by a look-ahead limiter. The built-in tones (src/speaker.rs TONE_AMPLITUDE) match it.
+CLIP_RMS_DBFS = -12.0
+CLIP_CEILING_DBFS = -1.0
+LOOPED_CLIPS = ("call_dial_tone",)
+
+
+def level_clip(pcm, looped=False, rate=16000):
+    """A clip trimmed and levelled: raw s16le mono in, the same format out.
+
+    Not looped: the silence or room noise before the first sound and after the last goes (kept 40 ms
+    before and 60 ms after, faded), so a clip speaks the moment it is played. A looped clip keeps its
+    length: its pause is part of the period. Then the gain that puts the gated loudness at
+    CLIP_RMS_DBFS, and a limiter (5 ms look-ahead, 60 ms release) that holds peaks at
+    CLIP_CEILING_DBFS instead of letting them clip."""
+    x = [v for (v,) in struct.iter_unpack("<h", pcm[: len(pcm) // 2 * 2])]
+    if not x:
+        return b""
+    frame = rate // 100
+
+    def frames_db(samples):
+        out = []
+        for i in range(0, len(samples) - frame + 1, frame):
+            power = sum(v * v for v in samples[i : i + frame]) / frame
+            out.append(10 * math.log10(power / 32768**2) if power else -200.0)
+        return out
+
+    if not looped:
+        db = frames_db(x)
+        if db:
+            loud = max(db)
+            onset = next(i for i, d in enumerate(db) if d > loud - 20)
+            end = max(i for i, d in enumerate(db) if d > loud - 40) + 1
+            start = max(0, onset * frame - rate * 40 // 1000)
+            stop = min(len(x), end * frame + rate * 60 // 1000)
+            x = x[start:stop]
+            fade_in, fade_out = rate * 5 // 1000, rate * 20 // 1000
+            for i in range(min(fade_in, len(x))):
+                x[i] = x[i] * i / fade_in
+            for i in range(min(fade_out, len(x))):
+                x[-1 - i] = x[-1 - i] * i / fade_out
+
+    # Loudness as EBU R128 gates it (without the K filter): 400 ms blocks every 100 ms, the blocks
+    # more than 10 dB below their mean left out, so pauses between words do not count.
+    squares = [0]
+    for v in x:
+        squares.append(squares[-1] + v * v)
+    block, hop = rate * 4 // 10, rate // 10
+    spans = [(i, i + block) for i in range(0, len(x) - block + 1, hop)] or [(0, len(x))]
+    powers = [(squares[b] - squares[a]) / (b - a) for a, b in spans]
+    powers = [p for p in powers if p > 32768**2 * 1e-7]
+    if not powers:
+        return struct.pack(f"<{len(x)}h", *[0] * len(x))
+    gate = sum(powers) / len(powers) / 10
+    loud = [p for p in powers if p > gate]
+    rms = math.sqrt(sum(loud) / len(loud)) / 32768
+    y = [v * 10 ** (CLIP_RMS_DBFS / 20) / rms for v in x]
+
+    ceiling = 32768 * 10 ** (CLIP_CEILING_DBFS / 20)
+    need = [min(1.0, ceiling / abs(v)) if v else 1.0 for v in y]
+    look = rate * 5 // 1000
+    # The gain at each sample is at most every need within `look` of it: minimum over the window,
+    # then release towards 1, then a moving average over the same window, which cannot rise above
+    # any need it covers, so the attack is smooth and still in place at the peak.
+    floor, q = [], []
+    padded = need + [1.0] * look
+    for i, g in enumerate(padded):
+        while q and padded[q[-1]] >= g:
+            q.pop()
+        q.append(i)
+        while q[0] < i - 2 * look:
+            q.pop(0)
+        if i >= look:
+            floor.append(padded[q[0]])
+    release = 1 - math.exp(-1 / (rate * 0.06))
+    held, g = [], 1.0
+    for f in floor:
+        g = min(f, g + (1 - g) * release)
+        held.append(g)
+    prefix = [0.0]
+    for h in held:
+        prefix.append(prefix[-1] + h)
+    smooth = []
+    for j in range(len(held)):
+        lo, hi = max(0, j - look), min(len(held), j + look + 1)
+        smooth.append((prefix[hi] - prefix[lo]) / (hi - lo))
+    out =[max(-ceiling, min(ceiling, v * k)) for v, k in zip(y, smooth)]
+    return struct.pack(f"<{len(out)}h", *[round(v) for v in out])
+
+
 def clips_tar(directory):
     pcm = {"door_opened": tone_clip((660, 0.18), (880, 0.35))}
     if directory:
         for path in sorted(Path(directory).expanduser().glob("*.pcm")):
             pcm[path.stem] = path.read_bytes()
+    pcm = {name: level_clip(data, looped=name in LOOPED_CLIPS) for name, data in pcm.items()}
     clips = {f"{name}.pcmd": residual_encode(data) for name, data in pcm.items()}
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w", format=tarfile.USTAR_FORMAT) as tar:

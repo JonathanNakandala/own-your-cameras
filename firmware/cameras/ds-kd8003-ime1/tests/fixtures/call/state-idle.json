@@ -1,0 +1,17 @@
+{
+  "answered_at": null,
+  "boot": "0badf00d",
+  "call_id": null,
+  "max_talk_s": 180,
+  "missed": null,
+  "panel": "absent",
+  "panel_ring_volume": 80,
+  "participants": {},
+  "phase": "idle",
+  "reason": null,
+  "ring_age_s": null,
+  "ring_timeout_s": 45,
+  "seq": 1,
+  "since": null,
+  "talk_age_s": null
+}

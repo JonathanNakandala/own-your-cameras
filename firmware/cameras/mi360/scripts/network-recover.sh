@@ -24,9 +24,17 @@ sleep 1
 
 # Copy the real, previously working configuration; never source credential text.
 # Give this session its own control socket, independent of the Xiaomi helpers.
+# A network without its own bgscan gets one: wpa_supplicant otherwise keeps the
+# first access point it joined for good, even after a much stronger one carrying
+# the same SSID appears (2026-11-08: -77 dBm at 1 Mbit/s beside one at -55 dBm,
+# and talk sessions stalled). Below -65 dBm it scans every 30 s, else every 300 s.
 mkdir -p "$run/ctrl"
 { printf 'ctrl_interface=%s/ctrl\nupdate_config=0\n' "$run"
-  sed '/^[[:space:]]*ctrl_interface=/d; /^[[:space:]]*update_config=/d' "$base/wpa.conf"
+  sed '/^[[:space:]]*ctrl_interface=/d; /^[[:space:]]*update_config=/d' "$base/wpa.conf" |
+      if grep -q '^[[:space:]]*bgscan=' "$base/wpa.conf"; then cat; else
+          sed '/^[[:space:]]*network={/a\
+    bgscan="simple:30:-65:300"'
+      fi
 } >"$run/wpa.conf"
 chmod 600 "$run/wpa.conf"
 

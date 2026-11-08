@@ -9,7 +9,7 @@ keypad.
 
 | Layer | Where | Rule |
 |---|---|---|
-| Domain | `src/access.rs`, `pin.rs`, `config.rs`, `home.rs` (entities on the shared MQTT layer), `inputs.rs` (the input edge source), `settings.rs` (the one list of live settings), `media.rs` (their apply owner), `telemetry.rs`, `keypad_frames.rs` | pure, host-tested; time and hardware state are passed in, decisions come back as values |
+| Domain | `src/access.rs`, `call.rs` (the intercom call), `call_wire.rs` (its contract), `call_link.rs` (the direct link server: an adapter on std sockets, kept here so host tests reach it), `speaker.rs` (what the speaker plays next), `pin.rs`, `config.rs`, `home.rs` (entities on the shared MQTT layer), `inputs.rs` (the input edge source), `settings.rs` (the one list of live settings), `media.rs` (their apply owner), `telemetry.rs`, `keypad_frames.rs` | pure, host-tested; time and hardware state are passed in, decisions come back as values |
 | Shared transport | `../../crates/camera-transport`, `camera-opus`, `keypad-protocol` | MQTT and Home Assistant discovery, RTSP/RTP, PCMU and Opus framing, the talkback mixer, keypad bus envelopes (AES-ECB + CRC) and the staged key handoff |
 | Adapters | `src/runtime/` (ARM only) | vendor stop, ioctls, the media bridge FFI (`live.rs`: the apply owner's board backend, settings and telemetry threads), the keypad UART session, MQTT thread, speaker and capture loops, diagnostics HTTP |
 | C bridge | `sdk/media_bridge.c`, `sdk/hisi_v3_types.h` | the HiSilicon MPP V1 pipeline over the vendor libraries loaded at run time; structure layouts from OpenIPC Divinus (MIT) |
@@ -25,6 +25,13 @@ relay confirmed the pulse; a pulse that failed plays the refusal instead. Beside
 generation that changes on each of them. The loop keeps the relay, the release retries and the
 watchdog exit, and republishes `lock/state` when the generation or the confirmed strike bit changes.
 
+`call::Call` owns the intercom call the same way: the button press, MQTT commands and the direct
+link's commands all go through `Call::handle`, timeouts and leases through `Call::tick` every pass,
+and the loop executes the returned effects in order (ringback, tones, `OpenStrike` through the
+strike owner, publications, the `missed.json` mark next to `settings.json`). The speaker thread is
+the hardware side of `speaker::Scheduler`: 40 ms frames, one-shot sounds over the looping ringback
+over talk, so a stop or a door clip takes effect at the next frame.
+
 Live settings follow the same split. `settings::SPECS` is the only list of keys (discovery, file,
 docs table and validation derive from it). The main loop forwards each `Command::Setting` to the
 `settings` thread, where `media::Owner` applies it to the codec, speaker, encoder or ISP, reads back
@@ -38,8 +45,9 @@ Only VENC channels 0 (main) and 1 (sub) are ever touched.
 
 Every thread is named, so `/proc/<pid>/task/*/comm` shows what uses the CPU: `wdt` (feeds the
 watchdog while the main loop beats), `video0`, `video1`, `mic`, `speaker`, `rtsp`, `button`,
-`keypad`, `mqtt`, `mqtt-edges`, `settings`, `telemetry` (every 30 s), `http` (when enabled), `signals` and `beat` (only while media starts). The main loop runs every 50 ms: strike
-pulse end and release retries, inputs, call button, remote commands, keypad decisions, day/night
+`keypad`, `mqtt`, `mqtt-edges`, `settings`, `telemetry` (every 30 s), `http` (when enabled),
+`call-link` and one `call-link-c` per panel connection (at most two, when `call_port` is set), `signals` and `beat` (only while media starts). The main loop runs every 50 ms: strike
+pulse end and release retries, inputs, call button, remote commands, the call link and call timeouts, keypad decisions, day/night
 and the boot-health mark.
 
 ## Safety rules
