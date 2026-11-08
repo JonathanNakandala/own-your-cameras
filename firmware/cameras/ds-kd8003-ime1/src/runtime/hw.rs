@@ -110,9 +110,6 @@ pub fn set_relay(g: &Device, mask: u32, reason: &str) -> i32 {
         s.relay_rc = rc;
         if rc == 0 {
             s.relay_mask = mask;
-            if mask == 0 {
-                s.relay_until_ms = None;
-            }
         } else {
             s.relay_mask |= mask;
         }

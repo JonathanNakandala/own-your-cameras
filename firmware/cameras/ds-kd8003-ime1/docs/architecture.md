@@ -20,7 +20,10 @@ keypad.
 on what they return. The access rule is an example: the keypad thread reports buffer snapshots,
 `access::Access` decides `Grant`, `Deny` or nothing from the snapshot, the clock and the strike
 state, and the main loop pulses the relay, plays the clip and publishes the event only after the
-relay confirmed the pulse; a pulse that failed plays the refusal instead.
+relay confirmed the pulse; a pulse that failed plays the refusal instead. Beside it,
+`strike::Strike` owns the pulse: its length, restart, "close now", when the release is due and a
+generation that changes on each of them. The loop keeps the relay, the release retries and the
+watchdog exit, and republishes `lock/state` when the generation or the confirmed strike bit changes.
 
 Live settings follow the same split. `settings::SPECS` is the only list of keys (discovery, file,
 docs table and validation derive from it). The main loop forwards each `Command::Setting` to the

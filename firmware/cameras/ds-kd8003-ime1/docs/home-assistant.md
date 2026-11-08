@@ -11,7 +11,7 @@ availability are plain text (`open`, `online`); events and `lock/state` are JSON
 | Open quietly | `button` | `door/command` ← `open_quiet` |
 | Close now | `button`: releases the strike before the pulse runs out | `door/command` ← `close` |
 | Door | `binary_sensor`, the reed contact | `reed` (retained `open`/`closed`) |
-| Lock actuator | `binary_sensor`, the strike | `lock/state` (`{"lock_actuator":"unlocked",…}`) |
+| Lock actuator | `binary_sensor`, the strike; the pulse keys below are also attributes of the `door` cover | `lock/state` (retained JSON, [relock countdown](#relock-countdown)) |
 | Doorbell | `event`: `press`, `release` | `call_button` |
 | Access | `event`: `granted` (with `name`), `denied`, `remote` | `access` |
 
@@ -20,6 +20,27 @@ command the broker replays from its retained store (on subscribe) is ignored; a 
 delivered live arrives as a normal command and acts. A door command that waited more than 2 s is
 dropped, so a stale message cannot open the door. Events are never retained or replayed; one
 that cannot be delivered within 10 s is dropped.
+
+## Relock countdown
+
+`lock/state` is republished on every change of the strike pulse: an open, a restart by a second open
+during the pulse (it runs again from now with the current `open_seconds`), "Close now", and the
+confirmed release. It is not republished every second.
+
+```json
+{"lock_actuator":"unlocked","lock_actuator_unlocked":true,"pulse_s":120,"relock_at":"2026-11-08T14:03:27.412Z","relock_in_s":119.95}
+{"lock_actuator":"locked","lock_actuator_unlocked":false,"pulse_s":null,"relock_at":null,"relock_in_s":0}
+```
+
+| Key | Meaning |
+|---|---|
+| `pulse_s` | length of the running pulse (the full scale of a countdown ring) |
+| `relock_at` | UTC deadline, ISO 8601 with milliseconds; `null` when locked or while the clock is not in sync (`ntp`) |
+| `relock_in_s` | seconds left at publication, from the monotonic clock |
+
+Consumer rule: draw remaining = `relock_at` − now; when `relock_at` is `null`, `relock_in_s` counted
+from when the message arrived. No countdown when locked, when the gate is `offline`, or once the
+deadline has passed (a release still being retried, an open the relay rejected, or a gate that reset mid-pulse).
 
 The call-button light follows day and night from the sensor's exposure, together with the IR light.
 

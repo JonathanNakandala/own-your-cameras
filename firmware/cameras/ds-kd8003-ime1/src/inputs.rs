@@ -3,6 +3,16 @@
 //! them in order. A consumer that falls behind loses edges instead of stalling the input loop.
 use std::sync::Mutex;
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
+use std::time::SystemTime;
+
+/// The running strike pulse at the moment its edge was emitted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LockPulse {
+    pub pulse_ms: u64,
+    pub remaining_ms: u64,
+    /// The absolute relock time, only while the wall clock is known to be in sync.
+    pub relock_at: Option<SystemTime>,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Edge {
@@ -14,8 +24,9 @@ pub enum Edge {
     Tamper(bool),
     /// The gate as a cover: open while the strike is released or the leaf is away from the reed.
     Cover(bool),
-    /// Strike released (true) or locked.
-    Lock(bool),
+    /// Strike released (true) or locked, with the running pulse if there is one. Emitted on every
+    /// pulse change, a restart during a pulse included.
+    Lock(bool, Option<LockPulse>),
     /// A PIN opened the gate for this user.
     Granted(String),
     /// A PIN was refused.
@@ -107,7 +118,7 @@ mod tests {
         assert_eq!(Edge::CallButton(true).binary(), Some(("call_button", true)));
         assert_eq!(Edge::Reed(false).binary(), Some(("door", false)));
         assert_eq!(Edge::Tamper(true).binary(), Some(("tamper", true)));
-        assert_eq!(Edge::Lock(true).binary(), None);
+        assert_eq!(Edge::Lock(false, None).binary(), None);
         assert_eq!(Edge::Denied.binary(), None);
     }
 }

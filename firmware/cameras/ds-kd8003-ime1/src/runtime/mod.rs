@@ -20,9 +20,10 @@ use camera_transport::{
 use ds_kd8003_ime1_cam::access::{Access, Decision};
 use ds_kd8003_ime1_cam::config::{self, Config};
 use ds_kd8003_ime1_cam::home::DoorCommand;
-use ds_kd8003_ime1_cam::inputs::{Edge, Edges};
+use ds_kd8003_ime1_cam::inputs::{Edge, Edges, LockPulse};
 use ds_kd8003_ime1_cam::media::Owner;
 use ds_kd8003_ime1_cam::settings::{self as live_settings, SPECS};
+use ds_kd8003_ime1_cam::strike::Strike;
 use ffi::*;
 use hw::*;
 use std::collections::VecDeque;
@@ -43,8 +44,6 @@ fn spawn_named<F: FnOnce() + Send + 'static>(name: &str, f: F) -> thread::JoinHa
 
 const AU_CAP: usize = 1024 * 1024;
 const WDT_FEED: u32 = 0x0000_5704;
-/// The strike never stays energized longer than this whatever the configuration says.
-const MAX_PULSE_MS: u64 = 120_000;
 /// Healthy for this long after start marks the boot good for the supervisor.
 const HEALTHY_AFTER: Duration = Duration::from_secs(120);
 /// After this many consecutive failed strike releases (one per 50 ms pass) the process exits so the unfed watchdog resets the board.
@@ -75,7 +74,7 @@ pub struct State {
     pub tamper: u32,
     pub button_presses: u64,
     pub relay_mask: u32,
-    pub relay_until_ms: Option<u64>,
+    pub strike: Strike,
     pub relay_rc: i32,
     pub relay_pulses: u64,
     pub release_failures: u32,
@@ -332,12 +331,15 @@ pub fn main(args: &[String]) {
     // SAFETY: the graph is up; the bridge creates VENC channel 2 once, bound beside the main encoder.
     let jpeg_rc = unsafe { gm_jpeg_open() };
     g.log(format!("snapshot: JPEG channel rc {jpeg_rc}"));
+    // True while the SNTP keeper last found the clock in sync: only then is `relock_at` published.
+    let clock_synced = Arc::new(AtomicBool::new(false));
     if !cfg.ntp.is_empty() {
         let keeper = camera_transport::sntp::Keeper {
             servers: cfg.ntp.clone(),
             log: |line| eprintln!("{line}"),
         };
-        if let Err(e) = keeper.spawn(Arc::new(AtomicBool::new(false))) {
+        if let Err(e) = keeper.spawn_synced(Arc::new(AtomicBool::new(false)), clock_synced.clone())
+        {
             g.log(format!("time: not started: {e}"));
         }
     }
@@ -484,7 +486,7 @@ pub fn main(args: &[String]) {
     let mut last_inputs: Option<(u32, u32)> = None;
     let mut last_ae = Instant::now() - Duration::from_secs(5);
     let mut daynight = DayNight::default();
-    let mut unlocked_published: Option<bool> = None;
+    let mut lock_published: Option<(u64, bool)> = None;
     let mut cover_published: Option<bool> = None;
     let mut health_written = false;
     g.st.lock().unwrap().phase = "running".into();
@@ -507,16 +509,15 @@ pub fn main(args: &[String]) {
     };
     let open = |g: &Device, reason: &str| {
         // The pulse length is a live setting: read it at each opening.
-        let open_ms =
-            u64::from(reader.get(live_settings::OPEN_SECONDS).unwrap_or(5).max(1) as u32) * 1000;
+        let open_s = reader.get(live_settings::OPEN_SECONDS).unwrap_or(5).max(1) as u32;
         let rc = set_relay(g, STRIKE, reason);
         let mut s = g.st.lock().unwrap();
+        s.strike.open(g.now_ms(), open_s);
         if rc == 0 {
-            s.relay_until_ms = Some(g.now_ms() + open_ms.min(MAX_PULSE_MS));
             s.relay_pulses += 1;
         } else {
             // The output may have switched anyway: release it on the next pass.
-            s.relay_until_ms = Some(0);
+            s.strike.close_now();
         }
         rc == 0
     };
@@ -526,14 +527,16 @@ pub fn main(args: &[String]) {
         let now_s = now / 1000;
         g.beat();
 
-        // Strike pulse end. A failed release is retried every pass; the recorded mask only changes on
-        // success, so `expired` stays true until the hardware confirms the strike is off.
+        // Strike pulse end. A failed release is retried every pass; the pulse stays due until the
+        // hardware confirms the strike is off. Bits on without a pulse (a stray energize) go too.
         let expired = {
             let s = g.st.lock().unwrap();
-            s.relay_mask != 0 && s.relay_until_ms.map(|u| now >= u).unwrap_or(true)
+            s.relay_mask != 0 && (s.strike.due(now) || s.strike.pulse(now).is_none())
         };
         if expired && set_relay(&g, 0, "pulse end") == 0 {
-            g.st.lock().unwrap().release_failures = 0;
+            let mut s = g.st.lock().unwrap();
+            s.release_failures = 0;
+            s.strike.released();
         } else if expired {
             let failures = {
                 let mut s = g.st.lock().unwrap();
@@ -551,10 +554,26 @@ pub fn main(args: &[String]) {
             save_settings(&g, &settings_thread);
             std::process::exit(7);
         }
-        let unlocked = g.st.lock().unwrap().relay_mask & STRIKE != 0;
-        if unlocked_published != Some(unlocked) {
-            emit(Edge::Lock(unlocked));
-            unlocked_published = Some(unlocked);
+        // Published on every pulse change (open, restart, close, release) and strike bit flip; the
+        // pulse is read here, at emit, so channel delay stays out of the value.
+        let (unlocked, generation, pulse) = {
+            let s = g.st.lock().unwrap();
+            (
+                s.relay_mask & STRIKE != 0,
+                s.strike.generation(),
+                s.strike.pulse(now),
+            )
+        };
+        if lock_published != Some((generation, unlocked)) {
+            let pulse = pulse.map(|p| LockPulse {
+                pulse_ms: p.pulse_ms,
+                remaining_ms: p.remaining_ms,
+                relock_at: clock_synced
+                    .load(Ordering::Relaxed)
+                    .then(|| std::time::SystemTime::now() + Duration::from_millis(p.remaining_ms)),
+            });
+            emit(Edge::Lock(unlocked, pulse));
+            lock_published = Some((generation, unlocked));
         }
 
         // Inputs: reed (bit 0), tamper.
@@ -623,7 +642,7 @@ pub fn main(args: &[String]) {
             if cmd == DoorCommand::Close {
                 // Expire the pulse; the release above runs on the next pass with its retry logic.
                 g.log("remote: close");
-                g.st.lock().unwrap().relay_until_ms = Some(0);
+                g.st.lock().unwrap().strike.close_now();
                 continue;
             }
             let quiet = cmd == DoorCommand::OpenQuiet;
