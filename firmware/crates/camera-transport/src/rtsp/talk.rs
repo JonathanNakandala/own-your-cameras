@@ -46,7 +46,13 @@ struct Fifo {
     largest: usize,
     /// The longest gap between packets so far, pauses excluded.
     max_gap: Duration,
+    /// Extra buffering this talker earned by running dry: [`REBUFFER_STEP`] each time, up to
+    /// [`REBUFFER_MAX_MS`], so jitter that emptied the buffer once does not empty it again.
+    extra: usize,
 }
+
+const REBUFFER_STEP_MS: usize = 40;
+const REBUFFER_MAX_MS: usize = 300;
 
 /// What one talk session's audio went through, in speaker samples; logged when the session ends.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -59,7 +65,14 @@ pub struct TalkStats {
     pub rebuffers: u64,
     /// Samples dropped because the talker was more than the latency cap ahead.
     pub overflow: u64,
+    /// The longest wait between two packets (pauses in speech excluded), and how many waits exceeded
+    /// [`LATE`]: delivery jitter as the camera saw it.
+    pub max_gap_ms: u64,
+    pub late: u64,
 }
+
+/// A wait between packets longer than this is late delivery (20 ms frames arrive every 20 ms).
+const LATE: Duration = Duration::from_millis(60);
 
 /// Pure mixing state: no clock reads, no I/O. Samples are full-scale `f32` after each talker's gain.
 pub struct Mixer {
@@ -70,6 +83,8 @@ pub struct Mixer {
     prebuffer: usize,
     max_buffer: usize,
     lead: Duration,
+    /// Holds each talker's buffer against clock drift by playing 1 % slower or faster.
+    drift: bool,
     finished: Vec<TalkStats>,
 }
 
@@ -88,6 +103,7 @@ impl Mixer {
     pub fn new(rate: u32) -> Self {
         Self {
             lead: LEAD,
+            drift: true,
             ..Self::with_buffers(rate, PREBUFFER_MS, MAX_BUFFER_MS)
         }
     }
@@ -103,6 +119,7 @@ impl Mixer {
             prebuffer: prebuffer_ms * ms,
             max_buffer: max_buffer_ms * ms,
             lead: Duration::ZERO,
+            drift: false,
             finished: Vec::new(),
         }
     }
@@ -150,16 +167,25 @@ impl Mixer {
     /// A talker's prebuffer: the base one, or for talkers that deliver in bursts (Surveillance Station sends
     /// two 140 ms PCMU packets every 300 ms) its longest packet or gap and half the base again, so the
     /// buffer outlasts the wait for the next burst.
+    fn lead_samples(&self) -> usize {
+        (self.lead.as_micros() * self.frame as u128 / TICK.as_micros()) as usize
+    }
+
     fn prebuffer_of(&self, fifo: &Fifo) -> usize {
+        // The output clock starts `lead` ahead of real time and takes that much at once, so the join
+        // threshold covers it: the jitter cushion left is the whole base prebuffer, plus what this
+        // talker earned by running dry.
+        let lead = self.lead_samples();
+        let base = self.prebuffer + fifo.extra + lead;
         let gap = (fifo.max_gap.as_micros() * self.frame as u128 / TICK.as_micros()) as usize;
         let need = fifo.largest.max(gap);
         if need <= self.prebuffer {
-            return self.prebuffer;
+            return base;
         }
         // Never more than half the FIFO, so the next burst always fits behind it.
         (need + self.prebuffer / 2)
             .min(self.max_buffer / 2)
-            .max(self.prebuffer)
+            .max(base)
     }
 
     pub fn push_at(&mut self, slot: usize, samples: &[f32], now: Instant) {
@@ -167,6 +193,7 @@ impl Mixer {
             Some(Some(fifo)) => self.prebuffer_of(&Fifo {
                 largest: fifo.largest.max(samples.len()),
                 max_gap: gap_after(fifo, now),
+                extra: fifo.extra,
                 ..Fifo::default()
             }),
             _ => return,
@@ -175,6 +202,15 @@ impl Mixer {
             return;
         };
         fifo.largest = fifo.largest.max(samples.len());
+        if let Some(at) = fifo.last_push {
+            let wait = now.saturating_duration_since(at);
+            if wait < PAUSE {
+                fifo.stats.max_gap_ms = fifo.stats.max_gap_ms.max(wait.as_millis() as u64);
+                if wait > LATE {
+                    fifo.stats.late += 1;
+                }
+            }
+        }
         fifo.max_gap = gap_after(fifo, now);
         fifo.last_push = Some(now);
         fifo.samples.extend(samples);
@@ -225,7 +261,40 @@ impl Mixer {
         self.next_tick = Some(due + TICK);
         let frame = self.frame;
         let mut mix = vec![0f32; frame];
+        let drift = self.drift;
+        let low = self.prebuffer / 2;
+        let high = self.prebuffer * 2 + self.lead_samples();
         for fifo in self.talkers.iter_mut().flatten().filter(|t| t.playing) {
+            // Clock drift between the sender and this output empties or fills the buffer slowly; play a
+            // block from 1 % fewer or more samples (inaudible) to hold it instead of running dry.
+            let level = fifo.samples.len();
+            let want = if fifo.closing || !drift {
+                frame
+            } else if level < low + frame {
+                frame - frame / 100
+            } else if level > high + frame {
+                frame + frame / 100
+            } else {
+                frame
+            };
+            if level >= want && want != frame {
+                let src: Vec<f32> = fifo.samples.drain(..want).collect();
+                for (i, out) in mix.iter_mut().enumerate() {
+                    let pos = i as f32 * (want - 1) as f32 / (frame - 1) as f32;
+                    let k = pos as usize;
+                    let f = pos - k as f32;
+                    let next = src[(k + 1).min(want - 1)];
+                    *out += src[k] + (next - src[k]) * f;
+                }
+                fifo.stats.played += want as u64;
+                if fifo.samples.is_empty() && !fifo.closing {
+                    fifo.playing = false;
+                    fifo.stats.rebuffers += 1;
+                    let ms = frame / TICK.as_millis() as usize;
+                    fifo.extra = (fifo.extra + REBUFFER_STEP_MS * ms).min(REBUFFER_MAX_MS * ms);
+                }
+                continue;
+            }
             // An underrun is zero-filled; an emptied talker buffers again before it rejoins.
             let take = frame.min(fifo.samples.len());
             for (out, sample) in mix.iter_mut().zip(fifo.samples.drain(..take)) {
@@ -240,6 +309,8 @@ impl Mixer {
                 fifo.playing = false;
                 if !fifo.closing {
                     fifo.stats.rebuffers += 1;
+                    let ms = self.frame / TICK.as_millis() as usize;
+                    fifo.extra = (fifo.extra + REBUFFER_STEP_MS * ms).min(REBUFFER_MAX_MS * ms);
                 }
             }
         }
@@ -344,12 +415,14 @@ impl Talkback {
     fn log(&self, s: TalkStats) {
         let ms = |samples: u64| samples * 1000 / u64::from(self.rate);
         eprintln!(
-            "talk: session ended received_ms={} played_ms={} underruns={} rebuffers={} overflow_ms={}",
+            "talk: session ended received_ms={} played_ms={} underruns={} rebuffers={} overflow_ms={} max_gap_ms={} late={}",
             ms(s.received),
             ms(s.played),
             s.underruns,
             s.rebuffers,
-            ms(s.overflow)
+            ms(s.overflow),
+            s.max_gap_ms,
+            s.late
         );
     }
 }
@@ -471,6 +544,50 @@ mod tests {
 
     fn ms(n: u64) -> Duration {
         Duration::from_millis(n)
+    }
+
+    #[test]
+    fn a_sender_slower_than_the_output_clock_never_runs_dry() {
+        // The sender delivers 0.5 % less than real time: without stretching, a 100 ms cushion runs dry
+        // within 20 s; with 1 % stretching below half of it, it holds.
+        let mut mixer = Mixer::new(16_000);
+        let t0 = Instant::now();
+        let a = mixer.claim().unwrap();
+        let mut sent = 0f64;
+        let mut t = Duration::ZERO;
+        let mut next = t0;
+        while t < Duration::from_secs(60) {
+            let due = t.as_secs_f64() * 16_000.0 * 0.995;
+            while sent + F as f64 <= due + 7.0 * F as f64 {
+                mixer.push_at(a, &[0.1; F], t0 + t);
+                sent += F as f64;
+            }
+            while next <= t0 + t {
+                if mixer.next(t0 + t).is_none() {
+                    break;
+                }
+                next += ms(20);
+            }
+            t += ms(5);
+        }
+        let stats = mixer.talkers[a].as_ref().unwrap().stats;
+        assert!(stats.played > 16_000 * 59, "{stats:?}");
+        assert_eq!(stats.rebuffers, 0, "{stats:?}");
+        assert_eq!(stats.underruns, 0, "{stats:?}");
+    }
+
+    #[test]
+    fn a_talker_that_ran_dry_buffers_40_ms_more_before_it_rejoins() {
+        let mut mixer = Mixer::with_buffers(16_000, 40, 800);
+        let t0 = Instant::now();
+        let a = mixer.claim().unwrap();
+        mixer.push_at(a, &[0.1; 2 * F], t0);
+        assert!(mixer.next(t0).is_some());
+        assert!(mixer.next(t0 + ms(20)).is_some(), "this block empties the buffer: a rebuffer");
+        mixer.push_at(a, &[0.1; 2 * F], t0 + ms(30));
+        assert!(mixer.next(t0 + ms(40)).is_none(), "40 ms no longer rejoins");
+        mixer.push_at(a, &[0.1; 2 * F], t0 + ms(50));
+        assert!(mixer.next(t0 + ms(60)).is_some(), "80 ms does");
     }
 
     #[test]
@@ -606,12 +723,12 @@ mod tests {
     fn rtp_from_a_talker_reaches_the_speaker_with_gain() {
         let talk = fake_talkback();
         let mut lease = talk.claim().unwrap();
-        for _ in 0..4 {
+        for _ in 0..6 {
             lease.push_rtp(&rtp(100));
         }
         assert!(
             talk.next_pcm(Instant::now()).is_none(),
-            "the talker is still within its 100 ms buffer"
+            "the talker is still within its 140 ms buffer (100 ms plus the 40 ms lead)"
         );
         lease.push_rtp(&rtp(100));
         let pcm = talk.next_pcm(Instant::now()).unwrap();
@@ -697,7 +814,7 @@ mod tests {
             .collect();
         let mut packet = vec![0x80, 0, 0, 1, 0, 0, 0, 0, 1, 2, 3, 4];
         packet.extend(&tone);
-        for _ in 0..6 {
+        for _ in 0..7 {
             lease.push_rtp(&packet);
         }
         let pcm = talk.next_pcm(Instant::now()).unwrap();

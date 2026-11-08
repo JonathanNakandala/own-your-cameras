@@ -187,6 +187,8 @@ fn amp(g: &Device, on: bool) {
 
 /// Amplifier stays on this long after the last talk block, so word gaps do not click it.
 const TALK_HOLD: Duration = Duration::from_millis(400);
+/// Silent 40 ms frames queued ahead of talk: the hardware-side jitter cushion (and added latency).
+const TALK_PREFILL_FRAMES: usize = 2;
 /// Talk samples held back while the AO refuses frames, in 40 ms frames.
 const TALK_BUF_FRAMES: usize = 4;
 
@@ -194,6 +196,9 @@ const TALK_BUF_FRAMES: usize = 4;
 const SETTLE_FRAMES: usize = 6;
 
 fn gained(samples: &[i16], gain: f32) -> Vec<i16> {
+    if gain == 1.0 {
+        return samples.to_vec();
+    }
     samples
         .iter()
         .map(|&v| (v as f32 * gain).clamp(-32768.0, 32767.0) as i16)
@@ -317,11 +322,16 @@ pub fn speaker_loop(
         let mut got = false;
         while let Some(block) = talk.next_pcm(Instant::now()) {
             got = true;
-            talk_buf.extend(
-                block
-                    .iter()
-                    .map(|&v| (v as f32 * talk_gain).clamp(-32768.0, 32767.0) as i16),
-            );
+            // No soft-float pass at 0 dB: the ARM926 has no FPU and this runs per sample.
+            if talk_db == 0 {
+                talk_buf.extend_from_slice(&block);
+            } else {
+                talk_buf.extend(
+                    block
+                        .iter()
+                        .map(|&v| (v as f32 * talk_gain).clamp(-32768.0, 32767.0) as i16),
+                );
+            }
         }
         if scheduled && got {
             // Talk right after a scheduled sound keeps the amplifier: no settle, no click.
@@ -354,6 +364,12 @@ pub fn speaker_loop(
                 amp(&g, true);
                 g.st.lock().unwrap().speaker_busy = true;
                 g.log("speaker: talk start");
+                // The AO queue is the last cushion: with only the mixer's 40 ms lead in it, this thread
+                // waking 30 ms late on the busy CPU left the DAC without samples (a click-gap in speech).
+                // Silence ahead of the first frame keeps it TALK_PREFILL_FRAMES deeper for the session.
+                for _ in 0..TALK_PREFILL_FRAMES {
+                    let _ = send(&g, &vec![0; frame_len]);
+                }
             }
             talk_amp_until = Some(now + TALK_HOLD);
             while talk_buf.len() >= frame_len {
