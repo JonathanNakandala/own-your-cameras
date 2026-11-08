@@ -1,0 +1,24 @@
+{
+  "answered_at": null,
+  "boot": "0badf00d",
+  "call_id": "a3f9c2e1",
+  "max_talk_s": 180,
+  "missed": null,
+  "panel": "connected",
+  "panel_ring_volume": 80,
+  "participants": {
+    "dk-7f3a91": {
+      "mic": false
+    },
+    "panel": {
+      "mic": true
+    }
+  },
+  "phase": "active",
+  "reason": null,
+  "ring_age_s": null,
+  "ring_timeout_s": 45,
+  "seq": 5,
+  "since": null,
+  "talk_age_s": 12.4
+}
