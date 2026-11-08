@@ -7,8 +7,9 @@
 //! the strike is released or the reed is open), `reed` (the contact alone), `lock/state` (JSON with
 //! `lock_actuator`), `call_button` and `access` (event JSON), `door/command` (incoming).
 use crate::config::Config;
-use crate::inputs::Edge;
+use crate::inputs::{Edge, LockPulse};
 use camera_transport::mqtt::{self, Domain, Entity, Payloads};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// `door/command` payloads the application acts on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -165,11 +166,42 @@ impl mqtt::Parser for Parser {
     }
 }
 
-/// `lock/state` attributes.
-pub fn lock_state(unlocked: bool) -> String {
+/// `lock/state` attributes: the lock actuator, and the pulse a countdown is drawn from (`pulse_s` the full
+/// scale, `relock_at` the UTC deadline when the clock is in sync, `relock_in_s` the clock-free fallback).
+pub fn lock_state(pulse: &Option<LockPulse>) -> String {
+    match pulse {
+        None => r#"{"lock_actuator":"locked","lock_actuator_unlocked":false,"pulse_s":null,"relock_at":null,"relock_in_s":0}"#.to_owned(),
+        Some(p) => format!(
+            r#"{{"lock_actuator":"unlocked","lock_actuator_unlocked":true,"pulse_s":{},"relock_at":{},"relock_in_s":{}}}"#,
+            p.pulse_ms as f64 / 1000.0,
+            p.relock_at.map_or("null".to_owned(), |t| format!(r#""{}""#, iso_utc(t))),
+            p.remaining_ms as f64 / 1000.0,
+        ),
+    }
+}
+
+/// `2026-11-08T14:03:27.412Z`: ISO 8601 UTC with milliseconds (`Date.parse`, HA's `as_datetime`).
+pub fn iso_utc(t: SystemTime) -> String {
+    let ms = t
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64);
+    let (secs, ms) = (ms / 1000, ms % 1000);
+    let (days, rem) = ((secs / 86_400) as i64, secs % 86_400);
+    // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
     format!(
-        r#"{{"lock_actuator":"{}","lock_actuator_unlocked":{unlocked}}}"#,
-        if unlocked { "unlocked" } else { "locked" }
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{ms:03}Z",
+        rem / 3600,
+        rem / 60 % 60,
+        rem % 60
     )
 }
 
@@ -193,7 +225,7 @@ pub fn publication(edge: &Edge) -> Option<Out> {
     Some(match edge {
         Edge::Reed(o) => Out::State("reed", open(*o)),
         Edge::Cover(o) => Out::State("gate", open(*o)),
-        Edge::Lock(unlocked) => Out::State("lock_actuator", lock_state(*unlocked)),
+        Edge::Lock(pulse) => Out::State("lock_actuator", lock_state(pulse)),
         Edge::CallButton(pressed) => Out::Event(
             "doorbell",
             event(if *pressed { "press" } else { "release" }, None),
@@ -394,7 +426,11 @@ mod tests {
             publication(&Edge::Cover(false)),
             Some(Out::State("gate", "closed".into()))
         );
-        let Some(Out::State("lock_actuator", lock)) = publication(&Edge::Lock(true)) else {
+        let Some(Out::State("lock_actuator", lock)) = publication(&Edge::Lock(Some(LockPulse {
+            pulse_ms: 5_000,
+            remaining_ms: 5_000,
+            relock_at: None,
+        }))) else {
             panic!()
         };
         let v: Value = serde_json::from_str(&lock).unwrap();
@@ -419,5 +455,45 @@ mod tests {
             Some(Out::Event("doorbell", r#"{"event_type":"press"}"#.into()))
         );
         assert_eq!(publication(&Edge::Tamper(true)), None);
+    }
+
+    #[test]
+    fn the_locked_payload_has_no_countdown() {
+        let v: Value = serde_json::from_str(&lock_state(&None)).unwrap();
+        assert_eq!(v["lock_actuator"], "locked");
+        assert_eq!(v["lock_actuator_unlocked"], false);
+        assert!(v["pulse_s"].is_null() && v["relock_at"].is_null());
+        assert_eq!(v["relock_in_s"], 0);
+    }
+
+    #[test]
+    fn the_unlocked_payload_carries_the_pulse_with_and_without_a_clock() {
+        let at = UNIX_EPOCH + std::time::Duration::from_millis(1_794_146_607_412);
+        let pulse = LockPulse {
+            pulse_ms: 120_000,
+            remaining_ms: 119_950,
+            relock_at: Some(at),
+        };
+        let v: Value = serde_json::from_str(&lock_state(&Some(pulse))).unwrap();
+        assert_eq!(v["lock_actuator"], "unlocked");
+        assert_eq!(v["lock_actuator_unlocked"], true);
+        assert_eq!(v["pulse_s"].as_f64(), Some(120.0));
+        assert_eq!(v["relock_at"], "2026-11-08T14:03:27.412Z");
+        assert_eq!(v["relock_in_s"].as_f64(), Some(119.95));
+        let v: Value = serde_json::from_str(&lock_state(&Some(LockPulse {
+            relock_at: None,
+            ..pulse
+        })))
+        .unwrap();
+        assert!(v["relock_at"].is_null());
+        assert_eq!(v["relock_in_s"].as_f64(), Some(119.95));
+    }
+
+    #[test]
+    fn iso_times_are_utc_with_milliseconds() {
+        let at = |ms: u64| iso_utc(UNIX_EPOCH + std::time::Duration::from_millis(ms));
+        assert_eq!(at(0), "1970-01-01T00:00:00.000Z");
+        assert_eq!(at(951_782_400_005), "2000-02-29T00:00:00.005Z");
+        assert_eq!(at(4_107_542_399_999), "2100-02-28T23:59:59.999Z");
     }
 }

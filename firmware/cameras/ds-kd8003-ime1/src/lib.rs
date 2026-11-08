@@ -11,4 +11,5 @@ pub mod keypad_frames;
 pub mod media;
 pub mod pin;
 pub mod settings;
+pub mod strike;
 pub mod telemetry;

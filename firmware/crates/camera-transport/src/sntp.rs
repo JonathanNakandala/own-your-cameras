@@ -148,14 +148,30 @@ impl Keeper {
         false
     }
 
+    /// One [`Keeper::sync`] round whose result `synced` then carries.
+    pub fn round(&self, synced: &AtomicBool) -> bool {
+        let ok = self.sync();
+        synced.store(ok, Ordering::Relaxed);
+        ok
+    }
+
     /// Runs [`Keeper::sync`] until `stop`, on its own thread.
     pub fn spawn(self, stop: Arc<AtomicBool>) -> io::Result<std::thread::JoinHandle<()>> {
+        self.spawn_synced(stop, Arc::new(AtomicBool::new(false)))
+    }
+
+    /// [`Keeper::spawn`], with `synced` true while the last round put or found the clock in sync.
+    pub fn spawn_synced(
+        self,
+        stop: Arc<AtomicBool>,
+        synced: Arc<AtomicBool>,
+    ) -> io::Result<std::thread::JoinHandle<()>> {
         std::thread::Builder::new()
             .name("time".into())
             .stack_size(64 * 1024)
             .spawn(move || {
                 while !stop.load(Ordering::Relaxed) {
-                    let wait = if self.sync() { PERIOD } else { RETRY };
+                    let wait = if self.round(&synced) { PERIOD } else { RETRY };
                     let until = std::time::Instant::now() + wait;
                     while !stop.load(Ordering::Relaxed) && std::time::Instant::now() < until {
                         std::thread::sleep(Duration::from_millis(500));
@@ -229,5 +245,32 @@ mod tests {
             u64::from_be_bytes(r[40..48].try_into().unwrap()),
             to_ntp(sent)
         );
+    }
+
+    /// A loopback server answering with the reply fixture: its clock is ours, so nothing is stepped.
+    fn loopback_server() -> String {
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let addr = socket.local_addr().unwrap().to_string();
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 48];
+            if let Ok((_, from)) = socket.recv_from(&mut buf) {
+                let now = SystemTime::now();
+                let mut answer = reply(now, now, now);
+                answer[24..32].copy_from_slice(&buf[40..48]);
+                let _ = socket.send_to(&answer, from);
+            }
+        });
+        addr
+    }
+
+    #[test]
+    fn the_synced_flag_follows_the_last_round() {
+        let synced = AtomicBool::new(false);
+        let keeper = Keeper { servers: vec![loopback_server()], log: |_| {} };
+        assert!(keeper.round(&synced));
+        assert!(synced.load(Ordering::Relaxed));
+        let keeper = Keeper { servers: vec![], log: |_| {} };
+        assert!(!keeper.round(&synced));
+        assert!(!synced.load(Ordering::Relaxed));
     }
 }

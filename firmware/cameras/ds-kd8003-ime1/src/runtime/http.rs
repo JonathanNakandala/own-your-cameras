@@ -50,9 +50,9 @@ fn state_json(g: &Device) -> String {
         s.inputs & 1 != 0,
         s.button_presses,
         s.relay_mask,
-        s.relay_until_ms
-            .map(|u| u.saturating_sub(g.t0.elapsed().as_millis() as u64))
-            .unwrap_or(0),
+        s.strike
+            .pulse(g.t0.elapsed().as_millis() as u64)
+            .map_or(0, |p| p.remaining_ms),
         s.relay_rc,
         s.relay_pulses,
         json_str(s.keypad_phase),
