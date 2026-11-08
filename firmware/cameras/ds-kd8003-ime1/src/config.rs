@@ -37,6 +37,8 @@ pub struct Config {
     pub http_port: u16,
     /// ONVIF HTTP port (0 disables; on by default).
     pub onvif_port: u16,
+    /// Direct intercom link to the indoor panel (0 disables; on by default).
+    pub call_port: u16,
     /// NTP servers the clock follows (none: left alone).
     pub ntp: Vec<String>,
     /// Keys of earlier firmware that are live settings now ([`crate::settings::DEPRECATED`]), with
@@ -63,6 +65,7 @@ impl Default for Config {
             health: format!("{DEFAULT_BASE}/{HEALTH_MARKER}").into(),
             http_port: 0,
             onvif_port: 80,
+            call_port: 8089,
             ntp: Vec::new(),
             deprecated: Vec::new(),
         }
@@ -134,6 +137,10 @@ impl Config {
                 "http_port" => {
                     let v = number("http_port")?;
                     c.http_port = u16::try_from(v).map_err(|_| Error::Range("http_port"))?;
+                }
+                "call_port" => {
+                    let v = number("call_port")?;
+                    c.call_port = u16::try_from(v).map_err(|_| Error::Range("call_port"))?;
                 }
                 "onvif_port" => {
                     let v = number("onvif_port")?;
@@ -252,6 +259,7 @@ mod tests {
         assert_eq!(c.device_name, "DS-KD8003-IME1");
         assert!(c.deprecated.is_empty());
         assert_eq!(c.http_port, 0, "diagnostics are off unless asked for");
+        assert_eq!(c.call_port, 8089);
         assert_eq!(c.health, PathBuf::from("/home/config/custom/native.ok"));
     }
 

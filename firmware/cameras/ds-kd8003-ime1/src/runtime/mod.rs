@@ -18,8 +18,11 @@ use camera_transport::{
     SUB_PATH, SUB_PCMU_PATH, StreamPath,
 };
 use ds_kd8003_ime1_cam::access::{Access, Decision};
+use ds_kd8003_ime1_cam::call::{self, Call, CallId, DeviceId, Effect, Input, Limits, Tone};
+use ds_kd8003_ime1_cam::call_link::{self, LinkEvent};
+use ds_kd8003_ime1_cam::call_wire::{self, Context};
 use ds_kd8003_ime1_cam::config::{self, Config};
-use ds_kd8003_ime1_cam::home::DoorCommand;
+use ds_kd8003_ime1_cam::home::{self, Command, DoorCommand};
 use ds_kd8003_ime1_cam::inputs::{Edge, Edges, LockPulse};
 use ds_kd8003_ime1_cam::media::Owner;
 use ds_kd8003_ime1_cam::settings::{self as live_settings, SPECS};
@@ -50,6 +53,10 @@ const HEALTHY_AFTER: Duration = Duration::from_secs(120);
 const MAX_RELEASE_FAILURES: u32 = 20;
 /// Clip played instead of the built-in tone when a code is refused, if the payload ships it.
 const DENIED_CLIP: &str = "denied";
+/// One period of the call's ringback, looped while it rings (installer clip name).
+const RINGBACK_CLIP: &str = "call_dial_tone";
+/// The last missed call, next to `settings.json`.
+const MISSED_FILE: &str = "missed.json";
 /// stdout (the RAM log) stops growing past this; the in-memory ring keeps the latest lines.
 const MAX_STDOUT_BYTES: usize = 4 << 20;
 
@@ -439,9 +446,77 @@ pub fn main(args: &[String]) {
     let (settings_tx, settings_rx) = mpsc::channel();
     let settings_thread =
         live::run_settings(g.clone(), owner, board, settings_rx, publisher.clone());
-    if let Some(p) = publisher {
+    if let Some(p) = publisher.clone() {
         live::run_telemetry(g.clone(), p);
     }
+    // The intercom call: one owner, fed below from the button, MQTT and the direct link.
+    let missed_path = settings_file.with_file_name(MISSED_FILE);
+    let missed = std::fs::read_to_string(&missed_path)
+        .ok()
+        .and_then(|t| call_wire::parse_missed_file(&t));
+    let mut call = Call::new(random4(), missed);
+    let boot = call::hex(&random4());
+    let panel_id = DeviceId::panel();
+    let (call_link, link_events) = if cfg.call_port == 0 {
+        (None, None)
+    } else {
+        match TcpListener::bind((std::net::Ipv4Addr::UNSPECIFIED, cfg.call_port)) {
+            Ok(l) => {
+                let g2 = g.clone();
+                let (link, events) = call_link::serve(
+                    l,
+                    call_link::LinkConfig::new(cfg.rtsp_user.clone(), cfg.rtsp_password.clone()),
+                    Arc::new(AtomicBool::new(false)),
+                    move |line| g2.log(line),
+                );
+                g.log(format!("call-link: serving on {}", cfg.call_port));
+                (Some(link), Some(events))
+            }
+            Err(e) => {
+                g.log(format!("call-link: bind failed {e}"));
+                (None, None)
+            }
+        }
+    };
+    let ringback = clips.get(RINGBACK_CLIP).cloned();
+    if ringback.is_none() {
+        g.log(format!(
+            "call: no {RINGBACK_CLIP} clip, the call rings silently at the gate"
+        ));
+    }
+    let publish_call = |call: &Call| {
+        let now = g.now_ms();
+        let ctx = Context {
+            boot: boot.clone(),
+            wall_now_ms: clock_synced.load(Ordering::Relaxed).then(|| {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_millis() as u64)
+            }),
+            panel_connected: call_link.as_ref().is_some_and(|l| l.connected()),
+            ring_timeout_s: reader.get(live_settings::CALL_RING_TIMEOUT).unwrap_or(45) as u32,
+            max_talk_s: reader.get(live_settings::CALL_MAX_TALK).unwrap_or(3) as u32 * 60,
+            panel_ring_volume: reader
+                .get(live_settings::CALL_PANEL_RING_VOLUME)
+                .unwrap_or(80) as u32,
+        };
+        let json = call_wire::state_json(&call.snapshot(now), &ctx);
+        if let Some(l) = call_link.as_ref() {
+            l.publish(&json);
+        }
+        if let Some(p) = publisher.as_ref() {
+            let missed = call_wire::missed_json(call.missed().as_ref(), now);
+            if let Err(e) = p
+                .state(home::CALL_STATE, json)
+                .and_then(|_| p.state(home::CALL_MISSED, missed))
+            {
+                g.log(format!("mqtt: {e}"));
+            }
+        }
+    };
+    // After a reboot the call is idle: overwrite a retained ringing, and publish the kept mark.
+    publish_call(&call);
+    let mut context_published = (false, 0, 0, 0);
     let emit = |edge: Edge| {
         let missed = edges.emit(edge.clone());
         if missed > 0 {
@@ -521,6 +596,58 @@ pub fn main(args: &[String]) {
         }
         rc == 0
     };
+
+    // Executes the call's effects in order: the speaker first, so the ringback starts before any
+    // network I/O, then the strike, then publications.
+    let run_call = |call: &mut Call, effects: Vec<Effect>| {
+        for effect in effects {
+            match effect {
+                Effect::StartRingback => {
+                    if let Some(r) = ringback.as_ref() {
+                        let db = reader.get(live_settings::CALL_RINGBACK_DB).unwrap_or(0);
+                        speaker.play(audio::Sound::Ringback(Some((r.clone(), db))));
+                    }
+                }
+                Effect::StopRingback => speaker.play(audio::Sound::Ringback(None)),
+                Effect::Tone(Tone::Missed) => refuse(),
+                Effect::Tone(t) => speaker.play(audio::Sound::Tone(t)),
+                Effect::OpenStrike => {
+                    g.log("call: open");
+                    if open(&g, "call open") {
+                        announce("call", "door_opened", false);
+                        emit(Edge::Remote);
+                    } else {
+                        refuse();
+                    }
+                }
+                Effect::Changed => publish_call(call),
+                Effect::MissedChanged => {
+                    if clock_synced.load(Ordering::Relaxed) {
+                        let wall = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map_or(0, |d| d.as_millis() as u64);
+                        call.stamp_missed(wall);
+                    }
+                    save_missed(&g, &missed_path, call.missed().as_ref());
+                }
+                Effect::Event(e) => {
+                    g.log(format!(
+                        "call: {} {}{}",
+                        e.kind.name(),
+                        call::hex(&e.call_id),
+                        e.reason
+                            .map_or(String::new(), |r| format!(" ({})", r.name()))
+                    ));
+                    if let Some(p) = publisher.as_ref()
+                        && let Err(err) = p.event(home::CALL_EVENT, call_wire::event_json(&e))
+                    {
+                        g.log(format!("mqtt: {err}"));
+                    }
+                }
+            }
+        }
+    };
+    let fresh_id = || -> CallId { random4() };
 
     while !g.stop.load(Ordering::Relaxed) {
         let now = g.now_ms();
@@ -625,6 +752,15 @@ pub fn main(args: &[String]) {
             ));
             if pressed {
                 g.st.lock().unwrap().button_presses += 1;
+                match call.handle(
+                    g.now_ms(),
+                    Input::Pressed,
+                    &call_limits(&reader),
+                    fresh_id(),
+                ) {
+                    Ok(fx) => run_call(&mut call, fx),
+                    Err(_) => g.log(format!("call: press ignored while {}", call.phase().name())),
+                }
             }
             emit(Edge::CallButton(pressed));
         }
@@ -632,7 +768,27 @@ pub fn main(args: &[String]) {
         // Remote commands.
         while let Some(command) = commands.as_ref().and_then(|c| c.try_next(Instant::now())) {
             let cmd = match command {
-                mqtt::Command::App(cmd) => cmd,
+                mqtt::Command::App(Command::Door(cmd)) => cmd,
+                mqtt::Command::App(Command::Call {
+                    device,
+                    call: id,
+                    op,
+                }) => {
+                    let input = Input::Command {
+                        device: &device,
+                        call: id,
+                        op,
+                    };
+                    match call.handle(g.now_ms(), input, &call_limits(&reader), fresh_id()) {
+                        Ok(fx) => run_call(&mut call, fx),
+                        Err(r) => g.log(format!(
+                            "call: {op:?} from {} refused ({})",
+                            device.as_str(),
+                            r.name()
+                        )),
+                    }
+                    continue;
+                }
                 mqtt::Command::Setting { slot, value } => {
                     let _ = settings_tx.send(live::Msg::Set { slot, value });
                     continue;
@@ -654,6 +810,65 @@ pub fn main(args: &[String]) {
                 announce("remote", "door_opened", quiet);
                 emit(Edge::Remote);
             }
+        }
+
+        // Direct link (the panel).
+        while let Some(event) = link_events.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            let limits = call_limits(&reader);
+            match event {
+                LinkEvent::Connected => {
+                    // Fresh ages for the new client, also when the link count did not change.
+                    call.bump();
+                    publish_call(&call);
+                }
+                LinkEvent::Lost => {
+                    g.log("call-link: panel lost");
+                    if let Ok(fx) =
+                        call.handle(g.now_ms(), Input::LeaseLost(&panel_id), &limits, fresh_id())
+                    {
+                        run_call(&mut call, fx);
+                    }
+                }
+                LinkEvent::Command {
+                    conn,
+                    req,
+                    call: id,
+                    op,
+                } => {
+                    let input = Input::Command {
+                        device: &panel_id,
+                        call: id,
+                        op,
+                    };
+                    let result = call
+                        .handle(g.now_ms(), input, &limits, fresh_id())
+                        .map(|fx| run_call(&mut call, fx));
+                    if let Err(r) = result {
+                        g.log(format!("call: {op:?} from panel refused ({})", r.name()));
+                    }
+                    if let Some(l) = call_link.as_ref() {
+                        l.ack(conn, req, result);
+                    }
+                }
+            }
+        }
+        // The snapshot also carries the link and the call settings: republish when they change.
+        let context = (
+            call_link.as_ref().is_some_and(|l| l.connected()),
+            reader.get(live_settings::CALL_RING_TIMEOUT).unwrap_or(45),
+            reader.get(live_settings::CALL_MAX_TALK).unwrap_or(3),
+            reader
+                .get(live_settings::CALL_PANEL_RING_VOLUME)
+                .unwrap_or(80),
+        );
+        if context != context_published {
+            context_published = context;
+            call.bump();
+            publish_call(&call);
+        }
+        let fx = call.tick(g.now_ms(), &call_limits(&reader));
+        if !fx.is_empty() {
+            run_call(&mut call, fx);
         }
 
         // Keypad.
@@ -889,3 +1104,42 @@ fn save_settings(g: &Device, settings: &thread::JoinHandle<()>) {
 }
 
 const SAVE_BEFORE_EXIT: Duration = Duration::from_secs(2);
+
+/// Four bytes from the kernel's generator; the clock when it is unreadable (ids need freshness only).
+fn random4() -> [u8; 4] {
+    use std::io::Read;
+    let mut b = [0u8; 4];
+    if std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| f.read_exact(&mut b))
+        .is_err()
+    {
+        let t = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.subsec_nanos());
+        b = t.to_le_bytes();
+    }
+    b
+}
+
+/// The call's limits from the live settings (read at each pass, so a change applies at once).
+fn call_limits(reader: &camera_transport::settings::Reader) -> Limits {
+    Limits {
+        ring_timeout_ms: reader
+            .get(live_settings::CALL_RING_TIMEOUT)
+            .unwrap_or(45)
+            .max(1) as u64
+            * 1000,
+        max_talk_ms: reader.get(live_settings::CALL_MAX_TALK).unwrap_or(3).max(1) as u64 * 60_000,
+        card_lease_ms: 30_000,
+    }
+}
+
+/// Writes the missed mark through a temporary file, so a crash leaves the old one or the new one.
+fn save_missed(g: &Device, path: &std::path::Path, missed: Option<&call::Missed>) {
+    let tmp = path.with_extension("json.tmp");
+    let r = std::fs::write(&tmp, call_wire::missed_file(missed))
+        .and_then(|_| std::fs::rename(&tmp, path));
+    if let Err(e) = r {
+        g.log(format!("call: cannot save {}: {e}", path.display()));
+    }
+}

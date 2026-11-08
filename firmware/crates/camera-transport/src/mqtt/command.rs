@@ -102,9 +102,13 @@ impl Config {
 
     /// The `<id>` (or entity) a command topic addresses, and the entity whose command it is, if any.
     fn command_target<'a>(&'a self, topic: &'a str) -> Option<(&'a str, Option<&'a Entity>)> {
+        // An explicit command topic routes whatever the domain: the worker subscribes to every one,
+        // and a state-only entity (a sensor) may carry a command topic its discovery never advertises.
         let routed = self.entities.iter().find(|e| {
-            e.topics.as_ref().is_some_and(|t| t.command.is_some())
-                && e.command_path().is_some_and(|p| self.topic(&p) == topic)
+            e.topics
+                .as_ref()
+                .and_then(|t| t.command.as_deref())
+                .is_some_and(|p| self.topic(p) == topic)
         });
         match routed {
             Some(e) => Some((e.id.as_str(), Some(e))),
@@ -298,6 +302,9 @@ mod tests {
             Entity::new("open", "Open", Domain::Button)
                 .command_topic("door/command")
                 .route("door"),
+            Entity::new("call", "Call", Domain::Sensor)
+                .command_topic("call/command")
+                .route("call"),
         ])
     }
     fn send(cfg: &Config, topic: &str, payload: &[u8]) -> Result<Option<Command<String>>, String> {
@@ -383,6 +390,12 @@ mod tests {
         assert!(send(&cfg, "camera/test/move/set", &[255]).is_err());
         assert!(send(&cfg, "camera/test/move/set", &[b' '; 257]).is_err());
         assert!(send(&cfg, "camera/test/move/set", &[b' '; 256]).is_ok());
+        // A sensor's own command topic reaches its route, and only that topic does.
+        assert_eq!(
+            send(&cfg, "camera/test/call/command", b"{}"),
+            Ok(Some(Command::App("call={}".into())))
+        );
+        assert_eq!(send(&cfg, "camera/test/call/set", b"{}"), Ok(None));
         // An entity with its own command topic is not also reachable under <id>/set as a slot.
         assert_eq!(
             send(&cfg, "camera/test/gate/set", b"x"),

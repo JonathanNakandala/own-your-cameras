@@ -192,7 +192,11 @@ impl Config {
                     Domain::Event { types } => types.is_empty() || types.len() > 16,
                     _ => false,
                 }
-                || (e.control != Control::None && !e.domain.commands())
+                // A state-only entity may take commands only on its own explicit topic, by route.
+                || (e.control != Control::None
+                    && !e.domain.commands()
+                    && !(matches!(e.control, Control::Route(_))
+                        && e.topics.as_ref().is_some_and(|t| t.command.is_some())))
         };
         // MQTT length-prefixed fields; the encoder refuses longer ones rather than truncating.
         let field = |s: &str| s.len() <= usize::from(u16::MAX);

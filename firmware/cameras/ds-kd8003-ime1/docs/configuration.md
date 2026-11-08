@@ -23,6 +23,7 @@ stored in `settings.json` in the same directory.
 | `pins` | `/home/config/custom/pins.conf` | PIN table |
 | `clips` | `/home/app/custom/native/clips` | directory of `<name>.pcmd` (as installed) or `<name>.pcm` clips |
 | `http_port` | 0 | read-only diagnostics (`GET /state`, `GET /log?after=N`); 0 is off |
+| `call_port` | 8089 | direct intercom link for the indoor panel (TCP, authenticated with the RTSP account); 0 is off |
 | `onvif_port` | 80 | [ONVIF](../../../../docs/shared/onvif.md) with the RTSP credentials; 0 is off |
 | `ntp` | empty | NTP servers, comma-separated (up to four); empty leaves the clock alone. While in sync, `lock/state` also carries `relock_at` |
 
@@ -63,4 +64,7 @@ ffmpeg -i input.wav -ac 1 -ar 16000 -f s16le door_opened.pcm
 It stores each as `<name>.pcmd` in `clips.tar` (the same samples, losslessly in a form that packs
 smaller). The application reads both `.pcmd` and plain `.pcm` files. Below, `<name>.pcm` stands for
 either. `door_opened.pcm` is the fallback for any code whose clip is missing; an optional `denied.pcm`
-replaces the refusal tone. A clip plays at most its first 10 s.
+replaces the refusal tone. A clip plays at most its first 10 s. `call_dial_tone.pcm` is the
+[intercom call](home-assistant.md#intercom-call)'s ringback: one period of the tone and its pause
+(for example 2 s tone, 2 s silence), looped while it rings; without it the call rings silently at
+the gate.

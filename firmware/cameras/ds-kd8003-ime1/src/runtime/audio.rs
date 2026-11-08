@@ -8,6 +8,8 @@ use camera_transport::AudioHub;
 use camera_transport::Talkback;
 use camera_transport::microphone::MicFanout;
 use camera_transport::resample::Decimator;
+use ds_kd8003_ime1_cam::call::Tone;
+use ds_kd8003_ime1_cam::speaker::{self, Frame, Scheduler};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, mpsc};
@@ -54,6 +56,10 @@ pub enum Sound {
     Clip(String, Arc<Vec<i16>>),
     /// A short two-tone refusal.
     Deny,
+    /// A generated call tone.
+    Tone(Tone),
+    /// Start the call's ringback loop at this gain (dB), or stop it.
+    Ringback(Option<(Arc<Vec<i16>>, i32)>),
 }
 
 pub fn capture_loop(g: Arc<Device>, hub: Arc<AudioHub>) {
@@ -184,8 +190,20 @@ const TALK_HOLD: Duration = Duration::from_millis(400);
 /// Talk samples held back while the AO refuses frames, in 40 ms frames.
 const TALK_BUF_FRAMES: usize = 4;
 
-/// One sound at a time; the amplifier is on only while something plays. Between clips the loop
-/// drains the talkback mixer (RTSP backchannel talkers) into the speaker in 40 ms frames.
+/// Silent frames after the last scheduled sound let the amplifier settle before it is switched off.
+const SETTLE_FRAMES: usize = 6;
+
+fn gained(samples: &[i16], gain: f32) -> Vec<i16> {
+    samples
+        .iter()
+        .map(|&v| (v as f32 * gain).clamp(-32768.0, 32767.0) as i16)
+        .collect()
+}
+
+/// The hardware side of [`speaker::Scheduler`]: one 40 ms frame at a time, so a stop or a one-shot
+/// takes effect at the next frame. One-shots (clips, tones) play over the looping ringback; talk
+/// (the RTSP backchannel mixer) plays only when neither does and is discarded while they do. The
+/// amplifier is on only while something plays.
 pub fn speaker_loop(
     g: Arc<Device>,
     rx: mpsc::Receiver<Sound>,
@@ -197,107 +215,173 @@ pub fn speaker_loop(
     // Voice must carry across the street: the mixer already holds speech at -12 dBFS RMS with a
     // -1 dBFS ceiling, so anything more is loudness bought with clipping, deliberately.
     let talk_gain = 10f32.powf(talk_db as f32 / 20.0);
-    let deny = Arc::new(deny_tone());
+    let rate = codec_rate();
+    let deny = deny_tone();
+    let tone = |t: Tone| match t {
+        Tone::Answered => speaker::tone(speaker::ANSWERED, rate, 8000.0),
+        Tone::Declined => speaker::tone(speaker::DECLINED, rate, 8000.0),
+        Tone::Ended => speaker::tone(speaker::ENDED, rate, 8000.0),
+        Tone::Missed => deny.clone(),
+    };
     let frame_len = frame_len();
+    let mut sched = Scheduler::new();
+    let mut ring_gain = 1.0f32;
+    // A scheduled sound has the amplifier; `settle` counts its silent tail.
+    let mut scheduled = false;
+    let mut settle = 0usize;
     let mut talk_buf: Vec<i16> = Vec::with_capacity(frame_len * 2);
     let mut talk_amp_until: Option<Instant> = None;
     loop {
-        let sound = match rx.recv_timeout(Duration::from_millis(5)) {
-            Ok(sound) => Some(sound),
-            Err(mpsc::RecvTimeoutError::Timeout) => None,
-            Err(mpsc::RecvTimeoutError::Disconnected) => return,
-        };
-        let Some(sound) = sound else {
-            // Talk path.
-            // Take every block that is due, not one: `send` blocks for a whole 40 ms frame once the
-            // AO queue is full, and one 20 ms block per pass drained the mixer at half speed (speech
-            // a second late, then chopped as its buffer overflowed).
-            let mut got = false;
-            while let Some(block) = talk.next_pcm(Instant::now()) {
-                got = true;
-                talk_buf.extend(
-                    block
-                        .iter()
-                        .map(|&v| (v as f32 * talk_gain).clamp(-32768.0, 32767.0) as i16),
-                );
-            }
-            let now = Instant::now();
-            if got {
-                if talk_amp_until.is_none() {
-                    amp(&g, true);
-                    g.st.lock().unwrap().speaker_busy = true;
-                    g.log("speaker: talk start");
-                }
-                talk_amp_until = Some(now + TALK_HOLD);
-                while talk_buf.len() >= frame_len {
-                    let frame: Vec<i16> = talk_buf.drain(..frame_len).collect();
-                    let rc = send(&g, &frame);
-                    if rc != 0 {
-                        g.st.lock().unwrap().speaker_rc = rc;
-                        break;
-                    }
-                }
-                // A failing AO must not grow the buffer without bound: keep the latest frames only.
-                if talk_buf.len() > frame_len * TALK_BUF_FRAMES {
-                    let excess = talk_buf.len() - frame_len * TALK_BUF_FRAMES;
-                    talk_buf.drain(..excess);
-                }
-            } else if let Some(until) = talk_amp_until
-                && now >= until
-            {
-                // Pad the tail to a whole frame, then let the amplifier go.
-                if !talk_buf.is_empty() {
-                    talk_buf.resize(frame_len, 0);
-                    let _ = send(&g, &talk_buf);
-                    talk_buf.clear();
-                }
+        if g.stop.load(Ordering::Relaxed) {
+            if scheduled || talk_amp_until.is_some() {
                 amp(&g, false);
-                talk_amp_until = None;
                 g.st.lock().unwrap().speaker_busy = false;
-                g.log("speaker: talk end");
+            }
+            return;
+        }
+        let wait = if sched.busy() || sched.ringing() || settle > 0 {
+            Duration::ZERO
+        } else {
+            Duration::from_millis(5)
+        };
+        let mut incoming = Vec::new();
+        match rx.recv_timeout(wait) {
+            Ok(sound) => incoming.push(sound),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                if scheduled {
+                    amp(&g, false);
+                    g.st.lock().unwrap().speaker_busy = false;
+                }
+                return;
+            }
+        }
+        incoming.extend(rx.try_iter());
+        for sound in incoming {
+            let (what, samples) = match sound {
+                Sound::Clip(name, s) => (format!("clip {name}"), gained(&s, gain)),
+                Sound::Deny => ("deny tone".to_string(), gained(&deny, gain)),
+                Sound::Tone(t) => (format!("tone {t:?}"), gained(&tone(t), gain)),
+                Sound::Ringback(Some((s, db))) => {
+                    ring_gain = 10f32.powf(db as f32 / 20.0);
+                    sched.ringback(Some(s));
+                    g.log(format!("speaker: ringback start ({db} dB)"));
+                    continue;
+                }
+                Sound::Ringback(None) => {
+                    if sched.ringing() {
+                        sched.ringback(None);
+                        g.log("speaker: ringback stop");
+                    }
+                    continue;
+                }
+            };
+            g.log(format!("speaker: start {what}"));
+            sched.play(Arc::new(samples));
+        }
+        let (frame, ringback) = match sched.frame(frame_len) {
+            Frame::OneShot(f) => (Some(f), false),
+            Frame::Ringback(f) => (Some(f), true),
+            Frame::Talk => (None, false),
+        };
+        if let Some(frame) = frame {
+            if talk_amp_until.take().is_some() {
+                // A scheduled sound interrupts the talk tail; the amplifier is already on.
+                talk_buf.clear();
+            } else if !scheduled {
+                amp(&g, true);
+            }
+            if !scheduled {
+                g.st.lock().unwrap().speaker_busy = true;
+            }
+            scheduled = true;
+            settle = SETTLE_FRAMES;
+            // Talk under a scheduled sound is dropped, not played late.
+            while talk.next_pcm(Instant::now()).is_some() {}
+            let frame = if ringback {
+                gained(&frame, ring_gain)
+            } else {
+                frame
+            };
+            let rc = send(&g, &frame);
+            g.st.lock().unwrap().speaker_rc = rc;
+            if rc != 0 {
+                thread::sleep(Duration::from_millis(40));
             }
             continue;
-        };
-        if talk_amp_until.is_some() {
-            // A clip interrupts the talk tail; the amplifier is already on.
-            talk_buf.clear();
-            talk_amp_until = None;
         }
-        let (what, samples) = match sound {
-            Sound::Clip(name, s) => (format!("clip {name}"), s),
-            Sound::Deny => ("deny tone".to_string(), deny.clone()),
-        };
-        {
-            let mut s = g.st.lock().unwrap();
-            s.speaker_busy = true;
+        // Talk path.
+        // Take every block that is due, not one: `send` blocks for a whole 40 ms frame once the
+        // AO queue is full, and one 20 ms block per pass drained the mixer at half speed (speech
+        // a second late, then chopped as its buffer overflowed).
+        let mut got = false;
+        while let Some(block) = talk.next_pcm(Instant::now()) {
+            got = true;
+            talk_buf.extend(
+                block
+                    .iter()
+                    .map(|&v| (v as f32 * talk_gain).clamp(-32768.0, 32767.0) as i16),
+            );
         }
-        amp(&g, true);
-        g.log(format!("speaker: start {what}"));
-        let mut rc = 0;
-        let mut i = 0usize;
-        // Six frames of silence after the clip let the amplifier settle before it is switched off.
-        while i < samples.len() + frame_len * 6 && !g.stop.load(Ordering::Relaxed) {
-            let frame: Vec<i16> = (i..i + frame_len)
-                .map(|k| {
-                    samples
-                        .get(k)
-                        .map(|&v| (v as f32 * gain).clamp(-32768.0, 32767.0) as i16)
-                        .unwrap_or(0)
-                })
-                .collect();
-            i += frame_len;
-            rc = send(&g, &frame);
-            if rc != 0 {
-                break;
+        if scheduled && got {
+            // Talk right after a scheduled sound keeps the amplifier: no settle, no click.
+            scheduled = false;
+            settle = 0;
+            g.st.lock().unwrap().speaker_plays += 1;
+            talk_amp_until = Some(Instant::now());
+            g.log("speaker: done, talk follows");
+        }
+        if scheduled {
+            if settle > 0 {
+                settle -= 1;
+                let _ = send(&g, &vec![0; frame_len]);
+                if settle > 0 {
+                    continue;
+                }
             }
+            amp(&g, false);
+            scheduled = false;
+            {
+                let mut s = g.st.lock().unwrap();
+                s.speaker_busy = false;
+                s.speaker_plays += 1;
+            }
+            g.log("speaker: done");
         }
-        amp(&g, false);
+        let now = Instant::now();
+        if got {
+            if talk_amp_until.is_none() {
+                amp(&g, true);
+                g.st.lock().unwrap().speaker_busy = true;
+                g.log("speaker: talk start");
+            }
+            talk_amp_until = Some(now + TALK_HOLD);
+            while talk_buf.len() >= frame_len {
+                let frame: Vec<i16> = talk_buf.drain(..frame_len).collect();
+                let rc = send(&g, &frame);
+                if rc != 0 {
+                    g.st.lock().unwrap().speaker_rc = rc;
+                    break;
+                }
+            }
+            // A failing AO must not grow the buffer without bound: keep the latest frames only.
+            if talk_buf.len() > frame_len * TALK_BUF_FRAMES {
+                let excess = talk_buf.len() - frame_len * TALK_BUF_FRAMES;
+                talk_buf.drain(..excess);
+            }
+        } else if let Some(until) = talk_amp_until
+            && now >= until
         {
-            let mut s = g.st.lock().unwrap();
-            s.speaker_busy = false;
-            s.speaker_rc = rc;
-            s.speaker_plays += 1;
+            // Pad the tail to a whole frame, then let the amplifier go.
+            if !talk_buf.is_empty() {
+                talk_buf.resize(frame_len, 0);
+                let _ = send(&g, &talk_buf);
+                talk_buf.clear();
+            }
+            amp(&g, false);
+            talk_amp_until = None;
+            g.st.lock().unwrap().speaker_busy = false;
+            g.log("speaker: talk end");
         }
-        g.log(format!("speaker: done {what} rc {rc:#x}"));
     }
 }

@@ -14,6 +14,9 @@ availability are plain text (`open`, `online`); events and `lock/state` are JSON
 | Lock actuator | `binary_sensor`, the strike; the pulse keys below are also attributes of the `door` cover | `lock/state` (retained JSON, [relock countdown](#relock-countdown)) |
 | Doorbell | `event`: `press`, `release` | `call_button` |
 | Access | `event`: `granted` (with `name`), `denied`, `remote` | `access` |
+| Call | `sensor`: the [call](#intercom-call) phase, the snapshot as attributes | `call/state` (retained JSON) |
+| Call | `event`: `ringing`, `answered`, `declined`, `missed`, `ended`, `missed_cleared` | `call/event` |
+| Missed call | `sensor`, device class `timestamp`: the last missed call | `call/missed` (retained JSON) |
 
 Availability is `availability` (retained `online`/`offline`, the will on disconnect). A
 command the broker replays from its retained store (on subscribe) is ignored; a retained publish
@@ -43,6 +46,68 @@ from when the message arrived. No countdown when locked, when the gate is `offli
 deadline has passed (a release still being retried, an open the relay rejected, or a gate that reset mid-pulse).
 
 The call-button light follows day and night from the sensor's exposure, together with the IR light.
+
+## Intercom call
+
+The call button rings: the gate plays its ringback at once (the clip `call_dial_tone`, looped; see
+[clips](configuration.md#clips)) and
+tells HA and the direct link. Any device answers, joins, leaves or sets its own microphone flag; the
+call ends when the last participant leaves, at the maximum talk time, on a decline, or as a missed
+call at the ring timeout (the `denied` sound). A repeat press while it rings or talks changes nothing.
+The gate owns the state; every client renders `call/state` and sends commands.
+
+```text
+idle --press--> ringing --answer / join / open--> active --last leave / lease lost / max talk--> ended
+                ringing --decline--> ended (rejected)      ringing --timeout--> ended (missed)
+ended --4 s--> idle      (a press in ended rings at once)
+```
+
+`call/state` (retained) and the link's `state` frame:
+
+```json
+{"seq":5,"boot":"0badf00d","phase":"active","call_id":"a3f9c2e1","since":"2026-11-08T17:02:11.204Z",
+ "answered_at":"2026-11-08T17:02:19.880Z","ring_age_s":null,"talk_age_s":12.4,"reason":null,
+ "participants":{"dk-7f3a91":{"mic":false},"panel":{"mic":true}},"missed":null,
+ "panel":"connected","ring_timeout_s":45,"max_talk_s":180,"panel_ring_volume":80}
+```
+
+| Key | Meaning |
+|---|---|
+| `seq`, `boot` | `seq` rises on every change; compare it only within one `boot` (fresh per start) |
+| `phase`, `reason` | `idle`, `ringing`, `active`, `ended`; `reason` in `ended`: `rejected`, `missed`, `hangup`, `max_talk` |
+| `since`, `answered_at` | UTC, `null` while the clock is not in sync; then use `ring_age_s` / `talk_age_s` from arrival |
+| `participants` | device id → its microphone flag (state only; each device sends its own audio) |
+| `missed` | `{"call_id","at","age_s"}` of the last missed call, or `null`; also on `call/missed` (`{}` when cleared) |
+| `panel` | `connected` while the indoor panel holds the direct link |
+
+Drop a snapshot whose `seq` is lower than the last one of the same `boot`; a new `boot` always wins.
+
+`call/event` (not retained):
+
+```json
+{"event_type":"ended","event":"ended","call_id":"a3f9c2e1","reason":"max_talk"}
+```
+
+`call/command` (not retained; a replay or a command older than 2 s is dropped):
+
+```json
+{"op":"answer","call_id":"a3f9c2e1","device":"dk-7f3a91","mic":true}
+```
+
+`op`: `answer` (`mic`, default on), `join`, `decline`, `leave`, `mic` (`mic` required), `keep`, `open`,
+`clear_missed`. `device` is 1–32 of `[A-Za-z0-9_-]`; `panel` is reserved for the direct link. A command
+naming another `call_id` is refused and changes nothing. `open` while ringing answers with the
+microphone off and opens the strike (with `door_opened`); with no or an old `call_id` it only opens.
+A card participant sends `keep` every 10 s; without one for 30 s it leaves.
+
+The direct link serves the indoor panel on `call_port` (TCP, newline-delimited JSON), so ringing,
+answering and opening work without Home Assistant. The gate sends `{"t":"hello","nonce":…}`; the
+client answers `{"t":"auth","user":…,"response":md5(user:nonce:password)}` with the RTSP account,
+then gets `state` frames and sends `{"t":"cmd","req":N,"call_id":…,"op":…,"mic":…}` (answered by
+`ack`) and `{"t":"ping"}` every 5 s; a client silent for 15 s is dropped and leaves the call. The link
+is not encrypted and has the strength of RTSP Digest: keep it on the local network.
+
+`call_ringback_db` sets the ringback level on its own (not `clip_db`); it applies from the next ring.
 
 ## Settings
 
@@ -80,6 +145,10 @@ mosquitto_pub -h MQTT_HOST -u MQTT_USER -P MQTT_PASSWORD -t 'ds-kd8003-ime1/main
 | `clip_db` | Announcement gain | -40..12 dB | 0 |
 | `talk_db` | Talk gain | 0..18 dB | 6 |
 | `mic_gain_db` | Microphone gain | -5..40 dB | 0 |
+| `call_ring_timeout` | Call ring timeout | 15..120 s | 45 |
+| `call_ringback_db` | Ringback level | -40..12 dB | 0 |
+| `call_panel_ring_volume` | Panel ring volume | 0..100 % | 80 |
+| `call_max_talk` | Max talk time | 1..10 min | 3 |
 | `main_resolution` | Main resolution | `1920x1080`, `1280x720`, `640x360` | 1920x1080 |
 | `main_fps` | Main frame rate | 1..30 fps | 30 |
 | `main_kbps` | Main bitrate | 512..4096 kbit/s | 4096 |
