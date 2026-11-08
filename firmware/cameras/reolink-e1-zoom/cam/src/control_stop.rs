@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU32, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -17,7 +17,7 @@ pub struct Owner {
     socket: UnixDatagram,
     path: PathBuf,
     pending: Option<PathBuf>,
-    epoch: Arc<AtomicU64>,
+    epoch: Arc<AtomicU32>,
 }
 impl Owner {
     /// The caller holds the controls lock until this owner is dropped.
@@ -32,13 +32,13 @@ impl Owner {
             socket,
             path: path.into(),
             pending: None,
-            epoch: Arc::new(AtomicU64::new(0)),
+            epoch: Arc::new(AtomicU32::new(0)),
         };
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
         owner.socket.set_nonblocking(true)?;
         Ok(owner)
     }
-    pub fn epoch(&self) -> Arc<AtomicU64> {
+    pub fn epoch(&self) -> Arc<AtomicU32> {
         self.epoch.clone()
     }
     pub fn path(&self) -> &Path {

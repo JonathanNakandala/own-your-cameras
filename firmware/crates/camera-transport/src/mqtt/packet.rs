@@ -1,4 +1,5 @@
-//! MQTT 3.1.1 control packets: the few the application needs, encoded and decoded by hand.
+//! MQTT 3.1.1 control packets: the few the shared worker needs, encoded and decoded by hand.
+use std::io;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Packet {
@@ -28,15 +29,23 @@ pub enum Decode {
     Malformed,
 }
 
+/// The last will: retained, delivered by the broker at QoS 1.
 pub struct Will<'a> {
     pub topic: &'a str,
     pub payload: &'a [u8],
-    pub retain: bool,
 }
 
-fn string(out: &mut Vec<u8>, s: &str) {
-    out.extend_from_slice(&(s.len() as u16).to_be_bytes());
-    out.extend_from_slice(s.as_bytes());
+/// A length-prefixed field; refused, never truncated, over 64 KiB.
+fn bytes(out: &mut Vec<u8>, b: &[u8]) -> io::Result<()> {
+    let len = u16::try_from(b.len())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "MQTT field over 64 KiB"))?;
+    out.extend_from_slice(&len.to_be_bytes());
+    out.extend_from_slice(b);
+    Ok(())
+}
+
+fn string(out: &mut Vec<u8>, s: &str) -> io::Result<()> {
+    bytes(out, s.as_bytes())
 }
 
 fn remaining_length(out: &mut Vec<u8>, mut n: usize) {
@@ -66,47 +75,55 @@ pub fn connect(
     keep_alive_s: u16,
     user: Option<(&str, &str)>,
     will: Option<Will<'_>>,
-) -> Vec<u8> {
+) -> io::Result<Vec<u8>> {
     let mut body = Vec::new();
-    string(&mut body, "MQTT");
+    string(&mut body, "MQTT")?;
     body.push(4);
     let mut flags = 0x02; // clean session
-    if let Some(w) = &will {
-        flags |= 0x04 | if w.retain { 0x20 } else { 0 };
+    if will.is_some() {
+        flags |= 0x04 | 0x08 | 0x20;
     }
     if user.is_some() {
         flags |= 0xc0;
     }
     body.push(flags);
     body.extend_from_slice(&keep_alive_s.to_be_bytes());
-    string(&mut body, client_id);
+    string(&mut body, client_id)?;
     if let Some(w) = will {
-        string(&mut body, w.topic);
-        body.extend_from_slice(&(w.payload.len() as u16).to_be_bytes());
-        body.extend_from_slice(w.payload);
+        string(&mut body, w.topic)?;
+        bytes(&mut body, w.payload)?;
     }
     if let Some((u, p)) = user {
-        string(&mut body, u);
-        string(&mut body, p);
+        string(&mut body, u)?;
+        string(&mut body, p)?;
     }
-    frame(0x10, &body)
+    Ok(frame(0x10, &body))
 }
 
-pub fn publish(topic: &str, payload: &[u8], retain: bool) -> Vec<u8> {
+pub fn publish(topic: &str, payload: &[u8], retain: bool) -> io::Result<Vec<u8>> {
     let mut body = Vec::with_capacity(topic.len() + payload.len() + 2);
-    string(&mut body, topic);
+    string(&mut body, topic)?;
     body.extend_from_slice(payload);
-    frame(0x30 | u8::from(retain), &body)
+    Ok(frame(0x30 | u8::from(retain), &body))
 }
 
-pub fn subscribe(id: u16, topics: &[&str]) -> Vec<u8> {
+pub fn subscribe(id: u16, topics: &[&str]) -> io::Result<Vec<u8>> {
     let mut body = Vec::new();
     body.extend_from_slice(&id.to_be_bytes());
     for t in topics {
-        string(&mut body, t);
+        string(&mut body, t)?;
         body.push(0);
     }
-    frame(0x82, &body)
+    Ok(frame(0x82, &body))
+}
+
+pub fn unsubscribe(id: u16, topics: &[&str]) -> io::Result<Vec<u8>> {
+    let mut body = Vec::new();
+    body.extend_from_slice(&id.to_be_bytes());
+    for t in topics {
+        string(&mut body, t)?;
+    }
+    Ok(frame(0xa2, &body))
 }
 
 pub fn pingreq() -> Vec<u8> {
@@ -115,6 +132,18 @@ pub fn pingreq() -> Vec<u8> {
 
 pub fn disconnect() -> Vec<u8> {
     vec![0xe0, 0]
+}
+
+/// Header size and whole size of the first packet in `buf`, once its header is complete.
+pub fn frame_len(buf: &[u8]) -> Option<(usize, usize)> {
+    let mut len = 0usize;
+    for (i, &b) in buf.iter().skip(1).take(4).enumerate() {
+        len += usize::from(b & 0x7f) << (7 * i);
+        if b & 0x80 == 0 {
+            return Some((i + 2, i + 2 + len));
+        }
+    }
+    None
 }
 
 /// Decodes the first packet in `buf`.
@@ -201,14 +230,23 @@ mod tests {
             Some(Will {
                 topic: "a/avail",
                 payload: b"offline",
-                retain: true,
             }),
-        );
+        )
+        .unwrap();
         assert_eq!(p[0], 0x10);
         assert_eq!(p[1] as usize, p.len() - 2);
         assert_eq!(
             &p[2..10],
-            &[0, 4, b'M', b'Q', b'T', b'T', 4, 0xc0 | 0x20 | 0x04 | 0x02]
+            &[
+                0,
+                4,
+                b'M',
+                b'Q',
+                b'T',
+                b'T',
+                4,
+                0xc0 | 0x20 | 0x08 | 0x04 | 0x02
+            ]
         );
         assert_eq!(&p[10..12], &[0, 30]);
         assert_eq!(&p[12..18], &[0, 4, b'g', b'a', b't', b'e']);
@@ -225,7 +263,7 @@ mod tests {
 
     #[test]
     fn publish_and_subscribe_round_trip_through_decode() {
-        let p = publish("t/x", b"hello", true);
+        let p = publish("t/x", b"hello", true).unwrap();
         assert_eq!(p[0], 0x31);
         assert_eq!(
             decode(&p),
@@ -233,14 +271,15 @@ mod tests {
                 Packet::Publish {
                     topic: "t/x".into(),
                     payload: b"hello".to_vec(),
-                    retain: true
+                    retain: true,
                 },
                 p.len()
             )
         );
-        let s = subscribe(7, &["a/b", "c"]);
+        let s = subscribe(7, &["a/b", "c"]).unwrap();
         assert_eq!(&s[..2], &[0x82, 12]);
         assert_eq!(&s[2..], &[0, 7, 0, 3, b'a', b'/', b'b', 0, 0, 1, b'c', 0]);
+        assert_eq!(unsubscribe(9, &["a"]).unwrap(), [0xa2, 5, 0, 9, 0, 1, b'a']);
         assert_eq!(
             decode(&[0x20, 2, 0, 0]),
             Decode::Packet(
@@ -267,9 +306,11 @@ mod tests {
     #[test]
     fn decode_handles_partial_long_and_broken_input() {
         assert_eq!(decode(&[]), Decode::Incomplete);
+        assert_eq!(frame_len(&[0x30]), None);
+        assert_eq!(frame_len(&[0x30, 0xaf, 0x02]), Some((3, 306)));
         assert_eq!(decode(&[0x30]), Decode::Incomplete);
         assert_eq!(decode(&[0x30, 5, 0, 1]), Decode::Incomplete);
-        let big = publish("t", &vec![7u8; 300], false);
+        let big = publish("t", &vec![7u8; 300], false).unwrap();
         assert_eq!(&big[1..3], &[0xaf, 0x02]);
         assert!(
             matches!(decode(&big), Decode::Packet(Packet::Publish { payload, .. }, n) if payload.len() == 300 && n == big.len())
@@ -289,5 +330,28 @@ mod tests {
             decode(&[0x40, 2, 0, 1]),
             Decode::Packet(Packet::Other(4), 4)
         );
+    }
+
+    #[test]
+    fn fields_over_64_kib_are_refused_not_truncated() {
+        let long = "a".repeat(usize::from(u16::MAX) + 1);
+        assert!(publish(&long, b"", false).is_err());
+        assert!(subscribe(1, &[&long]).is_err());
+        assert!(unsubscribe(1, &[&long]).is_err());
+        assert!(connect("c", 5, Some(("u", &long)), None).is_err());
+        let will = vec![0u8; usize::from(u16::MAX) + 1];
+        assert!(
+            connect(
+                "c",
+                5,
+                None,
+                Some(Will {
+                    topic: "t",
+                    payload: &will
+                })
+            )
+            .is_err()
+        );
+        assert!(publish(&long[1..], b"", false).is_ok(), "64 KiB - 1 fits");
     }
 }

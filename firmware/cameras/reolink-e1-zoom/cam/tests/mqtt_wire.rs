@@ -8,7 +8,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 struct FakeHardware;
 impl Hardware for FakeHardware {
@@ -266,7 +266,7 @@ fn stop_cancels_active_motion_discards_queued_motion_and_clears_retained_positio
         fn stop_endpoint(&self) -> Option<std::path::PathBuf> {
             self.hardware.stop_endpoint()
         }
-        fn motion_epoch(&self) -> Option<Arc<std::sync::atomic::AtomicU64>> {
+        fn motion_epoch(&self) -> Option<Arc<std::sync::atomic::AtomicU32>> {
             self.hardware.motion_epoch()
         }
         fn apply(&mut self, c: &Command) -> Result<(), String> {
@@ -292,13 +292,25 @@ fn stop_cancels_active_motion_discards_queued_motion_and_clears_retained_positio
         bytes.extend_from_slice(value.as_bytes());
         peer.write_all(&bytes).unwrap();
     }
-    fn state(peer: &mut TcpStream, id: &str, expected: &str) {
+    /// Waits for `expected` on the state topic of `id`, or finds it among the publications `seen`
+    /// earlier (states are published once per change, so one may pass while waiting for another).
+    /// Keep-alive pings keep the socket busy; the deadline turns a missing state into a failure.
+    fn state(peer: &mut TcpStream, seen: &mut Vec<(String, String)>, id: &str, expected: &str) {
+        let wanted = (format!("camera/e1zoom/{id}/state"), expected.to_owned());
+        if id != "stop"
+            && let Some(at) = seen.iter().position(|p| *p == wanted)
+        {
+            seen.remove(at);
+            return;
+        }
+        let deadline = Instant::now() + Duration::from_secs(10);
         loop {
+            assert!(Instant::now() < deadline, "no {wanted:?}; seen {seen:?}");
             let (h, b) = packet(peer);
             match h >> 4 {
                 3 => {
                     let (topic, value) = publish(peer, h, &b);
-                    if topic == format!("camera/e1zoom/{id}/state") && value == expected {
+                    if (topic.as_str(), value.as_str()) == (wanted.0.as_str(), expected) {
                         if id == "stop" {
                             assert_eq!(
                                 h & 1,
@@ -308,6 +320,7 @@ fn stop_cancels_active_motion_discards_queued_motion_and_clears_retained_positio
                         }
                         return;
                     }
+                    seen.push((topic, value));
                 }
                 8 => peer.write_all(&[0x90, 3, b[0], b[1], 1]).unwrap(),
                 12 => peer.write_all(&[0xd0, 0]).unwrap(),
@@ -366,25 +379,26 @@ fn stop_cancels_active_motion_discards_queued_motion_and_clears_retained_positio
     peer.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     assert_eq!(packet(&mut peer).0, 0x10);
     peer.write_all(&[0x20, 2, 0, 0]).unwrap();
-    state(&mut peer, "pan", "0");
+    let mut seen = Vec::new();
+    state(&mut peer, &mut seen, "pan", "0");
     armed.store(true, Ordering::Release);
     command(&mut peer, "pan", "7000");
     started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
     command(&mut peer, "pan", "1234");
     command(&mut peer, "tilt", "456");
     command(&mut peer, "stop", "PRESS");
-    state(&mut peer, "stop", "stopped");
+    // The hardware thread may clear the position before the stop acknowledgment goes out.
+    state(&mut peer, &mut seen, "stop", "stopped");
     // A later non-motion command is a barrier beyond all discarded queued motion.
     command(&mut peer, "led", "OFF");
-    state(&mut peer, "led", "OFF");
+    state(&mut peer, &mut seen, "led", "OFF");
     assert_eq!(
         *applied.lock().unwrap(),
         vec![Command::Pan(7000), Command::Setting("led", "OFF".into())]
     );
-    // Force a state refresh after the barrier; unknown coordinates are retained tombstones.
-    command(&mut peer, "led", "OFF");
-    state(&mut peer, "pan", "");
-    state(&mut peer, "tilt", "");
+    // After the stop, the unknown coordinates are retained tombstones (published once, on change).
+    state(&mut peer, &mut seen, "pan", "");
+    state(&mut peer, &mut seen, "tilt", "");
     stop.store(true, Ordering::Release);
     loop {
         let (h, b) = packet(&mut peer);
@@ -469,4 +483,86 @@ fn broker_cannot_resume_a_clean_session_or_leave_hardware_running() {
             .contains("clean MQTT session")
     );
     assert!(stop.load(Ordering::Acquire));
+}
+
+#[test]
+fn a_preset_saved_through_the_shared_motion_queue_updates_the_select_live() {
+    // The hardware owns the preset table; ONVIF's path (Motion) saves into it.
+    struct Table(Vec<String>);
+    impl Hardware for Table {
+        fn apply(&mut self, c: &Command) -> Result<(), String> {
+            match c {
+                Command::SavePreset(name) => self.0.push(name.clone()),
+                Command::RemovePreset(name) => self.0.retain(|n| n != name),
+                _ => {}
+            }
+            Ok(())
+        }
+        fn tick(&mut self, _: Duration) -> Result<Option<Duration>, String> {
+            Ok(None)
+        }
+        fn states(&mut self) -> Result<BTreeMap<String, String>, String> {
+            Ok(BTreeMap::new())
+        }
+        fn preset_names(&self) -> Option<Vec<String>> {
+            Some(self.0.clone())
+        }
+    }
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let cfg = Config::parse(&format!(
+        "[mqtt]\nhost='127.0.0.1'\nport={}",
+        listener.local_addr().unwrap().port()
+    ))
+    .unwrap();
+    let motion = Arc::new(mqtt::Motion::default());
+    let stop = Arc::new(AtomicBool::new(false));
+    let (worker_stop, worker_motion) = (stop.clone(), motion.clone());
+    let worker = std::thread::spawn(move || {
+        mqtt::run_full(
+            cfg,
+            Table(Vec::new()),
+            Arc::new(PipelineHealth::default()),
+            &worker_stop,
+            None,
+            None,
+            Some(worker_motion),
+        )
+    });
+    let (mut peer, _) = listener.accept().unwrap();
+    peer.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    assert_eq!(packet(&mut peer).0, 0x10);
+    peer.write_all(&[0x20, 2, 0, 0]).unwrap();
+    let is_select =
+        |t: &str| t.starts_with("homeassistant/select/") && t.ends_with("/preset/config");
+    let select = |peer: &mut TcpStream| loop {
+        let (h, b) = packet(peer);
+        match h >> 4 {
+            3 => {
+                let (topic, value) = publish(peer, h, &b);
+                if is_select(&topic) {
+                    return value;
+                }
+            }
+            8 => peer.write_all(&[0x90, 3, b[0], b[1], 1]).unwrap(),
+            _ => {}
+        }
+    };
+    assert_eq!(select(&mut peer), "", "no presets: the select is cleared");
+    assert!(motion.presets().is_empty());
+    motion.submit(Command::SavePreset("Window".into())).unwrap();
+    let options: serde_json::Value = serde_json::from_str(&select(&mut peer)).unwrap();
+    assert_eq!(options["options"], serde_json::json!(["Window"]));
+    assert_eq!(motion.presets(), ["Window"]);
+    motion
+        .submit(Command::RemovePreset("Window".into()))
+        .unwrap();
+    assert_eq!(
+        select(&mut peer),
+        "",
+        "the last preset removed clears it again"
+    );
+    assert!(motion.presets().is_empty());
+    stop.store(true, Ordering::Relaxed);
+    drop(peer);
+    worker.join().unwrap().unwrap();
 }

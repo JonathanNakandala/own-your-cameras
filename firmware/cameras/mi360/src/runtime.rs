@@ -1,8 +1,10 @@
 //! Single media owner, independent board owner and portable network workers.
 //! Real hardware progress qualifies health; queued intent never becomes state.
+use crate::catalog::{App, Command, IrMode, entity};
 use crate::graph_settings::{self, GraphSettings};
 use crate::media::{RustVideoSpec, VideoMetadata};
 use crate::{board, config, media::Media, pointing, settings};
+use camera_transport::mqtt::Ptz;
 use camera_transport::{AudioHub, Credentials, VideoHubs, mqtt};
 use std::collections::VecDeque;
 use std::io::{self, Write};
@@ -196,36 +198,17 @@ fn request_graph(
     // In particular an arm/dirsync failure never returns a reboot instruction.
     Ok(Some(reboot))
 }
-fn entity(id: &str, name: &str, domain: mqtt::Domain, unit: Option<&str>) -> mqtt::Entity {
-    mqtt::Entity {
-        id: id.into(),
-        name: name.into(),
-        domain,
-        minimum: 0,
-        maximum: 0,
-        options: vec![],
-        unit: unit.map(str::to_owned),
-        diagnostic: matches!(domain, mqtt::Domain::Sensor),
-        control_slot: None,
-    }
-}
 fn graph_entities() -> Vec<mqtt::Entity> {
     let mut entities = GRAPH_SELECTORS
         .iter()
-        .map(|field| mqtt::Entity {
-            id: field.key.into(),
-            name: field.name.into(),
-            domain: mqtt::Domain::Select,
-            minimum: 0,
-            maximum: field.options.len() as i32 - 1,
-            options: field
-                .options
-                .iter()
-                .map(|option| (*option).into())
-                .collect(),
-            unit: None,
-            diagnostic: false,
-            control_slot: Some(field.slot),
+        .map(|field| {
+            mqtt::Entity::new(
+                field.key,
+                field.name,
+                mqtt::Domain::select(field.options.iter().copied()),
+            )
+            .category(mqtt::Category::Config)
+            .slot(field.slot)
         })
         .collect::<Vec<_>>();
     for (slot, key, name) in [
@@ -240,9 +223,11 @@ fn graph_entities() -> Vec<mqtt::Entity> {
             "Discard staged video settings",
         ),
     ] {
-        let mut button = entity(key, name, mqtt::Domain::Button, None);
-        button.control_slot = Some(slot);
-        entities.push(button);
+        entities.push(
+            entity(key, name, mqtt::Domain::Button, None)
+                .category(mqtt::Category::Config)
+                .slot(slot),
+        );
     }
     for (key, name) in [
         ("main_resolution", "Main encoded resolution"),
@@ -333,49 +318,31 @@ fn graph_states(
     let _ = publisher.state("video_settings_status", graph_status(graph.status()));
 }
 
-const ISP_STATISTICS: &[(u32, &str, &str, Option<&str>)] = &[
-    (50, "ae_luma", "AE luma", None),
-    (51, "exposure_us", "Exposure time", Some("µs")),
-];
+/// The ISP read-outs this boot supports; sampled with the telemetry round, not on their own.
 #[derive(Default)]
 struct IspStatistics {
-    supported: [bool; 2],
-    updates: Vec<(&'static str, String)>,
+    supported: Vec<(u32, &'static camera_transport::telemetry::Sensor)>,
 }
 impl IspStatistics {
     fn discover(mut read: impl FnMut(u32) -> io::Result<i32>) -> Self {
-        let mut result = Self {
-            supported: [false; 2],
-            updates: vec![],
-        };
-        for (index, &(control, key, _, _)) in ISP_STATISTICS.iter().enumerate() {
-            if let Ok(value) = read(control) {
-                result.supported[index] = true;
-                result.updates.push((key, value.to_string()));
-            }
+        Self {
+            supported: crate::catalog::isp_telemetry()
+                .filter(|&(control, _)| read(control).is_ok())
+                .collect(),
         }
-        result
     }
     fn entities(&self) -> Vec<mqtt::Entity> {
-        ISP_STATISTICS
+        self.supported.iter().map(|(_, s)| s.entity()).collect()
+    }
+    /// A failed read is unknown; it is never a fabricated measurement.
+    fn sample(
+        &self,
+        mut read: impl FnMut(u32) -> io::Result<i32>,
+    ) -> Vec<(&'static str, Option<f64>)> {
+        self.supported
             .iter()
-            .zip(self.supported)
-            .filter(|(_, supported)| *supported)
-            .map(|(&(_, key, name, unit), _)| entity(key, name, mqtt::Domain::Sensor, unit))
+            .map(|&(control, s)| (s.id, read(control).ok().map(f64::from)))
             .collect()
-    }
-    fn sample(&mut self, mut read: impl FnMut(u32) -> io::Result<i32>) {
-        for (index, &(control, key, _, _)) in ISP_STATISTICS.iter().enumerate() {
-            if self.supported[index] {
-                // Unknown records missing data; it is never a fabricated measurement.
-                let value =
-                    read(control).map_or_else(|_| "unknown".into(), |value| value.to_string());
-                self.updates.push((key, value));
-            }
-        }
-    }
-    fn take_updates(&mut self) -> Vec<(&'static str, String)> {
-        std::mem::take(&mut self.updates)
     }
 }
 impl crate::setting_service::Hardware for SettingHardware<'_> {
@@ -389,7 +356,9 @@ impl crate::setting_service::Hardware for SettingHardware<'_> {
         Ok(self.controls.software(slot)?.load(Ordering::Acquire) as i32)
     }
     fn software_set(&mut self, slot: u16, value: i32) -> io::Result<()> {
-        if !settings::descriptor(slot).is_some_and(|d| d.hardware.is_none() && d.valid(value)) {
+        if settings::hardware(slot).is_some()
+            || !settings::spec(slot).is_some_and(|d| d.valid(value))
+        {
             return Err(io::Error::other("invalid software setting"));
         }
         self.controls
@@ -399,7 +368,7 @@ impl crate::setting_service::Hardware for SettingHardware<'_> {
     }
 }
 struct Work {
-    command: mqtt::Command,
+    command: Command,
     received: Instant,
     epoch: u32,
 }
@@ -529,13 +498,13 @@ fn hardware_loop(
                         continue;
                     }
                     match work.command {
-                        mqtt::Command::Home => {
+                        Command::App(App::Ptz(Ptz::Home)) => {
                             board.stop()?;
                             homing = None;
                             controls.finished();
                             request_home = true;
                         }
-                        mqtt::Command::Led(on) => {
+                        Command::App(App::Led(on)) => {
                             board.set_led(board::Led::Blue, on)?;
                             pin_states(&publisher);
                         }
@@ -580,11 +549,11 @@ fn hardware_loop(
                     continue;
                 }
                 match work.command {
-                    mqtt::Command::Pan(_)
-                    | mqtt::Command::Tilt(_)
-                    | mqtt::Command::Move(_)
-                    | mqtt::Command::Velocity(_)
-                    | mqtt::Command::Position3d(_) => {
+                    Command::App(App::Ptz(Ptz::Pan(_)))
+                    | Command::App(App::Ptz(Ptz::Tilt(_)))
+                    | Command::App(App::Ptz(Ptz::Move(_)))
+                    | Command::App(App::Ptz(Ptz::Velocity(_)))
+                    | Command::App(App::Ptz(Ptz::Position3d(_))) => {
                         let current = board.motor_status()?;
                         match motion_plan(
                             &work,
@@ -614,7 +583,7 @@ fn hardware_loop(
                             Err(error) => eprintln!("PTZ command rejected: {error}"),
                         }
                     }
-                    mqtt::Command::Home => {
+                    Command::App(App::Ptz(Ptz::Home)) => {
                         board.stop()?;
                         motion.active = None;
                         motion.pending = None;
@@ -624,7 +593,7 @@ fn hardware_loop(
                         let _ = publisher.state("preset", "");
                         break;
                     }
-                    mqtt::Command::SavePreset(name) => {
+                    Command::App(App::Ptz(Ptz::SavePreset(name))) => {
                         let result = presets.save(
                             name,
                             board.motor_status()?,
@@ -644,7 +613,7 @@ fn hardware_loop(
                         };
                         let _ = publisher.state("motion_status", message);
                     }
-                    mqtt::Command::RemovePreset(name) => {
+                    Command::App(App::Ptz(Ptz::RemovePreset(name))) => {
                         let removed = presets.remove(name);
                         if removed.is_ok() {
                             publish_names(&presets);
@@ -658,7 +627,7 @@ fn hardware_loop(
                         };
                         let _ = publisher.state("motion_status", message);
                     }
-                    mqtt::Command::Preset(name) => match presets.get(name, homed) {
+                    Command::App(App::Ptz(Ptz::Preset(name))) => match presets.get(name, homed) {
                         Ok(route) => {
                             let plan = Plan {
                                 target: route.waypoint,
@@ -689,19 +658,19 @@ fn hardware_loop(
                             board.request_brake()?;
                         }
                     }
-                    mqtt::Command::Led(on) => {
+                    Command::App(App::Led(on)) => {
                         board.set_led(board::Led::Blue, on)?;
                         pin_states(&publisher);
                     }
-                    mqtt::Command::IrLight(on) => {
+                    Command::App(App::IrLight(on)) => {
                         board.set_ir_illumination(on)?;
                         pin_states(&publisher);
                     }
-                    mqtt::Command::IrMode(mode) => {
+                    Command::App(App::IrMode(mode)) => {
                         let night = match mode {
-                            mqtt::IrMode::Day => false,
-                            mqtt::IrMode::Night => true,
-                            mqtt::IrMode::Auto => continue,
+                            IrMode::Day => false,
+                            IrMode::Night => true,
+                            IrMode::Auto => continue,
                         };
                         // The filter pulse is blocking. Stop/verify/release the
                         // motor first, invalidate queued trajectories, and only
@@ -751,9 +720,11 @@ fn hardware_loop(
                         let _ = publisher.state("ir_mode", if night { "night" } else { "day" });
                         pin_states(&publisher);
                     }
-                    mqtt::Command::Reboot
-                    | mqtt::Command::MicVolume(_)
-                    | mqtt::Command::SpeakerVolume(_)
+                    Command::App(App::Reboot)
+                    | Command::App(App::MicVolume(_))
+                    | Command::App(App::SpeakerVolume(_))
+                    // The parser offers no zoom axis on this fixed lens.
+                    | Command::App(App::Ptz(Ptz::Zoom(_) | Ptz::ZoomMove(_)))
                     | mqtt::Command::Setting { .. } => {}
                 }
             }
@@ -1055,7 +1026,7 @@ pub fn run(path: &str) -> io::Result<()> {
             media: &mut media,
             controls: &controls,
         },
-        crate::settings::Store::new("/mnt/data/mi360/settings.json"),
+        Box::new(camera_transport::settings::FileDisk::new(settings::PATH).private_dir()),
         cfg.runtime.audio,
         started.elapsed(),
     )?;
@@ -1067,7 +1038,7 @@ pub fn run(path: &str) -> io::Result<()> {
             return Err(io::Error::other("motor diagnostics unavailable"));
         }
     };
-    let mut entities = mqtt::Entity::mi360_catalog(motor.max_x, motor.max_y);
+    let mut entities = crate::catalog::catalog(motor.max_x, motor.max_y);
     entities.push(entity("home", "Home PTZ", mqtt::Domain::Button, None));
     entities.push(entity(
         "positioning",
@@ -1082,15 +1053,12 @@ pub fn run(path: &str) -> io::Result<()> {
         mqtt::Domain::Sensor,
         None,
     ));
-    let mut isp_statistics = if cfg.runtime.extended_controls {
+    let isp_statistics = if cfg.runtime.extended_controls {
         IspStatistics::discover(|control| media.control_get(control))
     } else {
         IspStatistics::default()
     };
-    let memory_available = std::fs::read_to_string("/proc/meminfo")
-        .ok()
-        .and_then(|text| proc_kib(&text, "MemAvailable:"))
-        .is_some();
+    let memory_available = memory_available();
     let signal_available = std::fs::read_to_string("/proc/net/wireless")
         .ok()
         .and_then(|text| wifi_signal(&text))
@@ -1113,27 +1081,30 @@ pub fn run(path: &str) -> io::Result<()> {
     if cfg.runtime.cold_controls {
         entities.extend(graph_entities());
     }
-    let mqtt_cfg = mqtt::Config {
-        position3d: calibration.is_some(),
-        broker: mqtt::Broker {
+    let parser = crate::catalog::Parser::new(&entities, calibration.is_some());
+    let mut mqtt_cfg = mqtt::Config::new(
+        mqtt::Broker {
             host: cfg.mqtt.host,
             port: cfg.mqtt.port,
             username: cfg.mqtt.username,
             password: cfg.mqtt.password,
         },
-        node_id: format!("cam_{}", cfg.camera.id),
-        device_name: cfg.camera.name.clone(),
-        manufacturer: "Xiaomi".into(),
-        model: "MJSXJ10CM".into(),
-        software_version: env!("CARGO_PKG_VERSION").into(),
-        prefix: format!("camera/{}", cfg.camera.id),
-        discovery_prefix: "homeassistant".into(),
+        format!("cam_{}", cfg.camera.id),
+        format!("camera/{}", cfg.camera.id),
+        mqtt::Device {
+            name: cfg.camera.name.clone(),
+            manufacturer: "Xiaomi".into(),
+            model: "MJSXJ10CM".into(),
+            sw_version: Some(env!("CARGO_PKG_VERSION").into()),
+        },
         entities,
-    };
-    let (publisher, commands, mqtt_worker) = mqtt::channel(mqtt_cfg)?;
-    for (key, value) in isp_statistics.take_updates() {
-        let _ = publisher.state(key, value);
-    }
+    );
+    mqtt_cfg.entity_id_prefix = Some(cfg.camera.id.clone());
+    mqtt_cfg.retired = crate::catalog::RETIRED_SENSORS
+        .iter()
+        .map(|id| (mqtt::Domain::Sensor, (*id).to_owned()))
+        .collect();
+    let (publisher, commands, mqtt_worker) = mqtt::channel(mqtt_cfg, parser)?;
     if let Some(graph) = graph.as_ref() {
         graph_states(&publisher, graph, [None, None]);
     }
@@ -1168,7 +1139,7 @@ pub fn run(path: &str) -> io::Result<()> {
         }
     }
     // ONVIF commands reach the main loop beside MQTT's and take the same path.
-    let (onvif_tx, onvif_rx) = sync_channel::<mqtt::Command>(8);
+    let (onvif_tx, onvif_rx) = sync_channel::<mqtt::Command<crate::catalog::App>>(8);
     let preset_names = Arc::new(Mutex::new(Vec::new()));
     let snapshots = Arc::new(camera_onvif::snapshot::Waiters::default());
     let _onvif = start_onvif(
@@ -1251,7 +1222,12 @@ pub fn run(path: &str) -> io::Result<()> {
             .name("mqtt".into())
             .stack_size(256 * 1024)
             .spawn(move || {
-                let result = mqtt_worker.run(&stop, Some(&|| progress.mark(&progress.mqtt)));
+                let mark = || progress.mark(&progress.mqtt);
+                let hooks = mqtt::Hooks {
+                    on_progress: Some(&mark),
+                    ..mqtt::Hooks::default()
+                };
+                let result = mqtt_worker.run(&stop, hooks);
                 if result.is_err() {
                     stop.store(true, Ordering::Release);
                 }
@@ -1262,14 +1238,11 @@ pub fn run(path: &str) -> io::Result<()> {
     let mut reboot = false;
     let mut last_video = [None, None];
     let mut last_audio = None;
-    let mut counts = [0_u64; 2];
-    let mut bytes = [0_u64; 2];
     let mut total_frames = [0_u64; 2];
     let mut audio_frames = 0_u64;
     let mut next_report = Instant::now();
-    let mut report_started = Instant::now();
     let mut sequence = 0_u32;
-    let mut cpu = Cpu::default();
+    let mut telemetry = Telemetry::new(Instant::now());
     let mut qualified = false;
     let mut pcm = VecDeque::<i16>::with_capacity(1920);
     // The AO device restarts (and drops audio) whenever its stream stops, so it is fed silence between bursts.
@@ -1296,7 +1269,7 @@ pub fn run(path: &str) -> io::Result<()> {
                         status_states(&publisher, result?);
                         ready = true;
                         let _ = work_tx.try_send(Work {
-                            command: mqtt::Command::IrMode(mqtt::IrMode::Day),
+                            command: Command::App(App::IrMode(IrMode::Day)),
                             received: now,
                             epoch: controls.epoch.load(Ordering::Acquire),
                         });
@@ -1370,7 +1343,7 @@ pub fn run(path: &str) -> io::Result<()> {
                     }
                     mqtt::Command::Release => controls.release(),
                     mqtt::Command::Stop => controls.cancel(true),
-                    mqtt::Command::Reboot => {
+                    Command::App(App::Reboot) => {
                         reboot = true;
                         stop.store(true, Ordering::Release);
                     }
@@ -1441,9 +1414,8 @@ pub fn run(path: &str) -> io::Result<()> {
                     } else {
                         &progress.sub_video
                     });
-                    counts[channel] += 1;
                     total_frames[channel] += 1;
-                    bytes[channel] += frame.data.len() as u64;
+                    telemetry.frame(channel, frame.data.len());
                     hubs.publish_annexb(channel, frame.timestamp_us, frame.data);
                 }
             }
@@ -1571,10 +1543,6 @@ pub fn run(path: &str) -> io::Result<()> {
                     let actual = [media.video_metadata(0), media.video_metadata(1)];
                     graph_states(&publisher, graph, actual);
                 }
-                isp_statistics.sample(|control| media.control_get(control));
-                for (key, value) in isp_statistics.take_updates() {
-                    let _ = publisher.state(key, value);
-                }
                 if let Err(error) = settings.tick(
                     &mut SettingHardware {
                         media: &mut media,
@@ -1591,24 +1559,9 @@ pub fn run(path: &str) -> io::Result<()> {
                     }
                 }
                 let _ = publisher.state("pipeline_health", if healthy { "ON" } else { "OFF" });
-                telemetry(&publisher, &mut cpu);
-                let elapsed = report_started.elapsed().as_secs_f64();
-                if elapsed >= 5.0 {
-                    for channel in 0..2 {
-                        let name = if channel == 0 { "main" } else { "sub" };
-                        let _ = publisher.state(
-                            &format!("{name}_fps"),
-                            format!("{:.2}", counts[channel] as f64 / elapsed),
-                        );
-                        let _ = publisher.state(
-                            &format!("{name}_bitrate"),
-                            format!("{:.2}", bytes[channel] as f64 * 8.0 / elapsed / 1000.0),
-                        );
-                    }
-                    counts = [0, 0];
-                    bytes = [0, 0];
-                    report_started = now;
-                }
+                telemetry.tick(&publisher, now, started.elapsed(), || {
+                    isp_statistics.sample(|control| media.control_get(control))
+                });
                 sequence = sequence.wrapping_add(1);
                 write_health(
                     started,
@@ -1786,14 +1739,17 @@ mod tests {
         let entities = graph_entities();
         let slots = entities
             .iter()
-            .filter_map(|entity| entity.control_slot)
+            .filter_map(|entity| match entity.control {
+                mqtt::Control::Slot(slot) => Some(slot),
+                _ => None,
+            })
             .collect::<Vec<_>>();
         assert_eq!(slots, vec![100, 101, 102, 103, 110, 111]);
         for item in entities
             .iter()
             .filter(|item| item.domain == mqtt::Domain::Sensor)
         {
-            assert!(item.control_slot.is_none() && item.unit.is_none());
+            assert!(item.control == mqtt::Control::None && item.unit.is_none());
         }
         assert!(encoded_graph_updates([None, None]).is_empty());
         let samples = encoded_graph_updates([
@@ -1821,7 +1777,7 @@ mod tests {
     #[test]
     fn isp_statistics_discover_only_real_success_and_report_read_failures_unknown() {
         let mut seen = vec![];
-        let mut statistics = IspStatistics::discover(|control| {
+        let statistics = IspStatistics::discover(|control| {
             seen.push(control);
             if control == 50 {
                 Ok(118)
@@ -1832,33 +1788,32 @@ mod tests {
         assert_eq!(seen, vec![50, 51]);
         let entities = statistics.entities();
         assert_eq!(entities.len(), 1);
-        assert_eq!(entities[0].id, "ae_luma");
-        assert!(entities[0].control_slot.is_none());
-        assert_eq!(statistics.take_updates(), vec![("ae_luma", "118".into())]);
-        statistics.sample(|control| {
-            assert_eq!(control, 50);
-            Err(io::Error::other("isolated failure"))
-        });
+        assert_eq!(entities[0].id, "isp_luma");
+        assert!(entities[0].control == mqtt::Control::None);
+        assert!(!entities[0].enabled_by_default);
+        let read = |result: io::Result<i32>| {
+            let mut result = Some(result);
+            statistics.sample(move |control| {
+                assert_eq!(control, 50);
+                result.take().unwrap()
+            })
+        };
         assert_eq!(
-            statistics.take_updates(),
-            vec![("ae_luma", "unknown".into())]
+            read(Err(io::Error::other("isolated failure"))),
+            vec![("isp_luma", None)]
         );
-        statistics.sample(|control| {
-            assert_eq!(control, 50);
-            Ok(123)
-        });
-        assert_eq!(statistics.take_updates(), vec![("ae_luma", "123".into())]);
-        let mut exposure = IspStatistics::discover(|control| {
+        assert_eq!(read(Ok(123)), vec![("isp_luma", Some(123.0))]);
+        let exposure = IspStatistics::discover(|control| {
             if control == 51 {
                 Ok(40000)
             } else {
                 Err(io::Error::other("missing luma"))
             }
         });
-        assert_eq!(exposure.entities()[0].unit.as_deref(), Some("µs"));
+        assert_eq!(exposure.entities()[0].unit, Some("µs"));
         assert_eq!(
-            exposure.take_updates(),
-            vec![("exposure_us", "40000".into())]
+            exposure.sample(|_| Ok(40000)),
+            vec![("isp_exposure_us", Some(40000.0))]
         );
     }
     #[test]
@@ -1915,7 +1870,7 @@ mod tests {
             max_y: board::TILT_TRAVEL,
         }
     }
-    fn work(command: mqtt::Command, received: Instant, epoch: u32) -> Work {
+    fn work(command: Command, received: Instant, epoch: u32) -> Work {
         Work {
             command,
             received,
@@ -1954,7 +1909,7 @@ mod tests {
                 let (pan, tilt) = direction.axes();
                 let axes = screen_axes(None, mask).unwrap();
                 let plan = motion_plan(
-                    &work(mqtt::Command::Move(direction), now, 7),
+                    &work(Command::App(App::Ptz(Ptz::Move(direction))), now, 7),
                     test_status(),
                     &Motion::default(),
                     None,
@@ -2058,7 +2013,7 @@ mod tests {
         let kind = MotionKind::Hold(v);
         assert_eq!(kind.ceiling(386), 193);
         let p = motion_plan(
-            &work(mqtt::Command::Velocity(v), now, 0),
+            &work(Command::App(App::Ptz(Ptz::Velocity(v))), now, 0),
             test_status(),
             &Motion::default(),
             None,
@@ -2080,22 +2035,22 @@ mod tests {
             let up = if mask & 2 == 0 { 0 } else { board::TILT_TRAVEL };
             for (command, want) in [
                 (
-                    mqtt::Command::Move(mqtt::Direction::Right),
+                    Command::App(App::Ptz(Ptz::Move(mqtt::Direction::Right))),
                     board::Position { x: right, y: 300 },
                 ),
                 (
-                    mqtt::Command::Move(mqtt::Direction::Up),
+                    Command::App(App::Ptz(Ptz::Move(mqtt::Direction::Up))),
                     board::Position { x: 600, y: up },
                 ),
                 (
-                    mqtt::Command::Pan(mqtt::Position::Relative(20)),
+                    Command::App(App::Ptz(Ptz::Pan(mqtt::Position::Relative(20)))),
                     board::Position {
                         x: 600 + if mask & 1 == 0 { 20 } else { -20 },
                         y: 300,
                     },
                 ),
                 (
-                    mqtt::Command::Tilt(mqtt::Position::Relative(20)),
+                    Command::App(App::Ptz(Ptz::Tilt(mqtt::Position::Relative(20)))),
                     board::Position {
                         x: 600,
                         y: 300 + if mask & 2 == 0 { -20 } else { 20 },
@@ -2115,7 +2070,11 @@ mod tests {
                 assert_eq!(p.target, want);
             }
             let p = motion_plan(
-                &work(mqtt::Command::Pan(mqtt::Position::Absolute(1000)), start, 0),
+                &work(
+                    Command::App(App::Ptz(Ptz::Pan(mqtt::Position::Absolute(1000)))),
+                    start,
+                    0,
+                ),
                 current,
                 &motion,
                 None,
@@ -2134,7 +2093,11 @@ mod tests {
         let motion = Motion::default();
         assert!(
             motion_plan(
-                &work(mqtt::Command::Pan(mqtt::Position::Absolute(1000)), start, 0),
+                &work(
+                    Command::App(App::Ptz(Ptz::Pan(mqtt::Position::Absolute(1000)))),
+                    start,
+                    0
+                ),
                 current,
                 &motion,
                 None,
@@ -2148,7 +2111,7 @@ mod tests {
             assert!(
                 motion_plan(
                     &work(
-                        mqtt::Command::Pan(mqtt::Position::Absolute(value)),
+                        Command::App(App::Ptz(Ptz::Pan(mqtt::Position::Absolute(value)))),
                         start,
                         0
                     ),
@@ -2165,7 +2128,7 @@ mod tests {
         assert!(
             motion_plan(
                 &work(
-                    mqtt::Command::Tilt(mqtt::Position::Relative(i32::MIN)),
+                    Command::App(App::Ptz(Ptz::Tilt(mqtt::Position::Relative(i32::MIN)))),
                     start,
                     0
                 ),
@@ -2356,7 +2319,11 @@ mod tests {
         controls.stop.store(false, Ordering::Release);
         let epoch = controls.epoch.load(Ordering::Acquire);
         let cancel = controls.operation(true);
-        let old = work(mqtt::Command::Move(mqtt::Direction::Up), now, epoch);
+        let old = work(
+            Command::App(App::Ptz(Ptz::Move(mqtt::Direction::Up))),
+            now,
+            epoch,
+        );
         refresh_orientation(&controls, Ok(3));
         assert!(!cancel.is_cancelled());
         refresh_orientation(&controls, Ok(2));
@@ -2364,7 +2331,11 @@ mod tests {
         assert_eq!(controls.orientation.load(Ordering::Acquire), 1);
         let new = controls.epoch.load(Ordering::Acquire);
         assert!(!fresh(&old, new, now));
-        assert!(fresh(&work(mqtt::Command::Led(true), now, epoch), new, now));
+        assert!(fresh(
+            &work(Command::App(App::Led(true)), now, epoch),
+            new,
+            now
+        ));
         assert!(fresh(
             &work(old.command, now, new),
             new,
@@ -2395,7 +2366,7 @@ mod tests {
             operation: Operation::ZoomTo,
         };
         let w = work(
-            mqtt::Command::Position3d(request),
+            Command::App(App::Ptz(Ptz::Position3d(request))),
             start + Duration::from_millis(1250),
             0,
         );
@@ -2454,7 +2425,11 @@ mod tests {
             pending: Some(first),
         };
         let p = motion_plan(
-            &work(mqtt::Command::Pan(mqtt::Position::Absolute(1500)), now, 0),
+            &work(
+                Command::App(App::Ptz(Ptz::Pan(mqtt::Position::Absolute(1500)))),
+                now,
+                0,
+            ),
             current,
             &motion,
             None,
@@ -2481,14 +2456,7 @@ mod tests {
     }
     #[test]
     fn telemetry_parsers_keep_missing_and_invalid_signals_unknown() {
-        let mut cpu = Cpu::default();
-        assert!(cpu.sample("cpu 10 0 10 80 0 0 0 0\n").is_none());
-        assert_eq!(cpu.sample("cpu 20 0 30 150 0 0 0 0\n"), Some(30.0));
-        assert_eq!(proc_kib("MemFree: 123 kB\n", "MemAvailable:"), None);
-        assert_eq!(
-            proc_kib("MemAvailable: 1024 kB\n", "MemAvailable:"),
-            Some(1024)
-        );
+        // CPU and meminfo parsing moved to camera_transport::telemetry and is tested there.
         assert_eq!(wifi_signal("wlan0: 0000 60. -55. -256 0\n"), Some(-55.0));
         assert_eq!(wifi_signal("wlan0: 0000 60. 55. 0 0\n"), None);
     }

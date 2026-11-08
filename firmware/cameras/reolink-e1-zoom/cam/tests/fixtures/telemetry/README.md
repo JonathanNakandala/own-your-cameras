@@ -8,7 +8,6 @@ Captured read-only over ssh from a camera running `cam serve` (PID 537), for the
 | `meminfo` | `/proc/meminfo` |
 | `status` | `/proc/537/status` (the daemon; the parser reads `/proc/self/status`) |
 | `loadavg` | `/proc/loadavg` |
-| `wireless` | `/proc/net/wireless` (rtl88x2cu: link is quality %, level is not dBm) |
 | `uptime` | `/proc/uptime` |
 | `stat-10s` | first line of `/proc/stat`, twice, 10 s apart |
 | `thermal_zone0_temp` | `/sys/class/thermal/thermal_zone0/temp` (`type` = `nvt_thermal`, whole °C) |

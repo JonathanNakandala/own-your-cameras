@@ -112,7 +112,10 @@ def main():
     env['CARGO_TARGET_DIR'] = str(target_dir)
     # media_bridge.o is a link-arg cargo cannot track: force a relink every build.
     (CAM / 'src/main.rs').touch()
-    run('cargo', 'build', '--locked', '--release', '-p', 'ds-kd8003-ime1-cam', '--target', TARGET, '-Z', 'build-std=std,panic_abort',
+    # std without its default `backtrace` feature: panics still print their message, but the backtrace
+    # symbolizer (gimli, addr2line, demangler: ~70 KB of LZMA payload) stays out of the small config partition.
+    run('cargo', 'build', '--locked', '--release', '-p', 'ds-kd8003-ime1-cam', '--target', TARGET,
+        '-Z', 'build-std=std,panic_abort', '-Z', 'build-std-features=',
         cwd=WORKSPACE, env=env)
     built = target_dir / TARGET / 'release' / 'ds-kd8003-ime1-cam'
     sys.path.insert(0, str(CAM / 'toolchain'))

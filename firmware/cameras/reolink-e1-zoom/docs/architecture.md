@@ -35,7 +35,7 @@ crates described in the [workspace guide](../../../README.md#source-layout).
 | `cam` | the daemon and its command line (`cam serve`, `cam ptz`, …), plus the launcher `cam-launch` (`image/cam-launch.rs`) | model boot, ownership, network, MQTT and hardware policy; RTSP uses the shared transport |
 
 Every hardware interaction in `cam` is a trait with a host fake as well (`ptz::Bus`, `zoom::Isp`, `ir::Hw`,
-`net::Host`, `wdt::WatchdogDevice`, `telemetry::Source`, `settings::Disk`). Keep system calls at these
+`net::Host`, `wdt::WatchdogDevice`, `telemetry::Wifi` and the shared `telemetry::Source`, `settings::Disk`). Keep system calls at these
 adapter boundaries; see the [coding standards](../../../../CODING_STANDARDS.md).
 
 ## Boot
@@ -80,7 +80,7 @@ commands refuse to run after it, even once the daemon has exited. The fallbacks 
 | `rtsp` | the listener on 554 and one thread per connection | 5 s |
 | `mqtt` | the broker connection, discovery, commands, settings persistence | 10 s |
 | `mqtt-hardware` | I²C (pan/tilt, IR-cut), `/dev/nvt_isp` (lens, ISP items), GPIOs, the light ADC | 60 s |
-| `telemetry` | `/proc` and `iw` readings every 10 s | through `mqtt` |
+| `telemetry` | `/proc` and `iw` readings every 30 s, published through the shared change filter | through `mqtt` |
 | `log-drain`, `log-write` | stdout/stderr into `/mnt/tmp/cam-serve.log`, 256 KiB cap | none |
 
 Startup (graph, motor homing, services) has a 90 s grace. A worker that exits, unwinds or stops reporting progress
@@ -136,11 +136,12 @@ sample under -1 dBFS.
 
 ## MQTT
 
-One client (`rumqttc`) to the broker in `cam.toml`, Home Assistant discovery for every control, setting and
+One client, the shared MQTT layer of all cameras (`camera_transport::mqtt`), to the broker in `cam.toml`, Home Assistant discovery for every control, setting and
 diagnostic ([home-assistant.md](home-assistant.md)). Commands are validated on the MQTT thread and executed one at
 a time by the `mqtt-hardware` thread, which is the only owner of the motors, lens, IR and ISP items; a stop request
 from a second process reaches the same owner through `/mnt/tmp/cam-controls.stop`. Settings are applied by their
-owner (media thread or hardware thread) and saved to `/mnt/para/cam-settings.toml` within 10 s. The learned focus
+owner (media thread or hardware thread) and saved to `/mnt/para/cam-settings.toml` within 10 s by the shared settings
+store (`camera_transport::settings::Values`, TOML codec). The learned focus
 map ([hardware/zoom-focus.md](hardware/zoom-focus.md#autofocus-in-the-daemon)) is saved the same way to
 `/mnt/para/cam-focus-map.toml`, within 60 s. A preset saved from Home Assistant is written at once to
 `/mnt/para/cam-presets.toml`; the hardware thread owns the preset table (`cam.toml`'s presets with those saves

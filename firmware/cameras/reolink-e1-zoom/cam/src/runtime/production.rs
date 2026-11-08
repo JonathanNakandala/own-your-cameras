@@ -384,10 +384,10 @@ pub fn telemetry_task(
     media: Arc<crate::media_tuning::Handoff>,
 ) -> crate::telemetry::Task {
     let sub_fps = PipelineConfig::e1_zoom().streams[1].fps;
-    crate::telemetry::Task {
-        collector: crate::telemetry::Collector::new(Box::new(crate::telemetry::System), counters),
-        expected_fps: Box::new(move || [media.applied().1.map(|m| m.fps), Some(sub_fps)]),
-    }
+    crate::telemetry::Task::new(
+        crate::telemetry::Collector::system(counters),
+        Box::new(move || [media.applied().1.map(|m| m.fps), Some(sub_fps)]),
+    )
 }
 
 type Feeder = JoinHandle<io::Result<()>>;

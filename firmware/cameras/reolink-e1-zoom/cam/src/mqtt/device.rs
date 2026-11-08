@@ -627,7 +627,7 @@ impl<B: Bus + Send, I: Isp + Send, H: Hw + Send, O: Platform> Hardware for Devic
     fn stop_endpoint(&self) -> Option<std::path::PathBuf> {
         self.ptz.stop_endpoint()
     }
-    fn motion_epoch(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicU64>> {
+    fn motion_epoch(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicU32>> {
         self.ptz.motion_epoch()
     }
     fn apply_at(&mut self, c: &Command, received: Duration) -> Result<(), String> {
@@ -957,7 +957,7 @@ impl<B: Bus + Send, I: Isp + Send, H: Hw + Send, O: Platform> Hardware for Devic
             "light".into(),
             self.light.map(|l| l.to_string()).unwrap_or_default(),
         );
-        let mut summary = crate::settings::summary(self.store.problems());
+        let mut summary = crate::settings::summary(&self.store.problems());
         if let Some(r) = self.refused.last() {
             summary = format!("{summary}; refused {r}");
         }

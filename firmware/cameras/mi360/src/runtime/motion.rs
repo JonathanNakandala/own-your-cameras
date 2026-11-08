@@ -174,18 +174,18 @@ pub(super) fn screen_axes(
         }),
     }
 }
-pub(super) fn is_motion(command: mqtt::Command) -> bool {
+pub(super) fn is_motion(command: Command) -> bool {
     matches!(
         command,
-        mqtt::Command::Pan(_)
-            | mqtt::Command::Tilt(_)
-            | mqtt::Command::Move(_)
-            | mqtt::Command::Velocity(_)
-            | mqtt::Command::Home
-            | mqtt::Command::Preset(_)
-            | mqtt::Command::Position3d(_)
-            | mqtt::Command::Release
-            | mqtt::Command::Stop
+        Command::App(App::Ptz(Ptz::Pan(_)))
+            | Command::App(App::Ptz(Ptz::Tilt(_)))
+            | Command::App(App::Ptz(Ptz::Move(_)))
+            | Command::App(App::Ptz(Ptz::Velocity(_)))
+            | Command::App(App::Ptz(Ptz::Home))
+            | Command::App(App::Ptz(Ptz::Preset(_)))
+            | Command::App(App::Ptz(Ptz::Position3d(_)))
+            | Command::Release
+            | Command::Stop
     )
 }
 pub(super) fn fresh(work: &Work, epoch: u32, now: Instant) -> bool {
@@ -207,8 +207,9 @@ pub(super) fn motion_plan(
     let axes = screen_axes(calibration, mask)?;
     let mut target = motion.fixed_target(current.position);
     let kind = match work.command {
-        mqtt::Command::Pan(position) | mqtt::Command::Tilt(position) => {
-            let pan = matches!(work.command, mqtt::Command::Pan(_));
+        Command::App(App::Ptz(Ptz::Pan(position)))
+        | Command::App(App::Ptz(Ptz::Tilt(position))) => {
+            let pan = matches!(work.command, Command::App(App::Ptz(Ptz::Pan(_))));
             let axis = if pan { &mut target.x } else { &mut target.y };
             *axis = match position {
                 mqtt::Position::Absolute(value) => value, // Physical slider.
@@ -227,14 +228,14 @@ pub(super) fn motion_plan(
             };
             MotionKind::Fixed
         }
-        mqtt::Command::Move(_) | mqtt::Command::Velocity(_) => {
+        Command::App(App::Ptz(Ptz::Move(_))) | Command::App(App::Ptz(Ptz::Velocity(_))) => {
             target = current.position;
             let (pan, tilt, kind) = match work.command {
-                mqtt::Command::Move(d) => {
+                Command::App(App::Ptz(Ptz::Move(d))) => {
                     let (x, y) = d.axes();
                     (x, y, MotionKind::Hold(legacy_velocity(d)))
                 }
-                mqtt::Command::Velocity(v) => {
+                Command::App(App::Ptz(Ptz::Velocity(v))) => {
                     camera_transport::motion_control::Capabilities {
                         zoom: false,
                         coupled_pan_tilt: true,
@@ -259,7 +260,7 @@ pub(super) fn motion_plan(
             }
             kind
         }
-        mqtt::Command::Position3d(request) => {
+        Command::App(App::Ptz(Ptz::Position3d(request))) => {
             target = pointing
                 .ok_or_else(|| {
                     io::Error::new(io::ErrorKind::Unsupported, "point calibration unavailable")

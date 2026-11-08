@@ -44,12 +44,12 @@ and the daemon keeps them itself ([settings.md](settings.md)).
 - Client id `cam_<id>`, clean session, five-second keep-alive, plain TCP. Never run two cameras with the same id.
 - `camera/<id>/availability`: retained `online` once the hardware is up, retained `offline` through the last
   will on a crash or lost connection, and drained before an orderly disconnect.
-- `camera/<id>/<entity>/set`: commands, never retained. A retained command is ignored, so an old retained reboot
-  cannot loop the camera.
-- `camera/<id>/<entity>/state`: the **confirmed** state, retained at QoS 1, published every five seconds, after
+- `camera/<id>/<entity>/set`: commands, never retained. A command the broker replays from its retained store is
+  ignored, so an old retained reboot cannot loop the camera.
+- `camera/<id>/<entity>/state`: the **confirmed** state, retained, published every five seconds, after
   each command and as soon as the media thread applies a change. A hardware failure is logged; it never echoes the
   requested value as success.
-- Discovery: `homeassistant/<domain>/cam_<id>/<entity>/config`, retained at QoS 1, one device `cam_<id>`, unique ids
+- Discovery: `homeassistant/<domain>/cam_<id>/<entity>/config`, retained, one device `cam_<id>`, unique ids
   `cam_<id>_<entity>`. A setting's name leads with its section (`Audio Mic volume`, `Pan & tilt Ramp`, `Lens
   Calibrate focus (15 min)`), so the device page's configuration list reads section by section; Home Assistant
   groups entities on a device only by category (controls, configuration, diagnostic), and separate devices per
@@ -84,17 +84,22 @@ Diagnostics (`entity_category: diagnostic`):
 | Light sensor | the raw ADC; higher is darker. Use it to pick IR thresholds |
 | Settings | `ok`, or `invalid: <keys>`, plus the last refused change |
 | Autofocus | `idle`, `searching`, `focused <pos>`, `kept <pos>` (a pan/tilt found the scene still sharp), `calibrated <pos>` (flat scene), `failed: <reason>`, or `calibrating <done>/<total>, <n> min left` while the Calibrate focus walk runs; attributes `trigger`, `duration_ms`, `reference_va`, `va`, `searches`, the last search's `samples`, the watchdog's `history`, and the focus map's `map_points`, `park` (`learned`/`factory`), `park_focus`, `rows_pending`, and `calibration` (`state` running/done/cancelled, `done`, `total`, `learned`, `skipped` of the last walk, `remaining_s` while it runs) ([hardware/zoom-focus.md](hardware/zoom-focus.md#autofocus-in-the-daemon)) |
-| CPU busy | % over the 10 s window |
-| Memory available, Daemon memory | MiB (`MemAvailable`, the daemon's RSS) |
-| Load average | one minute |
+| CPU busy | % over the sampling window |
+| Memory available, Daemon memory* | MiB (`MemAvailable`, the daemon's RSS) |
+| Load average* | one minute |
 | Temperature | °C, `thermal_zone0` (`nvt_thermal`) |
-| Wi-Fi signal | link quality %, from `/proc/net/wireless` (its level is not dBm) |
-| Wi-Fi RSSI | dBm, from `iw dev wlan0 link` |
-| Main/Sub bitrate (actual), frame rate (actual) | from the frames the encoders delivered |
-| Main/Sub frames short | frames below the configured rate in the window (no HDAL drop counter exists) |
+| Wi-Fi signal | dBm, from `iw dev wlan0 link` |
+| Main/Sub* bitrate, frame rate | from the frames the encoders delivered over the window |
+| Main*/Sub* frames short | frames below the configured rate in the window (no HDAL drop counter exists) |
 | Uptime | seconds |
 
-Telemetry is published every 10 s by its own thread; a missing reading publishes empty (unknown), never zero.
+\* disabled by default; enable it on the entity page.
+
+Telemetry uses the sensor ids shared by every camera (`cpu_busy`, `memory_available`, `daemon_memory`, `load`,
+`uptime`, `temperature`, `wifi_signal`, `main_fps_actual`, `main_bitrate_actual`, `main_frames_short`,
+`sub_fps_actual`, `sub_bitrate_actual`, `sub_frames_short`). Its own thread samples every 30 s and publishes a
+value only when it moved beyond the sensor's deadband or 5 minutes passed; a missing reading is `unknown`, never
+zero.
 
 ## Commands without an entity
 

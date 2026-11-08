@@ -32,7 +32,7 @@ backchannel (ONVIF `Require: www.onvif.org/ver20/backchannel`) that plays on the
 Home Assistant discovers the door, its open and close buttons, the reed and lock states, the
 doorbell and the access events through your broker: [MQTT and Home Assistant](docs/home-assistant.md).
 
-Not yet: card reader, image settings over MQTT, snapshots, calls to the DS-KH9510-WTE1.
+Not yet: card reader, calls to the DS-KH9510-WTE1.
 
 ## Recover
 

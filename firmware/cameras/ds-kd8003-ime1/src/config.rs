@@ -1,4 +1,5 @@
-//! `key=value` configuration (one file, mode 0600, read once at startup) and the PIN table.
+//! `key=value` configuration (one file, mode 0600, read once at startup): secrets, identity and
+//! paths only; everything else is a live setting ([`crate::settings`]). Also the PIN table.
 //! No value is logged by this module; the caller decides what leaves the device.
 use std::path::{Path, PathBuf};
 use zeroize::Zeroizing;
@@ -25,19 +26,10 @@ pub struct Config {
     pub rtsp_user: String,
     pub rtsp_password: String,
     pub rtsp_port: u16,
-    /// Strike relay pulse for an authorized opening, seconds.
-    pub open_seconds: u32,
-    /// DAC output level applied at start, dB.
-    pub codec_out_db: i32,
-    /// Digital gain applied to clips, dB (negative attenuates).
-    pub clip_db: i32,
-    /// Extra gain on talkback after the mixer's AGC/limiter, dB (0..18); clipped, loudness over purity.
-    pub talk_db: i32,
-    pub mic_gain_db: i32,
     /// 16 raw bytes: the keypad bootstrap key.
     pub keypad_key: PathBuf,
     pub pins: PathBuf,
-    /// Directory of `<name>.pcm` clips: raw s16le mono 16 kHz.
+    /// Directory of `<name>.pcmd` (installer) or `<name>.pcm` clips: s16le mono 16 kHz.
     pub clips: PathBuf,
     /// The health marker, derived from the configuration file's directory.
     pub health: PathBuf,
@@ -47,6 +39,9 @@ pub struct Config {
     pub onvif_port: u16,
     /// NTP servers the clock follows (none: left alone).
     pub ntp: Vec<String>,
+    /// Keys of earlier firmware that are live settings now ([`crate::settings::DEPRECATED`]), with
+    /// their raw text: they seed the settings once and never stop the start.
+    pub deprecated: Vec<(String, String)>,
 }
 
 impl Default for Config {
@@ -62,11 +57,6 @@ impl Default for Config {
             rtsp_user: String::new(),
             rtsp_password: String::new(),
             rtsp_port: 554,
-            open_seconds: 5,
-            codec_out_db: 0,
-            clip_db: 0,
-            talk_db: 6,
-            mic_gain_db: 0,
             keypad_key: format!("{DEFAULT_BASE}/keypad.key").into(),
             pins: format!("{DEFAULT_BASE}/pins.conf").into(),
             clips: format!("{DEFAULT_RUNTIME}/clips").into(),
@@ -74,6 +64,7 @@ impl Default for Config {
             http_port: 0,
             onvif_port: 80,
             ntp: Vec::new(),
+            deprecated: Vec::new(),
         }
     }
 }
@@ -83,15 +74,14 @@ impl std::fmt::Debug for Config {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Config(mqtt {}:{} as {}, prefix {}, node {}, rtsp {}:{}, open {} s)",
+            "Config(mqtt {}:{} as {}, prefix {}, node {}, rtsp {}:{})",
             self.mqtt_host,
             self.mqtt_port,
             self.mqtt_user,
             self.mqtt_prefix,
             self.mqtt_node,
             self.rtsp_user,
-            self.rtsp_port,
-            self.open_seconds
+            self.rtsp_port
         )
     }
 }
@@ -164,20 +154,8 @@ impl Config {
                         return Err(Error::Range("ntp"));
                     }
                 }
-                "open_seconds" => {
-                    let v = number("open_seconds")?;
-                    if !(1..=120).contains(&v) {
-                        return Err(Error::Range("open_seconds"));
-                    }
-                    c.open_seconds = v as u32;
-                }
-                "codec_out_db" => {
-                    c.codec_out_db = bounded(number("codec_out_db")?, -30, 6, "codec_out_db")?
-                }
-                "clip_db" => c.clip_db = bounded(number("clip_db")?, -40, 12, "clip_db")?,
-                "talk_db" => c.talk_db = bounded(number("talk_db")?, 0, 18, "talk_db")?,
-                "mic_gain_db" => {
-                    c.mic_gain_db = bounded(number("mic_gain_db")?, 0, 40, "mic_gain_db")?
+                k if crate::settings::DEPRECATED.contains(&k) => {
+                    c.deprecated.push((k.to_string(), value))
                 }
                 "keypad_key" => c.keypad_key = value.into(),
                 "pins" => c.pins = value.into(),
@@ -212,14 +190,6 @@ fn port(v: i64, name: &'static str) -> Result<u16, Error> {
         .ok()
         .filter(|p| *p != 0)
         .ok_or(Error::Range(name))
-}
-
-fn bounded(v: i64, min: i64, max: i64, name: &'static str) -> Result<i32, Error> {
-    if (min..=max).contains(&v) {
-        Ok(v as i32)
-    } else {
-        Err(Error::Range(name))
-    }
 }
 
 /// One authorized code: the digits, the person it belongs to and the clip to play.
@@ -271,17 +241,16 @@ pub fn parse_pins(text: &str) -> Result<Vec<Credential>, Error> {
 mod tests {
     use super::*;
 
-    const GOOD: &str = "mqtt_host=mqtt.example\nmqtt_user=u\nmqtt_password=p\nrtsp_user=admin\nrtsp_password=secret\nopen_seconds=7\nclip_db=-6\n";
+    const GOOD: &str = "mqtt_host=mqtt.example\nmqtt_user=u\nmqtt_password=p\nrtsp_user=admin\nrtsp_password=secret\nrtsp_port=8554\n";
 
     #[test]
     fn parses_overrides_and_keeps_defaults() {
         let c = Config::parse(GOOD).unwrap();
-        assert_eq!(c.open_seconds, 7);
-        assert_eq!(c.clip_db, -6);
+        assert_eq!(c.rtsp_port, 8554);
         assert_eq!(c.mqtt_port, 1883);
         assert_eq!(c.mqtt_prefix, "ds-kd8003-ime1");
         assert_eq!(c.device_name, "DS-KD8003-IME1");
-        assert_eq!(c.rtsp_port, 554);
+        assert!(c.deprecated.is_empty());
         assert_eq!(c.http_port, 0, "diagnostics are off unless asked for");
         assert_eq!(c.health, PathBuf::from("/home/config/custom/native.ok"));
     }
@@ -294,11 +263,7 @@ mod tests {
         );
         assert_eq!(
             Config::parse(&format!("{GOOD}novalue\n")),
-            Err(Error::Line(8))
-        );
-        assert_eq!(
-            Config::parse(&format!("{GOOD}open_seconds=0\n")),
-            Err(Error::Range("open_seconds"))
+            Err(Error::Line(7))
         );
         assert_eq!(
             Config::parse(&format!("{GOOD}mqtt_port=70000\n")),
@@ -333,6 +298,36 @@ mod tests {
             Config::parse("mqtt_host=h\n"),
             Err(Error::Range("rtsp_user"))
         );
+    }
+
+    #[test]
+    fn removed_keys_are_kept_raw_for_the_one_time_seed_and_never_fail() {
+        let c = Config::parse(&format!(
+            "{GOOD}open_seconds=0\ntalk_db=loud\nmic_gain_db=20\ncodec_out_db=0\nclip_db=-6\n"
+        ))
+        .unwrap();
+        let keys: Vec<(&str, &str)> = c
+            .deprecated
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                ("open_seconds", "0"),
+                ("talk_db", "loud"),
+                ("mic_gain_db", "20"),
+                ("codec_out_db", "0"),
+                ("clip_db", "-6"),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_example_file_parses_without_deprecated_keys() {
+        let text = include_str!("../firmware/cam.conf.example");
+        let c = Config::parse(text).unwrap();
+        assert!(c.deprecated.is_empty());
     }
 
     #[test]

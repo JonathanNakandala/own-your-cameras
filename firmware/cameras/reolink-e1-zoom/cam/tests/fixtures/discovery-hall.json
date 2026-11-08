@@ -269,24 +269,29 @@
       "topic": "homeassistant/select/cam_hall/isp_anti_flicker/config"
     },
     {
-      "payload": "{\"availability_topic\":\"camera/hall/availability\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"entity_category\":\"diagnostic\",\"icon\":\"mdi:cpu-32-bit\",\"name\":\"CPU busy\",\"state_class\":\"measurement\",\"state_topic\":\"camera/hall/cpu/state\",\"unique_id\":\"cam_hall_cpu\",\"unit_of_measurement\":\"%\"}",
+      "payload": "{\"availability_topic\":\"camera/hall/availability\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"entity_category\":\"diagnostic\",\"icon\":\"mdi:cpu-32-bit\",\"name\":\"CPU busy\",\"state_class\":\"measurement\",\"state_topic\":\"camera/hall/cpu_busy/state\",\"unique_id\":\"cam_hall_cpu_busy\",\"unit_of_measurement\":\"%\"}",
       "retain": true,
-      "topic": "homeassistant/sensor/cam_hall/cpu/config"
+      "topic": "homeassistant/sensor/cam_hall/cpu_busy/config"
     },
     {
-      "payload": "{\"availability_topic\":\"camera/hall/availability\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"device_class\":\"data_size\",\"entity_category\":\"diagnostic\",\"name\":\"Memory available\",\"state_class\":\"measurement\",\"state_topic\":\"camera/hall/mem_available/state\",\"unique_id\":\"cam_hall_mem_available\",\"unit_of_measurement\":\"MiB\"}",
+      "payload": "{\"availability_topic\":\"camera/hall/availability\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"device_class\":\"data_size\",\"entity_category\":\"diagnostic\",\"name\":\"Memory available\",\"state_class\":\"measurement\",\"state_topic\":\"camera/hall/memory_available/state\",\"unique_id\":\"cam_hall_memory_available\",\"unit_of_measurement\":\"MiB\"}",
       "retain": true,
-      "topic": "homeassistant/sensor/cam_hall/mem_available/config"
+      "topic": "homeassistant/sensor/cam_hall/memory_available/config"
     },
     {
-      "payload": "{\"availability_topic\":\"camera/hall/availability\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"device_class\":\"data_size\",\"entity_category\":\"diagnostic\",\"name\":\"Daemon memory\",\"state_class\":\"measurement\",\"state_topic\":\"camera/hall/rss/state\",\"unique_id\":\"cam_hall_rss\",\"unit_of_measurement\":\"MiB\"}",
+      "payload": "{\"availability_topic\":\"camera/hall/availability\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"device_class\":\"data_size\",\"enabled_by_default\":false,\"entity_category\":\"diagnostic\",\"name\":\"Daemon memory\",\"state_class\":\"measurement\",\"state_topic\":\"camera/hall/daemon_memory/state\",\"unique_id\":\"cam_hall_daemon_memory\",\"unit_of_measurement\":\"MiB\"}",
       "retain": true,
-      "topic": "homeassistant/sensor/cam_hall/rss/config"
+      "topic": "homeassistant/sensor/cam_hall/daemon_memory/config"
     },
     {
-      "payload": "{\"availability_topic\":\"camera/hall/availability\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"entity_category\":\"diagnostic\",\"icon\":\"mdi:gauge\",\"name\":\"Load average\",\"state_class\":\"measurement\",\"state_topic\":\"camera/hall/load/state\",\"unique_id\":\"cam_hall_load\"}",
+      "payload": "{\"availability_topic\":\"camera/hall/availability\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"enabled_by_default\":false,\"entity_category\":\"diagnostic\",\"icon\":\"mdi:gauge\",\"name\":\"Load average\",\"state_class\":\"measurement\",\"state_topic\":\"camera/hall/load/state\",\"unique_id\":\"cam_hall_load\"}",
       "retain": true,
       "topic": "homeassistant/sensor/cam_hall/load/config"
+    },
+    {
+      "payload": "{\"availability_topic\":\"camera/hall/availability\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"device_class\":\"duration\",\"entity_category\":\"diagnostic\",\"name\":\"Uptime\",\"state_class\":\"measurement\",\"state_topic\":\"camera/hall/uptime/state\",\"unique_id\":\"cam_hall_uptime\",\"unit_of_measurement\":\"s\"}",
+      "retain": true,
+      "topic": "homeassistant/sensor/cam_hall/uptime/config"
     },
     {
       "payload": "{\"availability_topic\":\"camera/hall/availability\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"device_class\":\"temperature\",\"entity_category\":\"diagnostic\",\"name\":\"Temperature\",\"state_class\":\"measurement\",\"state_topic\":\"camera/hall/temperature/state\",\"unique_id\":\"cam_hall_temperature\",\"unit_of_measurement\":\"°C\"}",
@@ -294,49 +299,39 @@
       "topic": "homeassistant/sensor/cam_hall/temperature/config"
     },
     {
-      "payload": "{\"availability_topic\":\"camera/hall/availability\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"entity_category\":\"diagnostic\",\"icon\":\"mdi:wifi\",\"name\":\"Wi-Fi signal\",\"state_class\":\"measurement\",\"state_topic\":\"camera/hall/wifi/state\",\"unique_id\":\"cam_hall_wifi\",\"unit_of_measurement\":\"%\"}",
+      "payload": "{\"availability_topic\":\"camera/hall/availability\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"device_class\":\"signal_strength\",\"entity_category\":\"diagnostic\",\"name\":\"Wi-Fi signal\",\"state_class\":\"measurement\",\"state_topic\":\"camera/hall/wifi_signal/state\",\"unique_id\":\"cam_hall_wifi_signal\",\"unit_of_measurement\":\"dBm\"}",
       "retain": true,
-      "topic": "homeassistant/sensor/cam_hall/wifi/config"
+      "topic": "homeassistant/sensor/cam_hall/wifi_signal/config"
     },
     {
-      "payload": "{\"availability_topic\":\"camera/hall/availability\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"device_class\":\"signal_strength\",\"entity_category\":\"diagnostic\",\"name\":\"Wi-Fi RSSI\",\"state_class\":\"measurement\",\"state_topic\":\"camera/hall/wifi_rssi/state\",\"unique_id\":\"cam_hall_wifi_rssi\",\"unit_of_measurement\":\"dBm\"}",
-      "retain": true,
-      "topic": "homeassistant/sensor/cam_hall/wifi_rssi/config"
-    },
-    {
-      "payload": "{\"availability_topic\":\"camera/hall/availability\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"device_class\":\"data_rate\",\"entity_category\":\"diagnostic\",\"name\":\"Main bitrate (actual)\",\"state_class\":\"measurement\",\"state_topic\":\"camera/hall/main_bitrate_actual/state\",\"unique_id\":\"cam_hall_main_bitrate_actual\",\"unit_of_measurement\":\"kbit/s\"}",
-      "retain": true,
-      "topic": "homeassistant/sensor/cam_hall/main_bitrate_actual/config"
-    },
-    {
-      "payload": "{\"availability_topic\":\"camera/hall/availability\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"device_class\":\"data_rate\",\"entity_category\":\"diagnostic\",\"name\":\"Sub bitrate (actual)\",\"state_class\":\"measurement\",\"state_topic\":\"camera/hall/sub_bitrate_actual/state\",\"unique_id\":\"cam_hall_sub_bitrate_actual\",\"unit_of_measurement\":\"kbit/s\"}",
-      "retain": true,
-      "topic": "homeassistant/sensor/cam_hall/sub_bitrate_actual/config"
-    },
-    {
-      "payload": "{\"availability_topic\":\"camera/hall/availability\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"entity_category\":\"diagnostic\",\"icon\":\"mdi:filmstrip\",\"name\":\"Main frame rate (actual)\",\"state_class\":\"measurement\",\"state_topic\":\"camera/hall/main_fps_actual/state\",\"unique_id\":\"cam_hall_main_fps_actual\",\"unit_of_measurement\":\"fps\"}",
+      "payload": "{\"availability_topic\":\"camera/hall/availability\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"entity_category\":\"diagnostic\",\"icon\":\"mdi:filmstrip\",\"name\":\"Main frame rate\",\"state_class\":\"measurement\",\"state_topic\":\"camera/hall/main_fps_actual/state\",\"unique_id\":\"cam_hall_main_fps_actual\",\"unit_of_measurement\":\"fps\"}",
       "retain": true,
       "topic": "homeassistant/sensor/cam_hall/main_fps_actual/config"
     },
     {
-      "payload": "{\"availability_topic\":\"camera/hall/availability\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"entity_category\":\"diagnostic\",\"icon\":\"mdi:filmstrip\",\"name\":\"Sub frame rate (actual)\",\"state_class\":\"measurement\",\"state_topic\":\"camera/hall/sub_fps_actual/state\",\"unique_id\":\"cam_hall_sub_fps_actual\",\"unit_of_measurement\":\"fps\"}",
+      "payload": "{\"availability_topic\":\"camera/hall/availability\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"device_class\":\"data_rate\",\"entity_category\":\"diagnostic\",\"name\":\"Main bitrate\",\"state_class\":\"measurement\",\"state_topic\":\"camera/hall/main_bitrate_actual/state\",\"unique_id\":\"cam_hall_main_bitrate_actual\",\"unit_of_measurement\":\"kbit/s\"}",
+      "retain": true,
+      "topic": "homeassistant/sensor/cam_hall/main_bitrate_actual/config"
+    },
+    {
+      "payload": "{\"availability_topic\":\"camera/hall/availability\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"enabled_by_default\":false,\"entity_category\":\"diagnostic\",\"icon\":\"mdi:filmstrip-off\",\"name\":\"Main frames short\",\"state_class\":\"measurement\",\"state_topic\":\"camera/hall/main_frames_short/state\",\"unique_id\":\"cam_hall_main_frames_short\"}",
+      "retain": true,
+      "topic": "homeassistant/sensor/cam_hall/main_frames_short/config"
+    },
+    {
+      "payload": "{\"availability_topic\":\"camera/hall/availability\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"enabled_by_default\":false,\"entity_category\":\"diagnostic\",\"icon\":\"mdi:filmstrip\",\"name\":\"Sub frame rate\",\"state_class\":\"measurement\",\"state_topic\":\"camera/hall/sub_fps_actual/state\",\"unique_id\":\"cam_hall_sub_fps_actual\",\"unit_of_measurement\":\"fps\"}",
       "retain": true,
       "topic": "homeassistant/sensor/cam_hall/sub_fps_actual/config"
     },
     {
-      "payload": "{\"availability_topic\":\"camera/hall/availability\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"entity_category\":\"diagnostic\",\"icon\":\"mdi:filmstrip-off\",\"name\":\"Main frames short\",\"state_class\":\"measurement\",\"state_topic\":\"camera/hall/main_dropped/state\",\"unique_id\":\"cam_hall_main_dropped\"}",
+      "payload": "{\"availability_topic\":\"camera/hall/availability\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"device_class\":\"data_rate\",\"enabled_by_default\":false,\"entity_category\":\"diagnostic\",\"name\":\"Sub bitrate\",\"state_class\":\"measurement\",\"state_topic\":\"camera/hall/sub_bitrate_actual/state\",\"unique_id\":\"cam_hall_sub_bitrate_actual\",\"unit_of_measurement\":\"kbit/s\"}",
       "retain": true,
-      "topic": "homeassistant/sensor/cam_hall/main_dropped/config"
+      "topic": "homeassistant/sensor/cam_hall/sub_bitrate_actual/config"
     },
     {
-      "payload": "{\"availability_topic\":\"camera/hall/availability\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"entity_category\":\"diagnostic\",\"icon\":\"mdi:filmstrip-off\",\"name\":\"Sub frames short\",\"state_class\":\"measurement\",\"state_topic\":\"camera/hall/sub_dropped/state\",\"unique_id\":\"cam_hall_sub_dropped\"}",
+      "payload": "{\"availability_topic\":\"camera/hall/availability\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"enabled_by_default\":false,\"entity_category\":\"diagnostic\",\"icon\":\"mdi:filmstrip-off\",\"name\":\"Sub frames short\",\"state_class\":\"measurement\",\"state_topic\":\"camera/hall/sub_frames_short/state\",\"unique_id\":\"cam_hall_sub_frames_short\"}",
       "retain": true,
-      "topic": "homeassistant/sensor/cam_hall/sub_dropped/config"
-    },
-    {
-      "payload": "{\"availability_topic\":\"camera/hall/availability\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"device_class\":\"duration\",\"entity_category\":\"diagnostic\",\"name\":\"Uptime\",\"state_class\":\"total_increasing\",\"state_topic\":\"camera/hall/uptime/state\",\"unique_id\":\"cam_hall_uptime\",\"unit_of_measurement\":\"s\"}",
-      "retain": true,
-      "topic": "homeassistant/sensor/cam_hall/uptime/config"
+      "topic": "homeassistant/sensor/cam_hall/sub_frames_short/config"
     }
   ],
   "discovery_without_presets": [
@@ -606,24 +601,29 @@
       "topic": "homeassistant/select/cam_hall/isp_anti_flicker/config"
     },
     {
-      "payload": "{\"availability_topic\":\"camera/hall/availability\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"entity_category\":\"diagnostic\",\"icon\":\"mdi:cpu-32-bit\",\"name\":\"CPU busy\",\"state_class\":\"measurement\",\"state_topic\":\"camera/hall/cpu/state\",\"unique_id\":\"cam_hall_cpu\",\"unit_of_measurement\":\"%\"}",
+      "payload": "{\"availability_topic\":\"camera/hall/availability\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"entity_category\":\"diagnostic\",\"icon\":\"mdi:cpu-32-bit\",\"name\":\"CPU busy\",\"state_class\":\"measurement\",\"state_topic\":\"camera/hall/cpu_busy/state\",\"unique_id\":\"cam_hall_cpu_busy\",\"unit_of_measurement\":\"%\"}",
       "retain": true,
-      "topic": "homeassistant/sensor/cam_hall/cpu/config"
+      "topic": "homeassistant/sensor/cam_hall/cpu_busy/config"
     },
     {
-      "payload": "{\"availability_topic\":\"camera/hall/availability\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"device_class\":\"data_size\",\"entity_category\":\"diagnostic\",\"name\":\"Memory available\",\"state_class\":\"measurement\",\"state_topic\":\"camera/hall/mem_available/state\",\"unique_id\":\"cam_hall_mem_available\",\"unit_of_measurement\":\"MiB\"}",
+      "payload": "{\"availability_topic\":\"camera/hall/availability\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"device_class\":\"data_size\",\"entity_category\":\"diagnostic\",\"name\":\"Memory available\",\"state_class\":\"measurement\",\"state_topic\":\"camera/hall/memory_available/state\",\"unique_id\":\"cam_hall_memory_available\",\"unit_of_measurement\":\"MiB\"}",
       "retain": true,
-      "topic": "homeassistant/sensor/cam_hall/mem_available/config"
+      "topic": "homeassistant/sensor/cam_hall/memory_available/config"
     },
     {
-      "payload": "{\"availability_topic\":\"camera/hall/availability\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"device_class\":\"data_size\",\"entity_category\":\"diagnostic\",\"name\":\"Daemon memory\",\"state_class\":\"measurement\",\"state_topic\":\"camera/hall/rss/state\",\"unique_id\":\"cam_hall_rss\",\"unit_of_measurement\":\"MiB\"}",
+      "payload": "{\"availability_topic\":\"camera/hall/availability\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"device_class\":\"data_size\",\"enabled_by_default\":false,\"entity_category\":\"diagnostic\",\"name\":\"Daemon memory\",\"state_class\":\"measurement\",\"state_topic\":\"camera/hall/daemon_memory/state\",\"unique_id\":\"cam_hall_daemon_memory\",\"unit_of_measurement\":\"MiB\"}",
       "retain": true,
-      "topic": "homeassistant/sensor/cam_hall/rss/config"
+      "topic": "homeassistant/sensor/cam_hall/daemon_memory/config"
     },
     {
-      "payload": "{\"availability_topic\":\"camera/hall/availability\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"entity_category\":\"diagnostic\",\"icon\":\"mdi:gauge\",\"name\":\"Load average\",\"state_class\":\"measurement\",\"state_topic\":\"camera/hall/load/state\",\"unique_id\":\"cam_hall_load\"}",
+      "payload": "{\"availability_topic\":\"camera/hall/availability\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"enabled_by_default\":false,\"entity_category\":\"diagnostic\",\"icon\":\"mdi:gauge\",\"name\":\"Load average\",\"state_class\":\"measurement\",\"state_topic\":\"camera/hall/load/state\",\"unique_id\":\"cam_hall_load\"}",
       "retain": true,
       "topic": "homeassistant/sensor/cam_hall/load/config"
+    },
+    {
+      "payload": "{\"availability_topic\":\"camera/hall/availability\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"device_class\":\"duration\",\"entity_category\":\"diagnostic\",\"name\":\"Uptime\",\"state_class\":\"measurement\",\"state_topic\":\"camera/hall/uptime/state\",\"unique_id\":\"cam_hall_uptime\",\"unit_of_measurement\":\"s\"}",
+      "retain": true,
+      "topic": "homeassistant/sensor/cam_hall/uptime/config"
     },
     {
       "payload": "{\"availability_topic\":\"camera/hall/availability\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"device_class\":\"temperature\",\"entity_category\":\"diagnostic\",\"name\":\"Temperature\",\"state_class\":\"measurement\",\"state_topic\":\"camera/hall/temperature/state\",\"unique_id\":\"cam_hall_temperature\",\"unit_of_measurement\":\"°C\"}",
@@ -631,49 +631,39 @@
       "topic": "homeassistant/sensor/cam_hall/temperature/config"
     },
     {
-      "payload": "{\"availability_topic\":\"camera/hall/availability\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"entity_category\":\"diagnostic\",\"icon\":\"mdi:wifi\",\"name\":\"Wi-Fi signal\",\"state_class\":\"measurement\",\"state_topic\":\"camera/hall/wifi/state\",\"unique_id\":\"cam_hall_wifi\",\"unit_of_measurement\":\"%\"}",
+      "payload": "{\"availability_topic\":\"camera/hall/availability\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"device_class\":\"signal_strength\",\"entity_category\":\"diagnostic\",\"name\":\"Wi-Fi signal\",\"state_class\":\"measurement\",\"state_topic\":\"camera/hall/wifi_signal/state\",\"unique_id\":\"cam_hall_wifi_signal\",\"unit_of_measurement\":\"dBm\"}",
       "retain": true,
-      "topic": "homeassistant/sensor/cam_hall/wifi/config"
+      "topic": "homeassistant/sensor/cam_hall/wifi_signal/config"
     },
     {
-      "payload": "{\"availability_topic\":\"camera/hall/availability\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"device_class\":\"signal_strength\",\"entity_category\":\"diagnostic\",\"name\":\"Wi-Fi RSSI\",\"state_class\":\"measurement\",\"state_topic\":\"camera/hall/wifi_rssi/state\",\"unique_id\":\"cam_hall_wifi_rssi\",\"unit_of_measurement\":\"dBm\"}",
-      "retain": true,
-      "topic": "homeassistant/sensor/cam_hall/wifi_rssi/config"
-    },
-    {
-      "payload": "{\"availability_topic\":\"camera/hall/availability\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"device_class\":\"data_rate\",\"entity_category\":\"diagnostic\",\"name\":\"Main bitrate (actual)\",\"state_class\":\"measurement\",\"state_topic\":\"camera/hall/main_bitrate_actual/state\",\"unique_id\":\"cam_hall_main_bitrate_actual\",\"unit_of_measurement\":\"kbit/s\"}",
-      "retain": true,
-      "topic": "homeassistant/sensor/cam_hall/main_bitrate_actual/config"
-    },
-    {
-      "payload": "{\"availability_topic\":\"camera/hall/availability\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"device_class\":\"data_rate\",\"entity_category\":\"diagnostic\",\"name\":\"Sub bitrate (actual)\",\"state_class\":\"measurement\",\"state_topic\":\"camera/hall/sub_bitrate_actual/state\",\"unique_id\":\"cam_hall_sub_bitrate_actual\",\"unit_of_measurement\":\"kbit/s\"}",
-      "retain": true,
-      "topic": "homeassistant/sensor/cam_hall/sub_bitrate_actual/config"
-    },
-    {
-      "payload": "{\"availability_topic\":\"camera/hall/availability\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"entity_category\":\"diagnostic\",\"icon\":\"mdi:filmstrip\",\"name\":\"Main frame rate (actual)\",\"state_class\":\"measurement\",\"state_topic\":\"camera/hall/main_fps_actual/state\",\"unique_id\":\"cam_hall_main_fps_actual\",\"unit_of_measurement\":\"fps\"}",
+      "payload": "{\"availability_topic\":\"camera/hall/availability\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"entity_category\":\"diagnostic\",\"icon\":\"mdi:filmstrip\",\"name\":\"Main frame rate\",\"state_class\":\"measurement\",\"state_topic\":\"camera/hall/main_fps_actual/state\",\"unique_id\":\"cam_hall_main_fps_actual\",\"unit_of_measurement\":\"fps\"}",
       "retain": true,
       "topic": "homeassistant/sensor/cam_hall/main_fps_actual/config"
     },
     {
-      "payload": "{\"availability_topic\":\"camera/hall/availability\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"entity_category\":\"diagnostic\",\"icon\":\"mdi:filmstrip\",\"name\":\"Sub frame rate (actual)\",\"state_class\":\"measurement\",\"state_topic\":\"camera/hall/sub_fps_actual/state\",\"unique_id\":\"cam_hall_sub_fps_actual\",\"unit_of_measurement\":\"fps\"}",
+      "payload": "{\"availability_topic\":\"camera/hall/availability\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"device_class\":\"data_rate\",\"entity_category\":\"diagnostic\",\"name\":\"Main bitrate\",\"state_class\":\"measurement\",\"state_topic\":\"camera/hall/main_bitrate_actual/state\",\"unique_id\":\"cam_hall_main_bitrate_actual\",\"unit_of_measurement\":\"kbit/s\"}",
+      "retain": true,
+      "topic": "homeassistant/sensor/cam_hall/main_bitrate_actual/config"
+    },
+    {
+      "payload": "{\"availability_topic\":\"camera/hall/availability\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"enabled_by_default\":false,\"entity_category\":\"diagnostic\",\"icon\":\"mdi:filmstrip-off\",\"name\":\"Main frames short\",\"state_class\":\"measurement\",\"state_topic\":\"camera/hall/main_frames_short/state\",\"unique_id\":\"cam_hall_main_frames_short\"}",
+      "retain": true,
+      "topic": "homeassistant/sensor/cam_hall/main_frames_short/config"
+    },
+    {
+      "payload": "{\"availability_topic\":\"camera/hall/availability\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"enabled_by_default\":false,\"entity_category\":\"diagnostic\",\"icon\":\"mdi:filmstrip\",\"name\":\"Sub frame rate\",\"state_class\":\"measurement\",\"state_topic\":\"camera/hall/sub_fps_actual/state\",\"unique_id\":\"cam_hall_sub_fps_actual\",\"unit_of_measurement\":\"fps\"}",
       "retain": true,
       "topic": "homeassistant/sensor/cam_hall/sub_fps_actual/config"
     },
     {
-      "payload": "{\"availability_topic\":\"camera/hall/availability\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"entity_category\":\"diagnostic\",\"icon\":\"mdi:filmstrip-off\",\"name\":\"Main frames short\",\"state_class\":\"measurement\",\"state_topic\":\"camera/hall/main_dropped/state\",\"unique_id\":\"cam_hall_main_dropped\"}",
+      "payload": "{\"availability_topic\":\"camera/hall/availability\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"device_class\":\"data_rate\",\"enabled_by_default\":false,\"entity_category\":\"diagnostic\",\"name\":\"Sub bitrate\",\"state_class\":\"measurement\",\"state_topic\":\"camera/hall/sub_bitrate_actual/state\",\"unique_id\":\"cam_hall_sub_bitrate_actual\",\"unit_of_measurement\":\"kbit/s\"}",
       "retain": true,
-      "topic": "homeassistant/sensor/cam_hall/main_dropped/config"
+      "topic": "homeassistant/sensor/cam_hall/sub_bitrate_actual/config"
     },
     {
-      "payload": "{\"availability_topic\":\"camera/hall/availability\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"entity_category\":\"diagnostic\",\"icon\":\"mdi:filmstrip-off\",\"name\":\"Sub frames short\",\"state_class\":\"measurement\",\"state_topic\":\"camera/hall/sub_dropped/state\",\"unique_id\":\"cam_hall_sub_dropped\"}",
+      "payload": "{\"availability_topic\":\"camera/hall/availability\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"enabled_by_default\":false,\"entity_category\":\"diagnostic\",\"icon\":\"mdi:filmstrip-off\",\"name\":\"Sub frames short\",\"state_class\":\"measurement\",\"state_topic\":\"camera/hall/sub_frames_short/state\",\"unique_id\":\"cam_hall_sub_frames_short\"}",
       "retain": true,
-      "topic": "homeassistant/sensor/cam_hall/sub_dropped/config"
-    },
-    {
-      "payload": "{\"availability_topic\":\"camera/hall/availability\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"device_class\":\"duration\",\"entity_category\":\"diagnostic\",\"name\":\"Uptime\",\"state_class\":\"total_increasing\",\"state_topic\":\"camera/hall/uptime/state\",\"unique_id\":\"cam_hall_uptime\",\"unit_of_measurement\":\"s\"}",
-      "retain": true,
-      "topic": "homeassistant/sensor/cam_hall/uptime/config"
+      "topic": "homeassistant/sensor/cam_hall/sub_frames_short/config"
     }
   ],
   "subscribe": "camera/hall/+/set"

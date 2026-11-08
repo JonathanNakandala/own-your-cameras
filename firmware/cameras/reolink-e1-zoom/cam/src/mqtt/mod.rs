@@ -1,8 +1,12 @@
-//! MQTT 3.1.1 control and Home Assistant discovery. Hardware stays behind `Hardware`.
+//! The E1 Zoom on the shared MQTT layer (`camera_transport::mqtt`): its catalog, its command vocabulary and
+//! the wiring of its hardware, telemetry and direct stop path. Hardware stays behind `Hardware`.
 pub mod device;
 
 use serde::Deserialize;
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -98,48 +102,13 @@ impl Config {
     }
 }
 
-use serde_json::{Value, json};
+use camera_transport::mqtt::{self as transport, Category, Domain, Entity, Mode, Ptz, ptz};
+use serde_json::Value;
 
 mod motion;
 pub use motion::Motion;
 
-/// A command on its way to the hardware thread: the motion epoch it was accepted under and when it arrived.
-#[derive(Debug)]
-pub struct Queued {
-    pub generation: u64,
-    pub received: Duration,
-    pub command: Command,
-}
-
-/// Drops every tap (`Position3d`) that a later tap follows with nothing but taps in between: each tap's target
-/// is absolute from its own picture, so only the newest matters. Other commands keep their order and are never
-/// dropped. Returns how many were dropped.
-pub fn supersede(queue: &mut std::collections::VecDeque<Queued>) -> usize {
-    let mut keep = Vec::with_capacity(queue.len());
-    let mut pending_tap: Option<Queued> = None;
-    let mut dropped = 0;
-    for q in queue.drain(..) {
-        match q.command {
-            Command::Position3d(_) => {
-                if pending_tap.replace(q).is_some() {
-                    dropped += 1;
-                }
-            }
-            _ => {
-                if let Some(tap) = pending_tap.take() {
-                    keep.push(tap);
-                }
-                keep.push(q);
-            }
-        }
-    }
-    if let Some(tap) = pending_tap {
-        keep.push(tap);
-    }
-    queue.extend(keep);
-    dropped
-}
-
+/// A discovery message as the tests and fixtures read it.
 pub struct Publication {
     pub topic: String,
     /// Null means an empty retained tombstone (remove an obsolete optional entity).
@@ -147,185 +116,177 @@ pub struct Publication {
     pub retain: bool,
 }
 
+const SYNTAX: ptz::Syntax = ptz::Syntax {
+    pan: Some(crate::ptz::PAN_MAX as i32),
+    tilt: Some(crate::ptz::TILT_MAX as i32),
+    zoom: Some(ZOOM_MAX as i32),
+    relative: ptz::Relative::Prefix,
+    fractions: false,
+    vectors: false,
+    move_stop_releases: true,
+    position3d: true,
+};
+
 impl Config {
-    /// Discovery with `cam.toml`'s presets; [`Config::discovery_for`] with the presets in force.
-    pub fn discovery(&self) -> Vec<Publication> {
-        let names: Vec<String> = self.presets.keys().cloned().collect();
-        self.discovery_for(&names)
+    /// One device, the camera. A setting's section leads its name, so the configuration list on the device page
+    /// sorts section by section (Home Assistant groups entities on a device only by category; separate linked
+    /// devices per section were tried and rejected: the camera is one device).
+    pub fn entities(&self) -> Vec<Entity> {
+        self.entities_for(&self.preset_names())
     }
 
-    /// Discovery whose preset select offers `presets` (the table in force: created and removed presets
-    /// change it at runtime, and it is announced again then).
-    pub fn discovery_for(&self, presets: &[String]) -> Vec<Publication> {
-        use crate::settings::Section;
+    /// [`Config::entities`] whose preset select offers `presets` (the table in force: created and removed
+    /// presets change it at runtime, and the select is announced again then).
+    pub fn entities_for(&self, presets: &[String]) -> Vec<Entity> {
+        use crate::settings::{Kind, Section};
+        let named = |name: &str, section: Option<Section>| match section {
+            Some(s) => format!("{} {name}", s.name()),
+            None => name.to_owned(),
+        };
+        let diagnostic = |e: Entity| e.category(Category::Diagnostic);
+        let mut entities = vec![
+            Entity::new(
+                "pan",
+                "Pan",
+                Domain::number(0, crate::ptz::PAN_MAX as i32, Mode::Box),
+            ),
+            Entity::new(
+                "tilt",
+                "Tilt",
+                Domain::number(0, crate::ptz::TILT_MAX as i32, Mode::Box),
+            ),
+            Entity::new(
+                "zoom",
+                "Zoom",
+                Domain::number(0, ZOOM_MAX as i32, Mode::Slider),
+            ),
+            Entity::new("preset", "Preset", Domain::select(presets.iter().cloned())),
+            Entity::new("reboot", "Reboot", Domain::Button)
+                .device_class("restart")
+                .category(Category::Config),
+            Entity::new("refocus", "Refocus", Domain::Button).icon("mdi:image-filter-center-focus"),
+            Entity::new(
+                "calibrate_focus",
+                named("Calibrate focus (15 min)", Some(Section::Lens)),
+                Domain::Button,
+            )
+            .icon("mdi:crosshairs-gps")
+            .category(Category::Config),
+            diagnostic(
+                Entity::new("autofocus_state", "Autofocus", Domain::Sensor)
+                    .icon("mdi:camera-iris")
+                    .attributes("autofocus_attributes"),
+            ),
+            diagnostic(Entity::new(
+                "pipeline",
+                "Pipeline health",
+                Domain::BinarySensor,
+            )),
+            diagnostic(
+                Entity::new("light", "Light sensor", Domain::Sensor)
+                    .icon("mdi:brightness-6")
+                    .state_class("measurement"),
+            ),
+            diagnostic(Entity::new("settings", "Settings", Domain::Sensor).icon("mdi:cog-outline")),
+        ];
+        for setting in crate::settings::specs() {
+            let s = &setting.spec;
+            let domain = match s.kind {
+                Kind::Number {
+                    min, max, slider, ..
+                } => Domain::number(min, max, if slider { Mode::Slider } else { Mode::Box }),
+                Kind::Switch => Domain::Switch,
+                Kind::Select(options) => Domain::select(options.iter().copied()),
+            };
+            let mut e = Entity::new(s.key, named(s.name, setting.section()), domain)
+                .category(Category::Config);
+            if let Kind::Number { unit, .. } = s.kind {
+                e.unit = unit;
+            }
+            e.icon = s.icon;
+            entities.push(e);
+        }
+        entities.extend(crate::telemetry::sensors().map(|t| t.entity()));
+        entities
+    }
+
+    /// The shared layer's configuration for this camera, or `None` without a broker.
+    pub fn transport(&self) -> Option<transport::Config> {
+        self.transport_with(&self.preset_names())
+    }
+
+    /// [`Config::transport`] with the presets in force.
+    pub fn transport_with(&self, presets: &[String]) -> Option<transport::Config> {
+        self.mqtt
+            .as_ref()
+            .map(|broker| self.transport_for(broker, presets))
+    }
+
+    /// `cam.toml`'s preset names.
+    fn preset_names(&self) -> Vec<String> {
+        self.presets.keys().cloned().collect()
+    }
+
+    fn transport_for(&self, broker: &Broker, presets: &[String]) -> transport::Config {
         let camera = &self.camera;
-        let device = camera.client_id();
-        // One device: the camera. A setting's section leads its name, so the configuration list on the device
-        // page sorts section by section (Home Assistant groups entities on a device only by category; separate
-        // linked devices per section were tried and rejected: the camera is one device).
-        let device_block = json!({"identifiers":[device],"name":camera.name(),"manufacturer":"Reolink","model":"E1 Zoom (cam)"});
-        let mut entities: Vec<(&str, String, String, Value)> = Vec::new();
-        let mut add =
-            |domain: &'static str, id: &str, name: &str, extra: Value, section: Option<Section>| {
-                let name = match section {
-                    Some(s) => format!("{} {name}", s.name()),
-                    None => name.to_owned(),
-                };
-                entities.push((domain, id.to_owned(), name, extra));
-            };
-        add(
-            "number",
-            "pan",
-            "Pan",
-            json!({"min":0,"max":crate::ptz::PAN_MAX,"step":1,"mode":"box"}),
-            None,
+        let mut cfg = transport::Config::new(
+            transport::Broker {
+                host: broker.host.clone(),
+                port: broker.port,
+                username: broker.username.clone(),
+                password: broker.password.clone(),
+            },
+            camera.client_id(),
+            camera.topic("").trim_end_matches('/').to_owned(),
+            transport::Device {
+                name: camera.name().to_owned(),
+                manufacturer: "Reolink".into(),
+                model: "E1 Zoom (cam)".into(),
+                sw_version: None,
+            },
+            self.entities_for(presets),
         );
-        add(
-            "number",
-            "tilt",
-            "Tilt",
-            json!({"min":0,"max":crate::ptz::TILT_MAX,"step":1,"mode":"box"}),
-            None,
-        );
-        add(
-            "number",
-            "zoom",
-            "Zoom",
-            json!({"min":0,"max":ZOOM_MAX,"step":1,"mode":"slider"}),
-            None,
-        );
-        add(
-            "select",
-            "preset",
-            "Preset",
-            json!({"options":presets}),
-            None,
-        );
-        add(
-            "button",
-            "reboot",
-            "Reboot",
-            json!({"payload_press":"PRESS","device_class":"restart","entity_category":"config"}),
-            None,
-        );
-        add(
-            "button",
-            "refocus",
-            "Refocus",
-            json!({"payload_press":"PRESS","icon":"mdi:image-filter-center-focus"}),
-            None,
-        );
-        add(
-            "button",
-            "calibrate_focus",
-            "Calibrate focus (15 min)",
-            json!({"payload_press":"PRESS","icon":"mdi:crosshairs-gps","entity_category":"config"}),
-            Some(Section::Lens),
-        );
-        add(
-            "sensor",
-            "autofocus_state",
-            "Autofocus",
-            json!({"icon":"mdi:camera-iris","json_attributes_topic":camera.topic("autofocus_attributes/state")}),
-            None,
-        );
-        add(
-            "binary_sensor",
-            "pipeline",
-            "Pipeline health",
-            json!({"payload_on":"ON","payload_off":"OFF"}),
-            None,
-        );
-        add(
-            "sensor",
-            "light",
-            "Light sensor",
-            json!({"icon":"mdi:brightness-6","state_class":"measurement"}),
-            None,
-        );
-        add(
-            "sensor",
-            "settings",
-            "Settings",
-            json!({"icon":"mdi:cog-outline"}),
-            None,
-        );
-        for s in crate::settings::specs() {
-            let (domain, mut extra) = match s.kind {
-                crate::settings::Kind::Number {
-                    min,
-                    max,
-                    unit,
-                    slider,
-                } => {
-                    let mut e = json!({"min":min,"max":max,"step":1,"mode":if slider {"slider"} else {"box"}});
-                    if let Some(u) = unit {
-                        e["unit_of_measurement"] = json!(u);
-                    }
-                    ("number", e)
-                }
-                crate::settings::Kind::Switch => {
-                    ("switch", json!({"payload_on":"ON","payload_off":"OFF"}))
-                }
-                crate::settings::Kind::Select(options) => ("select", json!({"options":options})),
-            };
-            extra["entity_category"] = json!("config");
-            if let Some(i) = s.icon {
-                extra["icon"] = json!(i);
-            }
-            add(domain, s.key, s.name, extra, s.section());
-        }
-        for t in crate::telemetry::SENSORS {
-            let mut extra = json!({"state_class":"measurement"});
-            if let Some(u) = t.unit {
-                extra["unit_of_measurement"] = json!(u);
-            }
-            if let Some(c) = t.device_class {
-                extra["device_class"] = json!(c);
-            }
-            if let Some(i) = t.icon {
-                extra["icon"] = json!(i);
-            }
-            if t.key == "uptime" {
-                extra["state_class"] = json!("total_increasing");
-            }
-            add("sensor", t.key, t.name, extra, None);
-        }
-        let mut messages = Vec::new();
-        for (domain, id, name, extra) in entities {
-            let mut payload = json!({
-                "name":name, "unique_id":format!("{device}_{id}"),
-                "device":device_block,
-                "availability_topic":camera.availability(),
-            });
-            let obj = payload.as_object_mut().expect("JSON object literal");
-            obj.extend(extra.as_object().expect("JSON object literal").clone());
-            if matches!(domain, "sensor" | "binary_sensor") {
-                obj.insert("entity_category".into(), json!("diagnostic"));
-            } else {
-                obj.insert(
-                    "command_topic".into(),
-                    json!(camera.topic(&format!("{id}/set"))),
-                );
-                obj.insert("retain".into(), json!(false));
-            }
-            if domain != "button" {
-                obj.insert(
-                    "state_topic".into(),
-                    json!(camera.topic(&format!("{id}/state"))),
-                );
-            }
-            messages.push(Publication {
-                topic: format!("homeassistant/{domain}/{device}/{id}/config"),
-                payload: if id == "preset" && presets.is_empty() {
-                    Value::Null
-                } else {
-                    payload
-                },
-                retain: true,
-            });
-        }
-        messages
+        cfg.stop_on_disconnect = false;
+        // Cleared ahead of every announcement, so Home Assistant frees their entity ids first.
+        cfg.retired = crate::telemetry::RETIRED
+            .iter()
+            .map(|id| (Domain::Sensor, (*id).to_owned()))
+            .collect();
+        cfg.limits = transport::Limits {
+            entities: 160,
+            outbox: 256,
+            outbound: OUTBOUND,
+            max_packet: 16 * 1024,
+            command_age: None,
+            ..transport::Limits::default()
+        };
+        cfg
+    }
+
+    /// Discovery with `cam.toml`'s presets; [`Config::discovery_for`] with the presets in force.
+    pub fn discovery(&self) -> Vec<Publication> {
+        self.discovery_for(&self.preset_names())
+    }
+
+    /// Discovery whose preset select offers `presets` (none clears the select's config).
+    pub fn discovery_for(&self, presets: &[String]) -> Vec<Publication> {
+        // Discovery does not depend on the broker; a camera without one still describes itself.
+        let placeholder = Broker {
+            host: "broker".into(),
+            port: default_port(),
+            username: String::new(),
+            password: String::new(),
+        };
+        let cfg = self.transport_for(self.mqtt.as_ref().unwrap_or(&placeholder), presets);
+        cfg.discovery()
+            .expect("the E1 Zoom catalog is valid")
+            .into_iter()
+            .map(|p| Publication {
+                topic: p.topic,
+                payload: serde_json::from_slice(&p.payload).unwrap_or(Value::Null),
+                retain: p.retain,
+            })
+            .collect()
     }
 }
 
@@ -340,21 +301,6 @@ pub enum Move {
     ZoomOut,
     /// Release: ends the hold after its running chunk; never the emergency stop.
     Stop,
-}
-
-impl Move {
-    fn parse(text: &str) -> Option<Self> {
-        Some(match text {
-            "left" => Self::Left,
-            "right" => Self::Right,
-            "up" => Self::Up,
-            "down" => Self::Down,
-            "zoom_in" => Self::ZoomIn,
-            "zoom_out" => Self::ZoomOut,
-            "stop" => Self::Stop,
-            _ => return None,
-        })
-    }
 }
 
 /// The highest zoom the lens driver accepts on the E1 Zoom (the last ZFTable row; `docs/hardware/zoom-focus.md`).
@@ -408,29 +354,14 @@ impl Config {
             return Ok(None);
         };
         let text = std::str::from_utf8(payload).map_err(|_| "command is not UTF-8")?;
-        let number = |max| {
-            text.parse::<u32>()
-                .ok()
-                .filter(|n| *n <= max)
-                .ok_or("position outside travel")
-        };
-        let relative = |max: i32| {
-            text.strip_prefix("relative:")
-                .and_then(|n| n.parse::<i32>().ok())
-                .filter(|n| (-max..=max).contains(n))
-                .ok_or("relative position outside travel")
-        };
+        self.parse_id(id, text)
+    }
+
+    fn parse_id(&self, id: &str, text: &str) -> Result<Option<Command>, String> {
+        if let Some(parsed) = ptz::parse(&SYNTAX, id, text) {
+            return from_ptz(parsed?).map(Some);
+        }
         let cmd = match id {
-            "pan" if text.starts_with("relative:") => {
-                Command::PanBy(relative(crate::ptz::PAN_MAX as i32)?)
-            }
-            "tilt" if text.starts_with("relative:") => {
-                Command::TiltBy(relative(crate::ptz::TILT_MAX as i32)?)
-            }
-            "zoom" if text.starts_with("relative:") => Command::ZoomBy(relative(ZOOM_MAX as i32)?),
-            "pan" => Command::Pan(number(crate::ptz::PAN_MAX)?),
-            "tilt" => Command::Tilt(number(crate::ptz::TILT_MAX)?),
-            "zoom" => Command::Zoom(number(ZOOM_MAX)?),
             "preset" | "preset_save" => {
                 // Any valid name: a save creates the preset, a recall of an unknown one fails on the hardware
                 // thread, which owns the table in force.
@@ -441,55 +372,71 @@ impl Config {
                     Command::SavePreset(text.into())
                 }
             }
-            "move" => Command::Move(Move::parse(text).ok_or("invalid move")?),
-            "motion" => {
-                use crate::motion_control::Request;
-                match Request::parse(text)? {
-                    Request::Velocity(v) => Command::Velocity(v),
-                    Request::Release => Command::Move(Move::Stop),
-                    Request::Stop => Command::Stop,
-                    Request::Home => Command::Home,
-                    Request::Region {
-                        start,
-                        end,
-                        zoom_out,
-                    } => Command::Position3d(crate::position3d::Request {
-                        start,
-                        end,
-                        operation: if zoom_out {
-                            crate::position3d::Operation::ZoomOut
-                        } else {
-                            crate::position3d::Operation::ZoomTo
-                        },
-                    }),
-                    Request::Preset(name) => Command::Preset(name.as_str()?.to_owned()),
-                    Request::SavePreset(name) => Command::SavePreset(name.as_str()?.to_owned()),
-                    Request::RemovePreset(name) => Command::RemovePreset(name.as_str()?.to_owned()),
-                    Request::Point { x, y } => Command::Position3d(crate::position3d::Request {
-                        start: (x, y),
-                        end: (x, y),
-                        operation: crate::position3d::Operation::ZoomTo,
-                    }),
-                }
-            }
-            "position3d" => Command::Position3d(crate::position3d::Request::parse(text)?),
-            "focus" => Command::Focus(number(crate::zoom::FOCUS_MAX)?),
+            "focus" => Command::Focus(
+                text.parse::<u32>()
+                    .ok()
+                    .filter(|n| *n <= crate::zoom::FOCUS_MAX)
+                    .ok_or("position outside travel")?,
+            ),
             "reboot" if text == "PRESS" => Command::Reboot,
             "refocus" if text == "PRESS" => Command::Refocus,
             "calibrate_focus" if text == "PRESS" => Command::CalibrateFocus,
-            "stop" if text == "PRESS" => Command::Stop,
-            "reboot" | "refocus" | "calibrate_focus" | "stop" => {
+            "reboot" | "refocus" | "calibrate_focus" => {
                 return Err("invalid command payload".into());
             }
             _ => match crate::settings::spec(id) {
                 Some(spec) => {
                     spec.parse(text)?;
-                    Command::Setting(spec.key, text.trim().into())
+                    Command::Setting(spec.spec.key, text.trim().into())
                 }
                 None => return Ok(None),
             },
         };
         Ok(Some(cmd))
+    }
+}
+
+/// The shared PTZ vocabulary in this camera's commands. A release ends the hold after its running chunk,
+/// in order with other commands; only the hard stop is urgent.
+fn from_ptz(command: transport::Command<Ptz>) -> Result<Command, String> {
+    let at = |p: transport::Position, by: fn(i32) -> Command, to: fn(u32) -> Command| match p {
+        transport::Position::Absolute(n) => to(n as u32),
+        transport::Position::Relative(n) => by(n),
+    };
+    Ok(match command {
+        transport::Command::Stop => Command::Stop,
+        transport::Command::Release => Command::Move(Move::Stop),
+        transport::Command::Setting { .. } => return Err("not a PTZ command".into()),
+        transport::Command::App(p) => match p {
+            Ptz::Pan(p) => at(p, Command::PanBy, Command::Pan),
+            Ptz::Tilt(p) => at(p, Command::TiltBy, Command::Tilt),
+            Ptz::Zoom(p) => at(p, Command::ZoomBy, Command::Zoom),
+            Ptz::Move(d) => Command::Move(match d {
+                transport::Direction::Left => Move::Left,
+                transport::Direction::Right => Move::Right,
+                transport::Direction::Up => Move::Up,
+                transport::Direction::Down => Move::Down,
+                _ => return Err("invalid move".into()),
+            }),
+            Ptz::ZoomMove(transport::Zoom::In) => Command::Move(Move::ZoomIn),
+            Ptz::ZoomMove(transport::Zoom::Out) => Command::Move(Move::ZoomOut),
+            Ptz::Velocity(v) => Command::Velocity(v),
+            Ptz::Home => Command::Home,
+            Ptz::Preset(name) => Command::Preset(name.as_str()?.to_owned()),
+            Ptz::SavePreset(name) => Command::SavePreset(name.as_str()?.to_owned()),
+            Ptz::RemovePreset(name) => Command::RemovePreset(name.as_str()?.to_owned()),
+            Ptz::Position3d(r) => Command::Position3d(r),
+        },
+    })
+}
+
+impl transport::Parser for Config {
+    type App = Command;
+    fn parse(&self, id: &str, text: &str) -> Result<Option<transport::Command<Command>>, String> {
+        Ok(self.parse_id(id, text)?.map(|c| match c {
+            Command::Stop => transport::Command::Stop,
+            c => transport::Command::App(c),
+        }))
     }
 }
 
@@ -501,7 +448,7 @@ pub trait Hardware: Send {
     fn stop_endpoint(&self) -> Option<std::path::PathBuf> {
         None
     }
-    fn motion_epoch(&self) -> Option<Arc<std::sync::atomic::AtomicU64>> {
+    fn motion_epoch(&self) -> Option<Arc<std::sync::atomic::AtomicU32>> {
         None
     }
     fn apply(&mut self, command: &Command) -> Result<(), String>;
@@ -518,7 +465,7 @@ pub trait Hardware: Send {
     /// Orderly shutdown (save unsaved settings).
     fn shutdown(&mut self) {}
     /// True once after something changed asynchronously (the media thread applied a request), so
-    /// states are published now rather than at the next five-second refresh.
+    /// states are read and their changes published now rather than at the next five-second readback.
     fn changed(&mut self) -> bool {
         false
     }
@@ -538,7 +485,7 @@ impl Hardware for Box<dyn Hardware> {
     fn stop_endpoint(&self) -> Option<std::path::PathBuf> {
         (**self).stop_endpoint()
     }
-    fn motion_epoch(&self) -> Option<Arc<std::sync::atomic::AtomicU64>> {
+    fn motion_epoch(&self) -> Option<Arc<std::sync::atomic::AtomicU32>> {
         (**self).motion_epoch()
     }
     fn apply(&mut self, command: &Command) -> Result<(), String> {
@@ -561,13 +508,6 @@ impl Hardware for Box<dyn Hardware> {
     }
 }
 
-use std::{
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
-    time::{Duration, Instant},
-};
 #[derive(Default)]
 pub struct PipelineHealth(Mutex<[Option<Instant>; 2]>);
 impl PipelineHealth {
@@ -587,7 +527,6 @@ impl PipelineHealth {
 }
 
 use crate::runtime::{Beats, Progress};
-use rumqttc::{Client, Event, LastWill, MqttOptions, Outgoing, Packet, QoS};
 
 /// Dropped inside the scope closure, before the scope's implicit joins on unwind.
 struct HardwareShutdown<'a> {
@@ -599,19 +538,18 @@ impl Drop for HardwareShutdown<'_> {
         self.stop.store(true, Ordering::Release);
     }
 }
-fn send(client: &Client, log: &LogBudget, topic: impl Into<String>, value: impl Into<Vec<u8>>) {
-    if client
-        .try_publish(topic, QoS::AtLeastOnce, true, value)
-        .is_err()
-    {
-        log.line(format_args!("outbound queue full; update will retry"));
+/// Set when the hardware thread ends, also by unwinding.
+struct Finished<'a>(&'a AtomicBool);
+impl Drop for Finished<'_> {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
     }
 }
 struct LogBudget(std::sync::atomic::AtomicUsize);
 impl LogBudget {
     // `fetch_update` is named `try_update` from Rust 1.99, which the supported 1.88 does not have.
     #[allow(deprecated)]
-    fn line(&self, message: std::fmt::Arguments<'_>) {
+    fn line(&self, message: &str) {
         match self
             .0
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
@@ -622,22 +560,71 @@ impl LogBudget {
         }
     }
 }
-fn announce(client: &Client, cfg: &Config, presets: &Mutex<Vec<String>>, log: &LogBudget) {
-    let presets = presets.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    for p in cfg.discovery_for(&presets) {
-        send(
-            client,
-            log,
-            p.topic,
-            if p.payload.is_null() {
-                Vec::new()
-            } else {
-                p.payload.to_string().into_bytes()
-            },
-        );
-    }
-    send(client, log, cfg.camera.availability(), "online");
+
+/// This camera's device on the shared hardware thread: states gain pipeline health, positions that are
+/// unknown publish empty retained states rather than keep a stale preset or coordinate, and a created or
+/// removed preset updates the preset select's options and the list ONVIF reads.
+struct Shared<'a, H> {
+    hw: H,
+    health: Arc<PipelineHealth>,
+    motion: &'a Motion,
+    publisher: transport::Publisher,
+    log: &'a LogBudget,
 }
+impl<H: Hardware> Shared<'_, H> {
+    fn sync_presets(&self) {
+        if let Some(names) = self.hw.preset_names()
+            && self.motion.set_presets(names.clone())
+            && let Err(e) = self.publisher.set_options("preset", names)
+        {
+            self.log.line(&format!("preset options not updated: {e}"));
+        }
+    }
+}
+impl<H: Hardware> transport::Hardware<Command> for Shared<'_, H> {
+    fn failed(&self) -> bool {
+        self.hw.failed()
+    }
+    fn apply_at(
+        &mut self,
+        command: &transport::Command<Command>,
+        received: Duration,
+    ) -> Result<(), String> {
+        let result = match command {
+            transport::Command::App(c) => self.hw.apply_at(c, received),
+            transport::Command::Stop => self.hw.apply_at(&Command::Stop, received),
+            transport::Command::Release => self.hw.apply_at(&Command::Move(Move::Stop), received),
+            transport::Command::Setting { .. } => Err("no slot settings on this camera".into()),
+        };
+        self.sync_presets();
+        result
+    }
+    fn tick(&mut self, now: Duration) -> Result<Option<Duration>, String> {
+        self.hw.tick(now)
+    }
+    fn states(&mut self) -> Result<BTreeMap<String, String>, String> {
+        let mut states = self.hw.states()?;
+        states.insert(
+            "pipeline".into(),
+            if self.health.healthy() { "ON" } else { "OFF" }.into(),
+        );
+        for id in ["pan", "tilt", "preset"] {
+            states.entry(id.into()).or_default();
+        }
+        Ok(states)
+    }
+    fn changed(&mut self) -> bool {
+        self.hw.changed()
+    }
+    fn shutdown(&mut self) {
+        self.hw.shutdown()
+    }
+    fn supersedable(&self, command: &transport::Command<Command>) -> bool {
+        // Each tap's target is absolute from its own picture, so only the newest of a run matters.
+        matches!(command, transport::Command::App(Command::Position3d(_)))
+    }
+}
+
 /// Poll MQTT independently of blocking hardware operations. Queues are bounded, sessions clean,
 /// commands non-retained, and discovery/state are replayed on every reconnect and HA birth.
 pub fn run(
@@ -662,11 +649,9 @@ pub fn run_with(
     run_full(cfg, hw, health, stop, beats, None, None)
 }
 
-/// Outbound request queue of the MQTT client (bounded; a full queue drops the update, which retries).
+/// Outbound request queue of the MQTT client (bounded; a full queue keeps the update for the next pass).
 pub const OUTBOUND: usize = 256;
 
-/// Idle cadence of the hardware thread; a hold asks for faster polls through `Hardware::tick`.
-const HARDWARE_IDLE: Duration = Duration::from_millis(500);
 /// The MQTT loop stops reporting progress when the telemetry thread has not finished a round for this
 /// long, so a stalled telemetry read ages out under the `Mqtt` budget without blocking MQTT itself.
 const TELEMETRY_STALL: Duration = Duration::from_secs(3 * crate::telemetry::INTERVAL.as_secs());
@@ -674,74 +659,42 @@ const TELEMETRY_STALL: Duration = Duration::from_secs(3 * crate::telemetry::INTE
 /// As [`run_with`], plus the diagnostic telemetry thread publishing every `telemetry::INTERVAL`.
 pub fn run_full(
     cfg: Config,
-    mut hw: impl Hardware,
+    hw: impl Hardware,
     health: Arc<PipelineHealth>,
     stop: &AtomicBool,
     beats: Option<&Beats>,
     telemetry: Option<crate::telemetry::Task>,
     motion: Option<Arc<Motion>>,
 ) -> std::io::Result<()> {
-    let Some(broker) = &cfg.mqtt else {
-        return Ok(());
-    };
-    let camera = &cfg.camera;
-    let mut options = MqttOptions::new(camera.client_id(), &broker.host, broker.port);
-    options.set_keep_alive(Duration::from_secs(5));
-    options.set_inflight(16);
-    options.set_max_packet_size(16 * 1024, 16 * 1024);
-    options.set_last_will(LastWill::new(
-        camera.availability(),
-        "offline",
-        QoS::AtLeastOnce,
-        true,
-    ));
-    if !broker.username.is_empty() {
-        options.set_credentials(&broker.username, &broker.password);
-    }
-    // Discovery and one state per entity are ~150 packets per refresh; 256 keeps the bound.
-    let (client, mut connection) = Client::new(options, OUTBOUND);
-    // recv_timeout cancels an in-progress CONNECT. Let the network's own timeout fire first,
-    // otherwise a slow CONNACK is abandoned on every poll and the client can never connect.
-    let mut network = connection.eventloop.network_options();
-    network.set_connection_timeout(1);
-    network.set_tcp_send_buffer_size(16 * 1024);
-    network.set_tcp_recv_buffer_size(16 * 1024);
-    connection.eventloop.set_network_options(network);
-    let log = LogBudget(std::sync::atomic::AtomicUsize::new(64));
-    let connected = AtomicBool::new(false);
-    let refresh = AtomicBool::new(true);
-    let endpoint = hw.stop_endpoint();
-    let epoch = hw.motion_epoch().unwrap_or_default();
-    // The queue, clock and preset list other services (ONVIF) share with MQTT.
-    let motion = motion.unwrap_or_default();
-    let rx = motion
-        .take_receiver()
-        .ok_or_else(|| std::io::Error::other("the motion queue already has an owner"))?;
-    let tx = motion.sender();
-    *motion.presets.lock().unwrap_or_else(|e| e.into_inner()) = hw
+    // The preset list other services (ONVIF) share with MQTT: the hardware's table, else `cam.toml`'s.
+    let presets = hw
         .preset_names()
         .unwrap_or_else(|| cfg.presets.keys().cloned().collect());
-    if let Some(epoch) = hw.motion_epoch() {
-        motion.attach(epoch, endpoint.clone());
-    }
-    let presets = &motion.presets;
-    let config = &cfg;
-    // The one clock: commands are stamped on it when they arrive, the hardware thread ticks on it.
-    let started = motion.started;
+    let Some(transport_cfg) = cfg.transport_with(&presets) else {
+        return Ok(());
+    };
+    let endpoint = hw.stop_endpoint();
+    let epoch = hw.motion_epoch().unwrap_or_default();
+    let motion = motion.unwrap_or_default();
+    motion.set_presets(presets);
+    let (publisher, commands, worker) = transport::channel_with_epoch(transport_cfg, cfg, epoch)?;
+    // ONVIF submits into the same queue, on the same clock and epoch as MQTT.
+    motion.attach(worker.submitter(), endpoint.clone());
+    let log = LogBudget(std::sync::atomic::AtomicUsize::new(64));
+    let started = commands.started();
     let telemetry_round = std::sync::atomic::AtomicU64::new(0);
-    let hardware_result = std::thread::scope(|scope| -> std::io::Result<()> {
+    let hardware_done = AtomicBool::new(false);
+    let network_stop = AtomicBool::new(false);
+    std::thread::scope(|scope| -> std::io::Result<()> {
         let shutdown = HardwareShutdown {
             stop,
             _lease: beats.map(Beats::lease),
         };
-        let (client, connected, refresh, log) = (&client, &connected, &refresh, &log);
-        let hardware_beats = beats.cloned();
-        let lease = beats.map(Beats::lease);
-        let hardware_epoch = epoch.clone();
-        let telemetry_round = &telemetry_round;
+        let (log, telemetry_round, hardware_done) = (&log, &telemetry_round, &hardware_done);
         let watching_telemetry = telemetry.is_some();
         if let Some(mut task) = telemetry {
             let lease = beats.map(Beats::lease);
+            let publisher = publisher.clone();
             std::thread::Builder::new()
                 .name("telemetry".into())
                 .spawn_scoped(scope, move || {
@@ -749,10 +702,10 @@ pub fn run_full(
                     let mut next = Instant::now();
                     while !stop.load(Ordering::Relaxed) {
                         if Instant::now() >= next {
-                            let states = task.sample(started.elapsed());
-                            if connected.load(Ordering::Relaxed) {
-                                for (id, value) in states {
-                                    send(client, log, camera.topic(&format!("{id}/state")), value);
+                            let round = task.round(started.elapsed(), publisher.is_connected());
+                            for (id, value) in round.states {
+                                if let Err(e) = publisher.state(id, value) {
+                                    log.line(&e.to_string());
                                 }
                             }
                             telemetry_round
@@ -763,180 +716,37 @@ pub fn run_full(
                     }
                 })?;
         }
+        let lease = beats.map(Beats::lease);
+        let hardware_beats = beats.cloned();
+        let hardware_publisher = publisher.clone();
         let hardware = std::thread::Builder::new()
             .name("mqtt-hardware".into())
             .spawn_scoped(scope, move || {
+                let _finished = Finished(hardware_done);
                 let _lease = lease;
                 let beat = || {
                     if let Some(beats) = &hardware_beats {
                         beats.beat(Progress::Hardware);
                     }
                 };
-                beat();
-                let mut next = Instant::now();
-                let mut wait = HARDWARE_IDLE;
-                let mut queue: std::collections::VecDeque<Queued> =
-                    std::collections::VecDeque::new();
-                let tick =
-                    |hw: &mut _, wait: &mut Duration| match Hardware::tick(hw, started.elapsed()) {
-                        Ok(w) => *wait = w.unwrap_or(HARDWARE_IDLE).min(HARDWARE_IDLE),
-                        Err(e) => {
-                            *wait = HARDWARE_IDLE;
-                            log.line(format_args!("hardware tick failed: {e}"));
-                        }
-                    };
-                while !stop.load(Ordering::Relaxed) {
-                    let next_command = match queue.pop_front() {
-                        Some(q) => Ok(q),
-                        None => rx.recv_timeout(wait),
-                    };
-                    let command = match next_command {
-                        Ok(q) => {
-                            // Everything else that already arrived: a tap behind a newer tap is dropped.
-                            queue.push_front(q);
-                            while let Ok(more) = rx.try_recv() {
-                                queue.push_back(more);
-                            }
-                            let dropped = supersede(&mut queue);
-                            if dropped > 0 {
-                                log.line(format_args!("position3d superseded ({dropped})"));
-                            }
-                            let Some(q) = queue.pop_front() else {
-                                continue;
-                            };
-                            // tick services idle stop requests before accepting queued motion.
-                            if hw.failed() {
-                                return;
-                            }
-                            tick(&mut hw, &mut wait);
-                            if hw.failed() {
-                                return;
-                            }
-                            if q.generation != hardware_epoch.load(Ordering::Acquire) {
-                                continue;
-                            }
-                            if let Err(e) = hw.apply_at(&q.command, q.received) {
-                                log.line(format_args!("hardware command failed: {e}"));
-                            }
-                            // A created or removed preset changes the select's options: announce again.
-                            if let Some(names) = hw.preset_names() {
-                                let changed = {
-                                    let mut held =
-                                        presets.lock().unwrap_or_else(|e| e.into_inner());
-                                    let changed = *held != names;
-                                    *held = names;
-                                    changed
-                                };
-                                if changed && connected.load(Ordering::Relaxed) {
-                                    announce(client, config, presets, log);
-                                }
-                            }
-                            true
-                        }
-                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => false,
-                        Err(_) => break,
-                    };
-                    if hw.failed() {
-                        return;
-                    }
-                    tick(&mut hw, &mut wait);
-                    if hw.failed() {
-                        return;
-                    }
-                    if connected.load(Ordering::Relaxed)
-                        && (command
-                            || hw.changed()
-                            || refresh.swap(false, Ordering::Relaxed)
-                            || Instant::now() >= next)
-                    {
-                        match hw.states() {
-                            Ok(mut states) => {
-                                states.insert(
-                                    "pipeline".into(),
-                                    if health.healthy() { "ON" } else { "OFF" }.into(),
-                                );
-                                // Clear stale states rather than keep the previous preset or unavailable sensor reading.
-                                for id in ["pan", "tilt", "preset"] {
-                                    states.entry(id.into()).or_default();
-                                }
-                                for (id, value) in states {
-                                    send(client, log, camera.topic(&format!("{id}/state")), value);
-                                }
-                            }
-                            Err(e) => log.line(format_args!("state read failed: {e}")),
-                        }
-                        next = Instant::now() + Duration::from_secs(5);
-                    }
-                    beat();
+                let sink = |line: &str| log.line(line);
+                let mut device = Shared {
+                    hw,
+                    health,
+                    motion: &motion,
+                    publisher: hardware_publisher.clone(),
+                    log,
+                };
+                transport::HardwareLoop {
+                    beat: Some(&beat),
+                    log: Some(&sink),
+                    ..transport::HardwareLoop::default()
                 }
-                hw.shutdown();
+                .run(&mut device, &commands, &hardware_publisher, stop);
             })?;
-        while !stop.load(Ordering::Relaxed) && !hardware.is_finished() {
-            match connection.recv_timeout(Duration::from_secs(2)) {
-                Ok(Ok(Event::Incoming(Packet::ConnAck(ack)))) => {
-                    // CONNECT always requests a clean session. Accepting a resumed session can
-                    // retain/replay pending requests across repeated broken connections.
-                    if ack.session_present {
-                        return Err(std::io::Error::other("broker resumed a clean MQTT session"));
-                    }
-                    let _ = client.try_subscribe(camera.topic("+/set"), QoS::AtLeastOnce);
-                    let _ = client.try_subscribe("homeassistant/status", QoS::AtLeastOnce);
-                    announce(client, &cfg, presets, log);
-                    refresh.store(true, Ordering::Relaxed);
-                    connected.store(true, Ordering::Relaxed);
-                    log.line(format_args!("connected, discovery published"));
-                }
-                Ok(Ok(Event::Incoming(Packet::Publish(p)))) => {
-                    if p.topic == "homeassistant/status" && p.payload.as_ref() == b"online" {
-                        announce(client, &cfg, presets, log);
-                        refresh.store(true, Ordering::Relaxed);
-                    } else {
-                        match cfg.command(&p.topic, &p.payload, p.retain) {
-                            Ok(Some(Command::Stop)) => match endpoint.as_deref() {
-                                Some(path) => {
-                                    let result = crate::control_stop::request(path);
-                                    // Acknowledgments describe this request, never a replayable cached stop.
-                                    let _ = client.try_publish(
-                                        camera.topic("stop/state"),
-                                        QoS::AtLeastOnce,
-                                        false,
-                                        if result.is_ok() { "stopped" } else { "error" },
-                                    );
-                                    refresh.store(true, Ordering::Relaxed);
-                                }
-                                None => log.line(format_args!("stop owner unavailable")),
-                            },
-                            Ok(Some(c)) => {
-                                if tx
-                                    .try_send(Queued {
-                                        generation: epoch.load(Ordering::Acquire),
-                                        received: started.elapsed(),
-                                        command: c,
-                                    })
-                                    .is_err()
-                                {
-                                    log.line(format_args!("command queue full; command rejected"));
-                                }
-                            }
-                            Ok(None) => {}
-                            Err(e) => log.line(format_args!("command rejected: {e}")),
-                        }
-                    }
-                }
-                Ok(Err(_)) => {
-                    connected.store(false, Ordering::Relaxed);
-                    // There is no resumable session; discovery/state are regenerated on CONNECT.
-                    connection.eventloop.pending.clear();
-                    log.line(format_args!("broker unavailable; reconnecting"));
-                    // Interruptible retry delay; no tight loop when the broker refuses credentials.
-                    for _ in 0..10 {
-                        if stop.load(Ordering::Relaxed) {
-                            break;
-                        }
-                        std::thread::sleep(Duration::from_millis(100));
-                    }
-                }
-                _ => {}
+        let progress = || {
+            if stop.load(Ordering::Relaxed) || hardware_done.load(Ordering::Acquire) {
+                network_stop.store(true, Ordering::Release);
             }
             let telemetry_fresh = !watching_telemetry
                 || started.elapsed().saturating_sub(Duration::from_millis(
@@ -947,90 +757,43 @@ pub fn run_full(
             {
                 beats.beat(Progress::Mqtt);
             }
-        }
+        };
+        // The direct stop path: the stop owner halts motion and advances the epoch, so queued motion is
+        // discarded without waiting behind a blocked hardware call.
+        let urgent = |command: &transport::Command<Command>| {
+            if let transport::Command::Stop = command {
+                match endpoint.as_deref() {
+                    Some(path) => {
+                        let result = crate::control_stop::request(path);
+                        // Acknowledgments describe this request, never a replayable cached stop.
+                        let _ =
+                            publisher.ack("stop", if result.is_ok() { "stopped" } else { "error" });
+                        publisher.request_refresh();
+                    }
+                    None => log.line("stop owner unavailable"),
+                }
+            }
+            transport::Urgent::Handled
+        };
+        let sink = |line: &str| log.line(line);
+        let network = worker.run(
+            &network_stop,
+            transport::Hooks {
+                on_progress: Some(&progress),
+                on_urgent: Some(&urgent),
+                log: Some(&sink),
+            },
+        );
         let unexpected = !stop.load(Ordering::Relaxed);
         // Cancel feeding and request stop before either explicit or implicit join.
         drop(shutdown);
         hardware
             .join()
             .map_err(|_| std::io::Error::other("hardware worker panicked"))?;
+        network?;
         if unexpected {
             return Err(std::io::Error::other("hardware worker exited unexpectedly"));
         }
         Ok(())
-    });
-    // QoS0 is a drain marker behind all worker publications. Wait for outstanding QoS1 ACKs
-    // before disconnecting, so closing a socket with unread ACKs cannot reset its final writes.
-    let _ = client.try_publish(camera.availability(), QoS::AtMostOnce, true, "offline");
-    let deadline = Instant::now() + Duration::from_secs(2);
-    let mut marker = false;
-    let mut disconnecting = false;
-    while Instant::now() < deadline {
-        match connection.recv_timeout(Duration::from_millis(100)) {
-            Ok(Ok(Event::Outgoing(Outgoing::Publish(0)))) => marker = true,
-            Ok(Ok(Event::Outgoing(Outgoing::Disconnect))) | Ok(Err(_)) => break,
-            _ => {}
-        }
-        if marker && connection.eventloop.state.inflight() == 0 && !disconnecting {
-            disconnecting = client.try_disconnect().is_ok();
-        }
-    }
-    hardware_result
-}
-
-#[cfg(test)]
-mod supersede_tests {
-    use super::*;
-    use std::collections::VecDeque;
-
-    fn tap(received: u64) -> Queued {
-        Queued {
-            generation: 0,
-            received: Duration::from_millis(received),
-            command: Command::Position3d(
-                crate::position3d::Request::parse(
-                    r#"{"start_x":10,"start_y":10,"end_x":10,"end_y":10,"operation":"zoomto"}"#,
-                )
-                .unwrap(),
-            ),
-        }
-    }
-
-    fn other(received: u64, command: Command) -> Queued {
-        Queued {
-            generation: 0,
-            received: Duration::from_millis(received),
-            command,
-        }
-    }
-
-    fn kinds(q: &VecDeque<Queued>) -> Vec<String> {
-        q.iter()
-            .map(|q| match &q.command {
-                Command::Position3d(_) => format!("tap@{}", q.received.as_millis()),
-                c => format!("{c:?}"),
-            })
-            .collect()
-    }
-
-    #[test]
-    fn two_taps_in_a_row_keep_only_the_newer() {
-        let mut q: VecDeque<Queued> = [tap(1), tap(2), tap(3)].into();
-        assert_eq!(supersede(&mut q), 2);
-        assert_eq!(kinds(&q), ["tap@3"]);
-    }
-
-    #[test]
-    fn a_tap_followed_by_a_stop_keeps_both_in_order() {
-        let mut q: VecDeque<Queued> = [tap(1), other(2, Command::Stop)].into();
-        assert_eq!(supersede(&mut q), 0);
-        assert_eq!(kinds(&q), ["tap@1", "Stop"]);
-    }
-
-    #[test]
-    fn a_non_tap_between_two_taps_keeps_both_taps() {
-        let mut q: VecDeque<Queued> = [tap(1), other(2, Command::Pan(5)), tap(3), tap(4)].into();
-        assert_eq!(supersede(&mut q), 1);
-        assert_eq!(kinds(&q), ["tap@1", "Pan(5)", "tap@4"]);
-    }
+    })
 }

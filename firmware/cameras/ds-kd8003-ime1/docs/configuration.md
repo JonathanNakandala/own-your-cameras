@@ -2,8 +2,10 @@
 
 Two files sit next to `start.sh` on the config partition, both mode 0600:
 [`cam.conf`](../firmware/cam.conf.example) and [`pins.conf`](../firmware/pins.conf.example).
-`cam.conf` is read once at start; an unknown key or an out-of-range value stops the application
-(and counts as an unhealthy boot).
+`cam.conf` holds only secrets, identity and paths and is read once at start; an unknown key or an
+invalid value stops the application (and counts as an unhealthy boot). Everything else (door open
+time, volumes, streams, image) is a [live setting](home-assistant.md#settings) in Home Assistant,
+stored in `settings.json` in the same directory.
 
 ## `cam.conf`
 
@@ -17,17 +19,16 @@ Two files sit next to `start.sh` on the config partition, both mode 0600:
 | `device_name` | `DS-KD8003-IME1` | device name in Home Assistant, printable ASCII without `"` or `\` |
 | `rtsp_user`, `rtsp_password` | required | RTSP digest credentials |
 | `rtsp_port` | 554 | |
-| `open_seconds` | 5 | strike pulse on an opening, 1..120 s |
-| `codec_out_db` | 0 | DAC output level, -30..6 dB |
-| `clip_db` | 0 | digital gain on clips, -40..12 dB |
-| `talk_db` | 6 | gain on talkback after the mixer, 0..18 dB (clipped) |
-| `mic_gain_db` | 0 | microphone ADC gain, 0..40 dB |
 | `keypad_key` | `/home/config/custom/keypad.key` | 16-byte keypad bootstrap key |
 | `pins` | `/home/config/custom/pins.conf` | PIN table |
-| `clips` | `/home/app/custom/native/clips` | directory of `<name>.pcm` clips |
+| `clips` | `/home/app/custom/native/clips` | directory of `<name>.pcmd` (as installed) or `<name>.pcm` clips |
 | `http_port` | 0 | read-only diagnostics (`GET /state`, `GET /log?after=N`); 0 is off |
 | `onvif_port` | 80 | [ONVIF](../../../../docs/shared/onvif.md) with the RTSP credentials; 0 is off |
 | `ntp` | empty | NTP servers, comma-separated (up to four); empty leaves the clock alone |
+
+`settings.json` (mode 0600) is written at most every 10 s after a change and survives a
+reinstall. Deleting it and restarting starts over as a first run: defaults, image settings as the
+ISP reports them.
 
 Changing `mqtt_prefix` or `mqtt_node` later makes Home Assistant see a new device. The diagnostics
 port has no credentials and its log names who opened the door; enable it only on a trusted network.
@@ -53,11 +54,13 @@ one: codes open without `#`, so the longer one could never be told from the shor
 
 ## Clips
 
-`<name>.pcm` files, raw s16le mono 16 kHz, packed as `clips.tar`:
+Give the installer `<name>.pcm` files, raw s16le mono 16 kHz:
 
 ```sh
 ffmpeg -i input.wav -ac 1 -ar 16000 -f s16le door_opened.pcm
 ```
 
-`door_opened.pcm` is the fallback for any code whose clip is missing; an optional `denied.pcm`
+It stores each as `<name>.pcmd` in `clips.tar` (the same samples, losslessly in a form that packs
+smaller). The application reads both `.pcmd` and plain `.pcm` files. Below, `<name>.pcm` stands for
+either. `door_opened.pcm` is the fallback for any code whose clip is missing; an optional `denied.pcm`
 replaces the refusal tone. A clip plays at most its first 10 s.
