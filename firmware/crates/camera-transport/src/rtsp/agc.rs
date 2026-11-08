@@ -37,6 +37,16 @@ impl Default for TalkGain {
 }
 
 impl TalkGain {
+    /// The current gain (linear), for the session log.
+    pub fn gain(&self) -> f32 {
+        self.gain
+    }
+
+    /// True when a packet of this RMS (full-scale units) counts as speech, not a pause.
+    pub fn is_speech(rms: f32) -> bool {
+        rms >= GATE_RMS
+    }
+
     /// Scales one decoded packet to full-scale units (1.0 = i16::MAX), unlimited: the sum of several talkers
     /// is limited once, by [`Limiter`]. The gain follows the smoothed speech level, ramping across the packet so
     /// a change never clicks.

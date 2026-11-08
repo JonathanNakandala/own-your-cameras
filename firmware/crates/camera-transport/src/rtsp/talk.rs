@@ -333,6 +333,7 @@ pub struct TalkLease {
     decoder: TalkDecoder,
     filter: Option<super::highpass::HighPass>,
     gain: TalkGain,
+    level: LevelStats,
     /// Packets refused (not RTP, or a payload type other than Opus or PCMU) and the last refused type.
     refused: u64,
     refused_pt: Option<u8>,
@@ -401,6 +402,7 @@ impl Talkback {
             decoder: TalkDecoder::new(decoder, self.rate),
             filter: super::highpass::HighPass::new(self.rate, self.high_pass_hz),
             gain: TalkGain::default(),
+            level: LevelStats::default(),
             refused: 0,
             refused_pt: None,
         })
@@ -459,13 +461,55 @@ impl TalkLease {
             self.refused_pt = packet.get(1).map(|b| b & 127);
             return;
         }
+        let before = rms(&pcm);
         let pcm = match &mut self.filter {
             Some(filter) => filter.process(&pcm),
             None => pcm,
         };
+        let after = rms(&pcm);
+        self.level.add(before, after);
         let samples = self.gain.process(&pcm);
         self.talk.mixer().push(self.slot, &samples);
     }
+}
+
+/// One talk session's input level, for the log line that says whether a voice arrived and how loud.
+#[derive(Default)]
+struct LevelStats {
+    packets: u64,
+    /// Packets the gain control counted as speech (after the filter).
+    speech: u64,
+    loudest: f32,
+    sum_before: f32,
+    sum_after: f32,
+}
+
+impl LevelStats {
+    fn add(&mut self, before: f32, after: f32) {
+        self.packets += 1;
+        if TalkGain::is_speech(after) {
+            self.speech += 1;
+        }
+        self.loudest = self.loudest.max(before);
+        self.sum_before += before * before;
+        self.sum_after += after * after;
+    }
+
+    fn mean(&self, sum: f32) -> f32 {
+        (sum / self.packets as f32).sqrt()
+    }
+}
+
+fn rms(pcm: &[i16]) -> f32 {
+    if pcm.is_empty() {
+        return 0.0;
+    }
+    let sum: f32 = pcm.iter().map(|&s| (f32::from(s) / 32768.0).powi(2)).sum();
+    (sum / pcm.len() as f32).sqrt()
+}
+
+fn dbfs(v: f32) -> f32 {
+    20.0 * v.max(1e-6).log10()
 }
 
 impl Drop for TalkLease {
@@ -474,6 +518,18 @@ impl Drop for TalkLease {
             eprintln!(
                 "talk: refused {} packets (last payload type {:?}): not Opus (111, 96) or PCMU (0), or too long",
                 self.refused, self.refused_pt
+            );
+        }
+        if self.level.packets > 0 {
+            let l = &self.level;
+            eprintln!(
+                "talk: input packets={} speech={} loudest_dbfs={:.0} mean_dbfs={:.0} after_filter_dbfs={:.0} gain_db={:.0}",
+                l.packets,
+                l.speech,
+                dbfs(l.loudest),
+                dbfs(l.mean(l.sum_before)),
+                dbfs(l.mean(l.sum_after)),
+                20.0 * self.gain.gain().log10()
             );
         }
         let stats = self.talk.mixer().release(self.slot);
