@@ -24,9 +24,9 @@ pub enum Edge {
     Tamper(bool),
     /// The gate as a cover: open while the strike is released or the leaf is away from the reed.
     Cover(bool),
-    /// Strike released with its running pulse (`Some`), or locked. Emitted on every pulse change,
-    /// a restart during a pulse included.
-    Lock(Option<LockPulse>),
+    /// Strike released (true) or locked, with the running pulse if there is one. Emitted on every
+    /// pulse change, a restart during a pulse included.
+    Lock(bool, Option<LockPulse>),
     /// A PIN opened the gate for this user.
     Granted(String),
     /// A PIN was refused.
@@ -118,7 +118,7 @@ mod tests {
         assert_eq!(Edge::CallButton(true).binary(), Some(("call_button", true)));
         assert_eq!(Edge::Reed(false).binary(), Some(("door", false)));
         assert_eq!(Edge::Tamper(true).binary(), Some(("tamper", true)));
-        assert_eq!(Edge::Lock(None).binary(), None);
+        assert_eq!(Edge::Lock(false, None).binary(), None);
         assert_eq!(Edge::Denied.binary(), None);
     }
 }

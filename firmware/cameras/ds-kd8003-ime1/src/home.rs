@@ -168,8 +168,9 @@ impl mqtt::Parser for Parser {
 
 /// `lock/state` attributes: the lock actuator, and the pulse a countdown is drawn from (`pulse_s` the full
 /// scale, `relock_at` the UTC deadline when the clock is in sync, `relock_in_s` the clock-free fallback).
-pub fn lock_state(pulse: &Option<LockPulse>) -> String {
-    match pulse {
+pub fn lock_state(unlocked: bool, pulse: &Option<LockPulse>) -> String {
+    match pulse.filter(|_| unlocked) {
+        None if unlocked => r#"{"lock_actuator":"unlocked","lock_actuator_unlocked":true,"pulse_s":null,"relock_at":null,"relock_in_s":0}"#.to_owned(),
         None => r#"{"lock_actuator":"locked","lock_actuator_unlocked":false,"pulse_s":null,"relock_at":null,"relock_in_s":0}"#.to_owned(),
         Some(p) => format!(
             r#"{{"lock_actuator":"unlocked","lock_actuator_unlocked":true,"pulse_s":{},"relock_at":{},"relock_in_s":{}}}"#,
@@ -225,7 +226,7 @@ pub fn publication(edge: &Edge) -> Option<Out> {
     Some(match edge {
         Edge::Reed(o) => Out::State("reed", open(*o)),
         Edge::Cover(o) => Out::State("gate", open(*o)),
-        Edge::Lock(pulse) => Out::State("lock_actuator", lock_state(pulse)),
+        Edge::Lock(unlocked, pulse) => Out::State("lock_actuator", lock_state(*unlocked, pulse)),
         Edge::CallButton(pressed) => Out::Event(
             "doorbell",
             event(if *pressed { "press" } else { "release" }, None),
@@ -426,11 +427,14 @@ mod tests {
             publication(&Edge::Cover(false)),
             Some(Out::State("gate", "closed".into()))
         );
-        let Some(Out::State("lock_actuator", lock)) = publication(&Edge::Lock(Some(LockPulse {
-            pulse_ms: 5_000,
-            remaining_ms: 5_000,
-            relock_at: None,
-        }))) else {
+        let Some(Out::State("lock_actuator", lock)) = publication(&Edge::Lock(
+            true,
+            Some(LockPulse {
+                pulse_ms: 5_000,
+                remaining_ms: 5_000,
+                relock_at: None,
+            }),
+        )) else {
             panic!()
         };
         let v: Value = serde_json::from_str(&lock).unwrap();
@@ -459,7 +463,7 @@ mod tests {
 
     #[test]
     fn the_locked_payload_has_no_countdown() {
-        let v: Value = serde_json::from_str(&lock_state(&None)).unwrap();
+        let v: Value = serde_json::from_str(&lock_state(false, &None)).unwrap();
         assert_eq!(v["lock_actuator"], "locked");
         assert_eq!(v["lock_actuator_unlocked"], false);
         assert!(v["pulse_s"].is_null() && v["relock_at"].is_null());
@@ -474,19 +478,31 @@ mod tests {
             remaining_ms: 119_950,
             relock_at: Some(at),
         };
-        let v: Value = serde_json::from_str(&lock_state(&Some(pulse))).unwrap();
+        let v: Value = serde_json::from_str(&lock_state(true, &Some(pulse))).unwrap();
         assert_eq!(v["lock_actuator"], "unlocked");
         assert_eq!(v["lock_actuator_unlocked"], true);
         assert_eq!(v["pulse_s"].as_f64(), Some(120.0));
         assert_eq!(v["relock_at"], "2026-11-08T14:03:27.412Z");
         assert_eq!(v["relock_in_s"].as_f64(), Some(119.95));
-        let v: Value = serde_json::from_str(&lock_state(&Some(LockPulse {
-            relock_at: None,
-            ..pulse
-        })))
+        let v: Value = serde_json::from_str(&lock_state(
+            true,
+            &Some(LockPulse {
+                relock_at: None,
+                ..pulse
+            }),
+        ))
         .unwrap();
         assert!(v["relock_at"].is_null());
         assert_eq!(v["relock_in_s"].as_f64(), Some(119.95));
+    }
+
+    #[test]
+    fn an_energized_strike_without_a_pulse_is_unlocked_with_no_countdown() {
+        let v: Value = serde_json::from_str(&lock_state(true, &None)).unwrap();
+        assert_eq!(v["lock_actuator"], "unlocked");
+        assert_eq!(v["lock_actuator_unlocked"], true);
+        assert!(v["pulse_s"].is_null() && v["relock_at"].is_null());
+        assert_eq!(v["relock_in_s"], 0);
     }
 
     #[test]

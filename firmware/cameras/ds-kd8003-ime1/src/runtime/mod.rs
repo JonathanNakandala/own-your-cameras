@@ -565,14 +565,14 @@ pub fn main(args: &[String]) {
             )
         };
         if lock_published != Some((generation, unlocked)) {
-            let pulse = pulse.filter(|_| unlocked).map(|p| LockPulse {
+            let pulse = pulse.map(|p| LockPulse {
                 pulse_ms: p.pulse_ms,
                 remaining_ms: p.remaining_ms,
                 relock_at: clock_synced
                     .load(Ordering::Relaxed)
                     .then(|| std::time::SystemTime::now() + Duration::from_millis(p.remaining_ms)),
             });
-            emit(Edge::Lock(pulse));
+            emit(Edge::Lock(unlocked, pulse));
             lock_published = Some((generation, unlocked));
         }
 
