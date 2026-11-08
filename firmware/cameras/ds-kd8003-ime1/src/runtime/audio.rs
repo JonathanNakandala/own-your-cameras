@@ -161,7 +161,7 @@ fn deny_tone() -> Vec<i16> {
             let t = i as f32 / rate as f32;
             let on = (i / (rate / 5)).is_multiple_of(2);
             if on {
-                (8000.0 * (2.0 * std::f32::consts::PI * 400.0 * t).sin()) as i16
+                (speaker::TONE_AMPLITUDE * (2.0 * std::f32::consts::PI * 400.0 * t).sin()) as i16
             } else {
                 0
             }
@@ -218,9 +218,9 @@ pub fn speaker_loop(
     let rate = codec_rate();
     let deny = deny_tone();
     let tone = |t: Tone| match t {
-        Tone::Answered => speaker::tone(speaker::ANSWERED, rate, 8000.0),
-        Tone::Declined => speaker::tone(speaker::DECLINED, rate, 8000.0),
-        Tone::Ended => speaker::tone(speaker::ENDED, rate, 8000.0),
+        Tone::Answered => speaker::tone(speaker::ANSWERED, rate, speaker::TONE_AMPLITUDE),
+        Tone::Declined => speaker::tone(speaker::DECLINED, rate, speaker::TONE_AMPLITUDE),
+        Tone::Ended => speaker::tone(speaker::ENDED, rate, speaker::TONE_AMPLITUDE),
         Tone::Missed => deny.clone(),
     };
     let frame_len = frame_len();

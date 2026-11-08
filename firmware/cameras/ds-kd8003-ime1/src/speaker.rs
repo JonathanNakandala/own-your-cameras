@@ -98,6 +98,10 @@ pub fn tone(notes: &[(f32, u32)], rate: u32, amplitude: f32) -> Vec<i16> {
     out
 }
 
+/// The built-in tones' amplitude: a sine at -12 dBFS RMS, the loudness the installer levels clips to
+/// (`tools/ds-kd8003-ime1/install.py` `level_clip`), so every sound plays equally loud.
+pub const TONE_AMPLITUDE: f32 = 11_600.0;
+
 /// The mock's sounds: answered with the microphone on, declined, hang-up.
 pub const ANSWERED: &[(f32, u32)] = &[(660.0, 120), (880.0, 180)];
 pub const DECLINED: &[(f32, u32)] = &[(523.0, 180), (0.0, 80), (392.0, 300)];
