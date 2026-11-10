@@ -1,8 +1,9 @@
 //! Every action's response shape, checked against the element names of the ONVIF WSDLs.
 use super::*;
 use crate::fake::FakeCamera;
-use crate::soap;
+use crate::soap::{self, TR2};
 use crate::xml::{self, Element};
+use std::sync::atomic::Ordering;
 use std::time::UNIX_EPOCH;
 
 const NOW: u64 = 1_794_052_800; // 2026-11-07T12:00:00Z
@@ -15,6 +16,7 @@ fn ctx(camera: &FakeCamera) -> Context<'_> {
         rtsp_port: 554,
         http_port: 80,
         camera,
+        user: "USER",
         subscription: None,
     }
 }
@@ -127,7 +129,35 @@ fn services_name_each_namespace_with_capabilities_on_request() {
         "<IncludeCapability>true</IncludeCapability>",
     );
     let services: Vec<&Element> = r.children_named("Service").collect();
-    assert_eq!(services.len(), 5);
+    assert_eq!(services.len(), 7);
+    let media2 = services
+        .iter()
+        .find(|s| s.text_of("Namespace") == Some(TR2))
+        .unwrap();
+    assert_eq!(
+        media2.text_of("XAddr"),
+        Some("http://CAMERA_HOST:80/onvif/media2_service")
+    );
+    assert_eq!(
+        path(
+            media2,
+            &["Capabilities", "Capabilities", "ProfileCapabilities"]
+        )
+        .attr("MaximumNumberOfProfiles"),
+        Some("2")
+    );
+    let imaging = services
+        .iter()
+        .find(|s| s.text_of("Namespace") == Some(TIMG))
+        .unwrap();
+    assert_eq!(
+        imaging.text_of("XAddr"),
+        Some("http://CAMERA_HOST:80/onvif/imaging_service")
+    );
+    assert_eq!(
+        path(imaging, &["Capabilities", "Capabilities"]).attr("Presets"),
+        Some("false")
+    );
     let io = services
         .iter()
         .find(|s| s.text_of("Namespace") == Some(crate::soap::TMD))
@@ -152,8 +182,8 @@ fn services_name_each_namespace_with_capabilities_on_request() {
         call(&panel, TDS, "GetServices", "")
             .children_named("Service")
             .count(),
-        4,
-        "no PTZ service without PTZ"
+        5,
+        "no PTZ and no Imaging service without PTZ"
     );
 }
 
@@ -247,6 +277,7 @@ fn writes_and_unknown_device_actions_are_not_supported() {
         "SystemReboot",
         "SetHostname",
         "CreateUsers",
+        "SetNTP",
     ] {
         assert_eq!(
             fault(&cam, TDS, action, "").subcodes,
@@ -255,6 +286,250 @@ fn writes_and_unknown_device_actions_are_not_supported() {
         );
     }
     assert_eq!(fault(&cam, "urn:other", "Anything", "").status(), 500);
+}
+
+#[test]
+fn device_reboots_lists_its_user_and_serves_its_log() {
+    let cam = FakeCamera::new(true, &[]);
+    let rebooted = call(&cam, TDS, "SystemReboot", "");
+    assert_eq!(rebooted.text_of("Message"), Some("Rebooting"));
+    assert_eq!(
+        cam.system.as_ref().unwrap().reboots.load(Ordering::SeqCst),
+        1
+    );
+    let users = call(&cam, TDS, "GetUsers", "");
+    assert_eq!(users.children_named("User").count(), 1);
+    assert_eq!(path(&users, &["User", "Username"]).text, "USER");
+    assert_eq!(path(&users, &["User", "UserLevel"]).text, "Administrator");
+    // The log is escaped on the way out and back (the test's reader trims the final newline).
+    let log = call(&cam, TDS, "GetSystemLog", "<LogType>System</LogType>");
+    assert_eq!(
+        path(&log, &["SystemLog", "String"]).text,
+        "talk: session ended <ok> & done"
+    );
+    let info = call(&cam, TDS, "GetSystemSupportInformation", "");
+    let text = &path(&info, &["SupportInformation", "String"]).text;
+    assert!(text.contains("Model: ") && text.contains("Serial: ") && text.contains("Profile S"));
+    // The log is advertised in the capability documents.
+    let caps = call(&cam, TDS, "GetServiceCapabilities", "");
+    assert_eq!(
+        path(&caps, &["Capabilities", "System"]).attr("SystemLogging"),
+        Some("true")
+    );
+    let all = call(&cam, TDS, "GetCapabilities", "<Category>Device</Category>");
+    assert_eq!(
+        path(&all, &["Capabilities", "Device", "System", "SystemLogging"]).text,
+        "true"
+    );
+}
+
+#[test]
+fn device_refuses_what_the_camera_does_not_keep() {
+    let cam = FakeCamera::new(true, &[]);
+    assert!(
+        fault(&cam, TDS, "GetSystemLog", "<LogType>Access</LogType>")
+            .subcodes
+            .contains(&"ter:SystemlogUnavailable")
+    );
+    for bad in ["", "<LogType>Debug</LogType>"] {
+        assert!(
+            fault(&cam, TDS, "GetSystemLog", bad)
+                .subcodes
+                .contains(&"ter:InvalidArgs"),
+            "{bad:?}"
+        );
+    }
+    // A camera that keeps no log and cannot reboot says so, and does not advertise either.
+    let panel = FakeCamera::new(false, &[]);
+    assert!(
+        fault(&panel, TDS, "GetSystemLog", "<LogType>System</LogType>")
+            .subcodes
+            .contains(&"ter:SystemlogUnavailable")
+    );
+    assert_eq!(
+        fault(&panel, TDS, "SystemReboot", "").subcodes,
+        ["ter:ActionNotSupported"]
+    );
+    let caps = call(&panel, TDS, "GetServiceCapabilities", "");
+    assert_eq!(
+        path(&caps, &["Capabilities", "System"]).attr("SystemLogging"),
+        Some("false")
+    );
+}
+
+#[test]
+fn relay_outputs_are_listed_counted_and_switched() {
+    let cam = FakeCamera::new(true, &[]);
+    let relays = call(&cam, TDS, "GetRelayOutputs", "");
+    let tokens: Vec<_> = relays
+        .children_named("RelayOutputs")
+        .map(|r| r.attr("token"))
+        .collect();
+    assert_eq!(tokens, [Some("status_led"), Some("ir_leds")]);
+    let first = path(&relays, &["RelayOutputs", "Properties"]);
+    assert_eq!(first.text_of("Mode"), Some("Bistable"));
+    assert_eq!(first.text_of("IdleState"), Some("open"));
+    // The count is in every capability document.
+    let io = call(&cam, TMD, "GetServiceCapabilities", "");
+    assert_eq!(path(&io, &["Capabilities"]).attr("RelayOutputs"), Some("2"));
+    let all = call(&cam, TDS, "GetCapabilities", "");
+    assert_eq!(
+        path(&all, &["Capabilities", "Device", "IO", "RelayOutputs"]).text,
+        "2"
+    );
+    assert_eq!(
+        path(
+            &all,
+            &["Capabilities", "Extension", "DeviceIO", "RelayOutputs"]
+        )
+        .text,
+        "2"
+    );
+    call(
+        &cam,
+        TDS,
+        "SetRelayOutputState",
+        "<RelayOutputToken>ir_leds</RelayOutputToken><LogicalState>active</LogicalState>",
+    );
+    call(
+        &cam,
+        TDS,
+        "SetRelayOutputState",
+        "<RelayOutputToken>status_led</RelayOutputToken><LogicalState>inactive</LogicalState>",
+    );
+    assert_eq!(
+        *cam.system.as_ref().unwrap().relays.lock().unwrap(),
+        ["ir_leds true", "status_led false"]
+    );
+    // DeviceIO lists the options per relay, or for one.
+    let options = call(&cam, TMD, "GetRelayOutputOptions", "");
+    assert_eq!(options.children_named("RelayOutputOptions").count(), 2);
+    let one = call(
+        &cam,
+        TMD,
+        "GetRelayOutputOptions",
+        "<RelayOutputToken>ir_leds</RelayOutputToken>",
+    );
+    assert_eq!(
+        path(&one, &["RelayOutputOptions"]).attr("token"),
+        Some("ir_leds")
+    );
+    assert_eq!(path(&one, &["RelayOutputOptions", "Mode"]).text, "Bistable");
+}
+
+#[test]
+fn relay_outputs_refuse_what_they_do_not_do() {
+    let cam = FakeCamera::new(true, &[]);
+    let state = |token: &str, logical: &str| {
+        fault(
+            &cam,
+            TDS,
+            "SetRelayOutputState",
+            &format!(
+                "<RelayOutputToken>{token}</RelayOutputToken><LogicalState>{logical}</LogicalState>"
+            ),
+        )
+    };
+    assert!(state("door", "active").subcodes.contains(&"ter:RelayToken"));
+    assert!(state("ir_leds", "on").subcodes.contains(&"ter:InvalidArgs"));
+    assert!(state("ir_leds", "").subcodes.contains(&"ter:InvalidArgs"));
+    assert!(
+        cam.system
+            .as_ref()
+            .unwrap()
+            .relays
+            .lock()
+            .unwrap()
+            .is_empty()
+    );
+    // Settings: the one setting there is is accepted; monostable and an inverted idle state are not.
+    let ok = "<tt:Mode>Bistable</tt:Mode><tt:IdleState>open</tt:IdleState>";
+    call(
+        &cam,
+        TDS,
+        "SetRelayOutputSettings",
+        &format!("<RelayOutputToken>ir_leds</RelayOutputToken><Properties>{ok}</Properties>"),
+    );
+    call(
+        &cam,
+        TMD,
+        "SetRelayOutputSettings",
+        &format!(
+            r#"<RelayOutput token="ir_leds"><tt:Properties>{ok}</tt:Properties></RelayOutput>"#
+        ),
+    );
+    for props in [
+        "<tt:Mode>Monostable</tt:Mode><tt:DelayTime>PT5S</tt:DelayTime><tt:IdleState>open</tt:IdleState>",
+        "<tt:Mode>Bistable</tt:Mode><tt:IdleState>closed</tt:IdleState>",
+    ] {
+        let f = fault(
+            &cam,
+            TDS,
+            "SetRelayOutputSettings",
+            &format!(
+                "<RelayOutputToken>ir_leds</RelayOutputToken><Properties>{props}</Properties>"
+            ),
+        );
+        assert!(f.subcodes.contains(&"ter:ModeError"), "{props}");
+    }
+    assert!(
+        fault(
+            &cam,
+            TDS,
+            "SetRelayOutputSettings",
+            &format!("<RelayOutputToken>x</RelayOutputToken><Properties>{ok}</Properties>")
+        )
+        .subcodes
+        .contains(&"ter:RelayToken")
+    );
+    assert!(
+        fault(
+            &cam,
+            TMD,
+            "GetRelayOutputOptions",
+            "<RelayOutputToken>x</RelayOutputToken>"
+        )
+        .subcodes
+        .contains(&"ter:RelayToken")
+    );
+    // A camera with no relays lists none and counts none.
+    let panel = FakeCamera::new(false, &[]);
+    assert_eq!(call(&panel, TDS, "GetRelayOutputs", "").children.len(), 0);
+    let io = call(&panel, TMD, "GetServiceCapabilities", "");
+    assert_eq!(path(&io, &["Capabilities"]).attr("RelayOutputs"), Some("0"));
+    assert!(
+        fault(
+            &panel,
+            TDS,
+            "SetRelayOutputState",
+            "<RelayOutputToken>ir_leds</RelayOutputToken><LogicalState>active</LogicalState>"
+        )
+        .subcodes
+        .contains(&"ter:RelayToken")
+    );
+}
+
+#[test]
+fn media_accepts_a_sync_point_and_lists_no_metadata() {
+    let cam = FakeCamera::new(true, &[]);
+    call(
+        &cam,
+        TRT,
+        "SetSynchronizationPoint",
+        "<ProfileToken>sub</ProfileToken>",
+    );
+    assert!(
+        fault(
+            &cam,
+            TRT,
+            "SetSynchronizationPoint",
+            "<ProfileToken>nope</ProfileToken>"
+        )
+        .subcodes
+        .contains(&"ter:NoProfile")
+    );
+    let none = call(&cam, TRT, "GetMetadataConfigurations", "");
+    assert!(none.children.is_empty());
 }
 
 #[test]
@@ -682,6 +957,445 @@ fn ptz_moves_stop_and_presets_go_through_the_port() {
     );
 }
 
+/// What Frigate's autotracking reads: an FOV translation space in the options, a default one in the
+/// configuration, and `MoveStatus` in the service capabilities.
+#[test]
+fn ptz_advertises_what_frigate_needs() {
+    let cam = FakeCamera::new(true, &[]);
+    let fov = "http://www.onvif.org/ver10/tptz/PanTiltSpaces/TranslationSpaceFov";
+    let opts = call(
+        &cam,
+        TPTZ,
+        "GetConfigurationOptions",
+        "<ConfigurationToken>ptz_config</ConfigurationToken>",
+    );
+    let space = path(
+        &opts,
+        &[
+            "PTZConfigurationOptions",
+            "Spaces",
+            "RelativePanTiltTranslationSpace",
+        ],
+    );
+    assert_eq!(space.text_of("URI"), Some(fov));
+    assert_eq!(path(space, &["XRange", "Min"]).text, "-1");
+    assert_eq!(path(space, &["YRange", "Max"]).text, "1");
+    let config = call(&cam, TPTZ, "GetConfigurations", "");
+    let config = path(&config, &["PTZConfiguration"]);
+    assert_eq!(
+        config.text_of("DefaultRelativePanTiltTranslationSpace"),
+        Some(fov)
+    );
+    assert!(config.child("DefaultAbsoluteZoomPositionSpace").is_some());
+    assert!(config.child("DefaultPTZSpeed").is_some());
+    let caps = call(&cam, TPTZ, "GetServiceCapabilities", "");
+    let caps = path(&caps, &["Capabilities"]);
+    assert_eq!(caps.attr("MoveStatus"), Some("true"));
+    assert_eq!(caps.attr("StatusPosition"), Some("true"));
+    // The schema's order: Position, then MoveStatus.
+    let status = call(&cam, TPTZ, "GetStatus", "<ProfileToken>main</ProfileToken>");
+    let status = path(&status, &["PTZStatus"]);
+    let names: Vec<_> = status.children.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["Position", "MoveStatus", "UtcTime"]);
+    assert_eq!(
+        path(status, &["Position", "PanTilt"]).attr("x"),
+        Some("0.2500")
+    );
+}
+
+#[test]
+fn home_can_be_set_and_auxiliary_commands_are_listed_and_checked() {
+    let cam = FakeCamera::new(true, &[]);
+    let node = call(&cam, TPTZ, "GetNodes", "");
+    let node = path(&node, &["PTZNode"]);
+    assert_eq!(node.attr("FixedHomePosition"), Some("false"));
+    let aux: Vec<_> = node
+        .children_named("AuxiliaryCommands")
+        .map(|c| c.text.as_str())
+        .collect();
+    assert_eq!(aux, ["tt:IRLamp|On", "tt:IRLamp|Off"]);
+    call(
+        &cam,
+        TPTZ,
+        "SetHomePosition",
+        "<ProfileToken>main</ProfileToken>",
+    );
+    let sent = call(
+        &cam,
+        TPTZ,
+        "SendAuxiliaryCommand",
+        "<ProfileToken>main</ProfileToken><AuxiliaryData>tt:IRLamp|On</AuxiliaryData>",
+    );
+    assert_eq!(sent.text_of("AuxiliaryResponse"), Some("OK"));
+    for bad in ["", "tt:Wiper|On", "tt:IRLamp|Auto"] {
+        assert!(
+            fault(
+                &cam,
+                TPTZ,
+                "SendAuxiliaryCommand",
+                &format!("<ProfileToken>main</ProfileToken><AuxiliaryData>{bad}</AuxiliaryData>")
+            )
+            .subcodes
+            .contains(&"ter:InvalidArgs"),
+            "{bad:?}"
+        );
+    }
+    assert_eq!(
+        cam.ptz.as_ref().unwrap().calls(),
+        ["sethome", "aux tt:IRLamp|On"]
+    );
+    let caps = call(&cam, TPTZ, "GetServiceCapabilities", "");
+    assert_eq!(
+        path(&caps, &["Capabilities"]).attr("GetCompatibleConfigurations"),
+        Some("true")
+    );
+    let compatible = call(
+        &cam,
+        TPTZ,
+        "GetCompatibleConfigurations",
+        "<ProfileToken>main</ProfileToken>",
+    );
+    assert_eq!(
+        path(&compatible, &["PTZConfiguration"]).attr("token"),
+        Some("ptz_config")
+    );
+    assert!(
+        fault(
+            &cam,
+            TPTZ,
+            "GetCompatibleConfigurations",
+            "<ProfileToken>x</ProfileToken>"
+        )
+        .subcodes
+        .contains(&"ter:NoProfile")
+    );
+}
+
+#[test]
+fn stop_stops_everything_unless_told_to_stop_neither() {
+    let cam = FakeCamera::new(true, &[]);
+    let stop = |flags: &str| {
+        call(
+            &cam,
+            TPTZ,
+            "Stop",
+            &format!("<ProfileToken>main</ProfileToken>{flags}"),
+        );
+        cam.ptz.as_ref().unwrap().calls().len()
+    };
+    assert_eq!(stop(""), 1, "no flag: all");
+    assert_eq!(stop("<PanTilt>true</PanTilt><Zoom>true</Zoom>"), 2);
+    assert_eq!(stop("<Zoom>true</Zoom>"), 3, "one axis named: both stop");
+    assert_eq!(
+        stop("<PanTilt>false</PanTilt><Zoom>false</Zoom>"),
+        3,
+        "neither: nothing"
+    );
+}
+
+#[test]
+fn a_camera_with_a_fixed_home_and_no_aux_says_so() {
+    struct Plain;
+    impl PtzPort for Plain {
+        fn zoom(&self) -> bool {
+            false
+        }
+        fn max_presets(&self) -> usize {
+            0
+        }
+        fn continuous_move(&self, _: crate::Velocity) -> Result<(), PtzError> {
+            Ok(())
+        }
+        fn stop(&self) -> Result<(), PtzError> {
+            Ok(())
+        }
+        fn home(&self) -> Result<(), PtzError> {
+            Ok(())
+        }
+        fn presets(&self) -> Vec<crate::Preset> {
+            Vec::new()
+        }
+        fn goto_preset(&self, _: &str) -> Result<(), PtzError> {
+            Ok(())
+        }
+        fn set_preset(&self, _: Option<&str>, _: Option<&str>) -> Result<String, PtzError> {
+            Err(PtzError::InvalidName)
+        }
+        fn remove_preset(&self, _: &str) -> Result<(), PtzError> {
+            Ok(())
+        }
+        fn moving(&self) -> bool {
+            false
+        }
+    }
+    let cam = FakeCamera::new(true, &[]);
+    let through = |action: &str, body: &str| match ptz_service(
+        &request(TPTZ, action, body),
+        &ctx(&cam),
+        &Plain,
+    ) {
+        Reply::Ok(b) | Reply::Stopped(b) | Reply::Moving { body: b, .. } => b,
+        Reply::Fault(f) => f.render(),
+        Reply::Pull { .. } => unreachable!(),
+    };
+    let node = through("GetNodes", "");
+    assert!(node.contains("FixedHomePosition=\"true\"") && !node.contains("AuxiliaryCommands"));
+    assert!(through("SetHomePosition", "").contains("ActionNotSupported"));
+    assert!(
+        through(
+            "SendAuxiliaryCommand",
+            "<AuxiliaryData>tt:IRLamp|On</AuxiliaryData>"
+        )
+        .contains("InvalidArgs")
+    );
+}
+
+#[test]
+fn relative_and_absolute_moves_reach_the_port() {
+    let cam = FakeCamera::new(true, &[]);
+    let fov = "http://www.onvif.org/ver10/tptz/PanTiltSpaces/TranslationSpaceFov";
+    call(
+        &cam,
+        TPTZ,
+        "RelativeMove",
+        &format!(
+            r#"<ProfileToken>main</ProfileToken><Translation><tt:PanTilt x="0.25" y="-3" space="{fov}"/><tt:Zoom x="0.5"/></Translation><Speed><tt:PanTilt x="1" y="1"/></Speed>"#
+        ),
+    );
+    // No space named: the default (FOV) applies; a pan/tilt-only move leaves zoom alone.
+    call(
+        &cam,
+        TPTZ,
+        "RelativeMove",
+        r#"<ProfileToken>main</ProfileToken><Translation><tt:PanTilt x="-0.1" y="0"/></Translation>"#,
+    );
+    call(
+        &cam,
+        TPTZ,
+        "AbsoluteMove",
+        r#"<ProfileToken>main</ProfileToken><Position><tt:Zoom x="2"/></Position>"#,
+    );
+    assert_eq!(
+        cam.ptz.as_ref().unwrap().calls(),
+        [
+            "relative Some((0.25, -1.0)) Some(0.5)",
+            "relative Some((-0.1, 0.0)) None",
+            "absolute None Some(1.0)",
+        ]
+    );
+    for (action, body, subcode) in [
+        (
+            "RelativeMove",
+            r#"<ProfileToken>main</ProfileToken><Translation><tt:PanTilt x="0.1" y="0.1" space="http://www.onvif.org/ver10/tptz/PanTiltSpaces/TranslationGenericSpace"/></Translation>"#,
+            "ter:SpaceNotSupported",
+        ),
+        (
+            "RelativeMove",
+            r#"<ProfileToken>main</ProfileToken><Translation><tt:PanTilt x="nan" y="0"/></Translation>"#,
+            "ter:InvalidPosition",
+        ),
+        (
+            "RelativeMove",
+            r#"<ProfileToken>main</ProfileToken><Translation/>"#,
+            "ter:InvalidPosition",
+        ),
+        (
+            "AbsoluteMove",
+            r#"<ProfileToken>main</ProfileToken><Position><tt:PanTilt x="0.1"/></Position>"#,
+            "ter:InvalidPosition",
+        ),
+    ] {
+        assert!(
+            fault(&cam, TPTZ, action, body).subcodes.contains(&subcode),
+            "{action} {body}"
+        );
+    }
+    assert_eq!(
+        cam.ptz.as_ref().unwrap().calls().len(),
+        3,
+        "faults move nothing"
+    );
+}
+
+#[test]
+fn a_camera_without_relative_moves_refuses_them() {
+    // The default trait methods: continuous only, nothing advertised.
+    struct Plain;
+    impl PtzPort for Plain {
+        fn zoom(&self) -> bool {
+            false
+        }
+        fn max_presets(&self) -> usize {
+            0
+        }
+        fn continuous_move(&self, _: crate::Velocity) -> Result<(), PtzError> {
+            Ok(())
+        }
+        fn stop(&self) -> Result<(), PtzError> {
+            Ok(())
+        }
+        fn home(&self) -> Result<(), PtzError> {
+            Ok(())
+        }
+        fn presets(&self) -> Vec<crate::Preset> {
+            Vec::new()
+        }
+        fn goto_preset(&self, _: &str) -> Result<(), PtzError> {
+            Ok(())
+        }
+        fn set_preset(&self, _: Option<&str>, _: Option<&str>) -> Result<String, PtzError> {
+            Err(PtzError::InvalidName)
+        }
+        fn remove_preset(&self, _: &str) -> Result<(), PtzError> {
+            Ok(())
+        }
+        fn moving(&self) -> bool {
+            false
+        }
+    }
+    let cam = FakeCamera::new(true, &[]);
+    /// The rendered reply (or fault) of `action` on `ptz`, as the wire would carry it.
+    fn through(ptz: &dyn PtzPort, cam: &FakeCamera, action: &str) -> String {
+        let body = "<ProfileToken>main</ProfileToken><Translation><tt:Zoom x=\"1\"/></Translation>";
+        match ptz_service(&request(TPTZ, action, body), &ctx(cam), ptz) {
+            Reply::Ok(b) | Reply::Stopped(b) | Reply::Moving { body: b, .. } => b,
+            Reply::Fault(f) => f.render(),
+            Reply::Pull { .. } => unreachable!(),
+        }
+    }
+    let r = through(&Plain, &cam, "GetConfigurationOptions");
+    assert!(!r.contains("RelativePanTiltTranslationSpace") && !r.contains("AbsolutePanTilt"));
+    assert!(r.contains("ContinuousPanTiltVelocitySpace"));
+    let status = through(&Plain, &cam, "GetStatus");
+    assert!(!status.contains("<tt:Position>"));
+    let refused = through(&Plain, &cam, "RelativeMove");
+    assert!(refused.contains("ActionNotSupported"), "{refused}");
+}
+
+const SOURCE: &str = "<VideoSourceToken>video_source</VideoSourceToken>";
+
+#[test]
+fn imaging_reports_settings_and_options_in_the_schemas_order() {
+    let cam = FakeCamera::new(true, &[]);
+    let got = call(&cam, TIMG, "GetImagingSettings", SOURCE);
+    let settings = path(&got, &["ImagingSettings"]);
+    let names: Vec<_> = settings.children.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "Brightness",
+            "ColorSaturation",
+            "Contrast",
+            "Focus",
+            "IrCutFilter",
+            "Sharpness"
+        ]
+    );
+    assert_eq!(settings.text_of("Brightness"), Some("100"));
+    assert_eq!(settings.text_of("IrCutFilter"), Some("AUTO"));
+    assert_eq!(path(settings, &["Focus", "AutoFocusMode"]).text, "AUTO");
+    let got = call(&cam, TIMG, "GetOptions", SOURCE);
+    let options = path(&got, &["ImagingOptions"]);
+    assert_eq!(path(options, &["Brightness", "Max"]).text, "200");
+    assert_eq!(options.children_named("IrCutFilterModes").count(), 3);
+    assert_eq!(
+        path(options, &["Focus"])
+            .children_named("AutoFocusModes")
+            .count(),
+        2
+    );
+    // The service is in the capability documents too.
+    let caps = call(&cam, TIMG, "GetServiceCapabilities", "");
+    assert_eq!(
+        path(&caps, &["Capabilities"]).attr("ImageStabilization"),
+        Some("false")
+    );
+    let all = call(&cam, TDS, "GetCapabilities", "");
+    assert_eq!(
+        path(&all, &["Capabilities", "Imaging", "XAddr"]).text,
+        "http://CAMERA_HOST:80/onvif/imaging_service"
+    );
+}
+
+#[test]
+fn imaging_sets_what_is_sent_and_ignores_sections_the_camera_lacks() {
+    let cam = FakeCamera::new(true, &[]);
+    call(
+        &cam,
+        TIMG,
+        "SetImagingSettings",
+        &format!(
+            r#"{SOURCE}<ImagingSettings><tt:Brightness>150.5</tt:Brightness><tt:IrCutFilter>OFF</tt:IrCutFilter><tt:Focus><tt:AutoFocusMode>MANUAL</tt:AutoFocusMode></tt:Focus><tt:WhiteBalance><tt:Mode>AUTO</tt:Mode></tt:WhiteBalance></ImagingSettings><ForcePersistence>true</ForcePersistence>"#
+        ),
+    );
+    let got = call(&cam, TIMG, "GetImagingSettings", SOURCE);
+    let settings = path(&got, &["ImagingSettings"]);
+    assert_eq!(settings.text_of("Brightness"), Some("150.5"));
+    assert_eq!(settings.text_of("IrCutFilter"), Some("OFF"));
+    assert_eq!(path(settings, &["Focus", "AutoFocusMode"]).text, "MANUAL");
+    assert_eq!(settings.text_of("Contrast"), Some("100"), "unsent stays");
+    assert_eq!(cam.imaging.as_ref().unwrap().calls().len(), 1);
+}
+
+#[test]
+fn imaging_refuses_what_it_cannot_do_before_changing_anything() {
+    let cam = FakeCamera::new(true, &[]);
+    let set = |body: &str| {
+        fault(
+            &cam,
+            TIMG,
+            "SetImagingSettings",
+            &format!("{SOURCE}<ImagingSettings>{body}</ImagingSettings>"),
+        )
+    };
+    for bad in [
+        "<tt:Brightness>nan</tt:Brightness>",
+        "<tt:Brightness>soon</tt:Brightness>",
+        "<tt:Brightness>201</tt:Brightness>",
+        "<tt:IrCutFilter>MAYBE</tt:IrCutFilter>",
+        "<tt:Focus><tt:AutoFocusMode>SOMETIMES</tt:AutoFocusMode></tt:Focus>",
+    ] {
+        assert!(set(bad).subcodes.contains(&"ter:SettingsInvalid"), "{bad}");
+    }
+    let none = fault(&cam, TIMG, "SetImagingSettings", SOURCE);
+    assert!(none.subcodes.contains(&"ter:SettingsInvalid"));
+    // A valid field beside an invalid one: neither is applied.
+    assert!(
+        set("<tt:Contrast>10</tt:Contrast><tt:Brightness>999</tt:Brightness>")
+            .subcodes
+            .contains(&"ter:SettingsInvalid")
+    );
+    assert!(cam.imaging.as_ref().unwrap().calls().is_empty());
+    assert!(
+        fault(
+            &cam,
+            TIMG,
+            "GetImagingSettings",
+            "<VideoSourceToken>nope</VideoSourceToken>"
+        )
+        .subcodes
+        .contains(&"ter:NoSource")
+    );
+    // Focus moves are not offered.
+    for action in ["Move", "GetMoveOptions", "GetStatus", "Stop"] {
+        assert_eq!(
+            fault(&cam, TIMG, action, SOURCE).subcodes,
+            ["ter:ActionNotSupported"],
+            "{action}"
+        );
+    }
+    // A camera without imaging offers no service.
+    let panel = FakeCamera::new(false, &[]);
+    assert!(matches!(
+        handle(
+            &request(TIMG, "GetImagingSettings", SOURCE),
+            &ctx(&panel),
+            &mut PullPointBook::new(&[])
+        ),
+        Reply::Fault(_)
+    ));
+}
+
 #[test]
 fn pull_point_lifecycle_over_the_service() {
     let cam = FakeCamera::new(false, &["call_button", "door", "tamper"]);
@@ -783,5 +1497,394 @@ fn device_io_counts_the_audio_output_recorders_need_for_talkback() {
             .child("Capabilities")
             .and_then(|c| c.child("Extension"))
             .is_none()
+    );
+}
+
+// ---------------------------------------------------------------- Media2
+
+#[test]
+fn media2_capabilities_name_the_configurations_a_profile_holds() {
+    let cam = FakeCamera::new(true, &[]);
+    let caps = call(&cam, TR2, "GetServiceCapabilities", "");
+    let caps = path(&caps, &["Capabilities"]);
+    assert_eq!(caps.attr("SnapshotUri"), Some("true"));
+    assert_eq!(caps.attr("OSD"), Some("false"));
+    let profiles = path(caps, &["ProfileCapabilities"]);
+    assert_eq!(profiles.attr("MaximumNumberOfProfiles"), Some("2"));
+    assert_eq!(
+        profiles.attr("ConfigurationsSupported"),
+        Some("VideoSource VideoEncoder AudioSource AudioEncoder PTZ AudioOutput AudioDecoder")
+    );
+    let streaming = path(caps, &["StreamingCapabilities"]);
+    assert_eq!(streaming.attr("RTSPStreaming"), Some("true"));
+    assert_eq!(streaming.attr("RTPMulticast"), Some("false"));
+    // A camera with no PTZ says so (the fake still has its speaker).
+    let panel = FakeCamera::new(false, &[]);
+    let caps = call(&panel, TR2, "GetServiceCapabilities", "");
+    assert_eq!(
+        path(&caps, &["Capabilities", "ProfileCapabilities"]).attr("ConfigurationsSupported"),
+        Some("VideoSource VideoEncoder AudioSource AudioEncoder AudioOutput AudioDecoder")
+    );
+}
+
+#[test]
+fn media2_profiles_carry_only_the_configurations_asked_for() {
+    let cam = FakeCamera::new(true, &[]);
+    // No Type: the token and the name, nothing else.
+    let bare = call(&cam, TR2, "GetProfiles", "");
+    let profiles: Vec<_> = bare.children_named("Profiles").collect();
+    assert_eq!(profiles.len(), 2);
+    assert_eq!(
+        (profiles[0].attr("token"), profiles[0].attr("fixed")),
+        (Some("main"), Some("true"))
+    );
+    assert_eq!(profiles[0].text_of("Name"), Some("main"));
+    assert!(profiles[0].child("Configurations").is_none());
+    // Some types: those, in the schema's order, whatever order they were asked in.
+    let some = call(
+        &cam,
+        TR2,
+        "GetProfiles",
+        "<Token>sub</Token><Type>VideoEncoder</Type><Type>VideoSource</Type>",
+    );
+    let set = path(&some, &["Profiles", "Configurations"]);
+    let names: Vec<_> = set.children.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["VideoSource", "VideoEncoder"]);
+    assert_eq!(some.children_named("Profiles").count(), 1);
+    // All: every configuration the camera has.
+    let all = call(
+        &cam,
+        TR2,
+        "GetProfiles",
+        "<Token>main</Token><Type>All</Type>",
+    );
+    let names: Vec<_> = path(&all, &["Profiles", "Configurations"])
+        .children
+        .iter()
+        .map(|c| c.name.as_str())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "VideoSource",
+            "AudioSource",
+            "VideoEncoder",
+            "AudioEncoder",
+            "PTZ",
+            "AudioOutput",
+            "AudioDecoder"
+        ]
+    );
+    assert!(
+        fault(&cam, TR2, "GetProfiles", "<Token>nope</Token>")
+            .subcodes
+            .contains(&"ter:NoProfile")
+    );
+    // Profiles stay fixed.
+    assert!(
+        fault(&cam, TR2, "CreateProfile", "")
+            .subcodes
+            .contains(&"ter:MaxNVTProfiles")
+    );
+    assert!(
+        fault(&cam, TR2, "DeleteProfile", "<Token>main</Token>")
+            .subcodes
+            .contains(&"ter:DeletionOfFixedProfile")
+    );
+}
+
+#[test]
+fn media2_encoders_use_attributes_and_rfc_3551_names() {
+    let cam = FakeCamera::new(true, &[]);
+    let video = call(
+        &cam,
+        TR2,
+        "GetVideoEncoderConfigurations",
+        "<ConfigurationToken>main_video</ConfigurationToken>",
+    );
+    let e = path(&video, &["Configurations"]);
+    assert_eq!(e.attr("token"), Some("main_video"));
+    assert_eq!(
+        (e.attr("GovLength"), e.attr("Profile")),
+        (Some("30"), Some("Main"))
+    );
+    assert_eq!(e.text_of("Encoding"), Some("H264"));
+    assert_eq!(path(e, &["Resolution", "Width"]).text, "2560");
+    assert_eq!(path(e, &["RateControl", "BitrateLimit"]).text, "2048");
+    assert_eq!(path(e, &["RateControl", "FrameRateLimit"]).text, "15");
+    let names: Vec<_> = e.children.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "Name",
+            "UseCount",
+            "Encoding",
+            "Resolution",
+            "RateControl",
+            "Multicast",
+            "Quality"
+        ]
+    );
+    let both = call(&cam, TR2, "GetVideoEncoderConfigurations", "");
+    assert_eq!(both.children_named("Configurations").count(), 2);
+    assert!(
+        fault(
+            &cam,
+            TR2,
+            "GetVideoEncoderConfigurations",
+            "<ConfigurationToken>x</ConfigurationToken>"
+        )
+        .subcodes
+        .contains(&"ter:NoConfig")
+    );
+    let audio = call(&cam, TR2, "GetAudioEncoderConfigurations", "");
+    assert_eq!(path(&audio, &["Configurations", "Encoding"]).text, "PCMU");
+    assert_eq!(path(&audio, &["Configurations", "SampleRate"]).text, "8");
+    // The options: lists as attributes, the resolutions and the bitrate span as elements.
+    let options = call(&cam, TR2, "GetVideoEncoderConfigurationOptions", "");
+    let o = path(&options, &["Options"]);
+    assert_eq!(o.attr("GovLengthRange"), Some("30"));
+    assert_eq!(o.attr("FrameRatesSupported"), Some("15"));
+    assert_eq!(o.attr("ProfilesSupported"), Some("Main"));
+    assert_eq!(o.children_named("ResolutionsAvailable").count(), 2);
+    assert_eq!(path(o, &["BitrateRange", "Min"]).text, "256");
+    assert_eq!(path(o, &["BitrateRange", "Max"]).text, "2048");
+    let one = call(
+        &cam,
+        TR2,
+        "GetVideoEncoderConfigurationOptions",
+        "<ProfileToken>sub</ProfileToken>",
+    );
+    assert_eq!(
+        path(&one, &["Options"])
+            .children_named("ResolutionsAvailable")
+            .count(),
+        1
+    );
+    let a = call(&cam, TR2, "GetAudioEncoderConfigurationOptions", "");
+    assert_eq!(path(&a, &["Options", "Encoding"]).text, "PCMU");
+}
+
+#[test]
+fn media2_other_configurations_filter_by_token_and_profile() {
+    let cam = FakeCamera::new(true, &[]);
+    for (action, token) in [
+        ("GetVideoSourceConfigurations", "video_source_config"),
+        ("GetAudioSourceConfigurations", "audio_source_config"),
+        ("GetAudioOutputConfigurations", "audio_output_config"),
+        ("GetAudioDecoderConfigurations", "audio_decoder"),
+    ] {
+        let all = call(&cam, TR2, action, "");
+        assert_eq!(
+            path(&all, &["Configurations"]).attr("token"),
+            Some(token),
+            "{action}"
+        );
+        call(
+            &cam,
+            TR2,
+            action,
+            &format!(
+                "<ConfigurationToken>{token}</ConfigurationToken><ProfileToken>sub</ProfileToken>"
+            ),
+        );
+        assert!(
+            fault(
+                &cam,
+                TR2,
+                action,
+                "<ConfigurationToken>x</ConfigurationToken>"
+            )
+            .subcodes
+            .contains(&"ter:NoConfig"),
+            "{action}"
+        );
+        assert!(
+            fault(&cam, TR2, action, "<ProfileToken>x</ProfileToken>")
+                .subcodes
+                .contains(&"ter:NoProfile"),
+            "{action}"
+        );
+    }
+    for action in ["GetMetadataConfigurations", "GetAnalyticsConfigurations"] {
+        assert!(call(&cam, TR2, action, "").children.is_empty(), "{action}");
+    }
+    let instances = call(
+        &cam,
+        TR2,
+        "GetVideoEncoderInstances",
+        "<ConfigurationToken>video_source_config</ConfigurationToken>",
+    );
+    assert_eq!(
+        path(&instances, &["Info", "Codec", "Encoding"]).text,
+        "H264"
+    );
+    assert_eq!(path(&instances, &["Info", "Total"]).text, "2");
+    assert!(
+        fault(
+            &cam,
+            TR2,
+            "GetVideoEncoderInstances",
+            "<ConfigurationToken>x</ConfigurationToken>"
+        )
+        .subcodes
+        .contains(&"ter:NoConfig")
+    );
+    // Features the camera lacks.
+    for action in [
+        "GetOSDs",
+        "GetMasks",
+        "StartMulticastStreaming",
+        "GetVideoSourceModes",
+    ] {
+        assert_eq!(
+            fault(&cam, TR2, action, "").subcodes,
+            ["ter:ActionNotSupported"],
+            "{action}"
+        );
+    }
+}
+
+#[test]
+fn media2_stream_and_snapshot_uris_are_bare() {
+    let cam = FakeCamera::new(false, &[]);
+    for protocol in ["RtspUnicast", "RTSP"] {
+        let r = call(
+            &cam,
+            TR2,
+            "GetStreamUri",
+            &format!("<Protocol>{protocol}</Protocol><ProfileToken>sub</ProfileToken>"),
+        );
+        assert_eq!(
+            r.text_of("Uri"),
+            Some("rtsp://CAMERA_HOST:554/sub_pcmu"),
+            "{protocol}"
+        );
+    }
+    for protocol in ["RtspMulticast", "RtspOverHttp", ""] {
+        assert!(
+            fault(
+                &cam,
+                TR2,
+                "GetStreamUri",
+                &format!("<Protocol>{protocol}</Protocol><ProfileToken>sub</ProfileToken>")
+            )
+            .subcodes
+            .contains(&"ter:InvalidStreamSetup"),
+            "{protocol:?}"
+        );
+    }
+    assert!(
+        fault(
+            &cam,
+            TR2,
+            "GetStreamUri",
+            "<Protocol>RtspUnicast</Protocol><ProfileToken>x</ProfileToken>"
+        )
+        .subcodes
+        .contains(&"ter:NoProfile")
+    );
+    let snap = call(
+        &cam,
+        TR2,
+        "GetSnapshotUri",
+        "<ProfileToken>main</ProfileToken>",
+    );
+    assert_eq!(
+        snap.text_of("Uri"),
+        Some("http://CAMERA_HOST:80/snapshot.jpg")
+    );
+    call(
+        &cam,
+        TR2,
+        "SetSynchronizationPoint",
+        "<ProfileToken>main</ProfileToken>",
+    );
+    assert!(
+        fault(
+            &cam,
+            TR2,
+            "SetSynchronizationPoint",
+            "<ProfileToken>x</ProfileToken>"
+        )
+        .subcodes
+        .contains(&"ter:NoProfile")
+    );
+}
+
+#[test]
+fn media2_is_read_only_and_a_fixed_profile_keeps_its_configurations() {
+    let cam = FakeCamera::new(true, &[]);
+    let set = |body: &str| call(&cam, TR2, "SetVideoEncoderConfiguration", body);
+    // Saying what is already so succeeds (a float frame rate, an unstated field, the attributes).
+    set(
+        r#"<Configuration token="main_video" GovLength="30" Profile="Main"><tt:Encoding>H264</tt:Encoding><tt:Resolution><tt:Width>2560</tt:Width><tt:Height>1440</tt:Height></tt:Resolution><tt:RateControl><tt:FrameRateLimit>15.0</tt:FrameRateLimit><tt:BitrateLimit>2048</tt:BitrateLimit></tt:RateControl></Configuration>"#,
+    );
+    for change in [
+        r#"<Configuration token="main_video" GovLength="60"/>"#,
+        r#"<Configuration token="main_video" Profile="High"/>"#,
+        r#"<Configuration token="main_video"><tt:Encoding>H265</tt:Encoding></Configuration>"#,
+        r#"<Configuration token="main_video"><tt:RateControl><tt:BitrateLimit>4096</tt:BitrateLimit></tt:RateControl></Configuration>"#,
+        r#"<Configuration token="main_video"><tt:RateControl><tt:FrameRateLimit>soon</tt:FrameRateLimit></tt:RateControl></Configuration>"#,
+        r#"<Configuration token="main_video"><tt:Resolution><tt:Width>640</tt:Width><tt:Height>360</tt:Height></tt:Resolution></Configuration>"#,
+    ] {
+        assert!(
+            fault(&cam, TR2, "SetVideoEncoderConfiguration", change)
+                .subcodes
+                .contains(&"ter:ConfigModify"),
+            "{change}"
+        );
+    }
+    assert!(
+        fault(
+            &cam,
+            TR2,
+            "SetVideoEncoderConfiguration",
+            r#"<Configuration token="x"/>"#
+        )
+        .subcodes
+        .contains(&"ter:NoConfig")
+    );
+    call(
+        &cam,
+        TR2,
+        "SetAudioEncoderConfiguration",
+        r#"<Configuration token="audio_encoder"><tt:Encoding>PCMU</tt:Encoding><tt:SampleRate>8</tt:SampleRate></Configuration>"#,
+    );
+    assert!(fault(&cam, TR2, "SetAudioEncoderConfiguration", r#"<Configuration token="audio_encoder"><tt:Encoding>PCMA</tt:Encoding></Configuration>"#).subcodes.contains(&"ter:ConfigModify"));
+    call(
+        &cam,
+        TR2,
+        "SetVideoSourceConfiguration",
+        r#"<Configuration token="video_source_config"><tt:Bounds x="0" y="0" width="2560" height="1440"/></Configuration>"#,
+    );
+    assert!(fault(&cam, TR2, "SetVideoSourceConfiguration", r#"<Configuration token="video_source_config"><tt:Bounds x="0" y="0" width="1" height="1"/></Configuration>"#).subcodes.contains(&"ter:ConfigModify"));
+    // Adding what the profile holds is a no-op; anything else is unknown; nothing can be removed.
+    call(
+        &cam,
+        TR2,
+        "AddConfiguration",
+        "<ProfileToken>main</ProfileToken><Configuration><Type>VideoEncoder</Type><Token>main_video</Token></Configuration>",
+    );
+    assert!(fault(&cam, TR2, "AddConfiguration", "<ProfileToken>main</ProfileToken><Configuration><Type>VideoEncoder</Type><Token>sub_video</Token></Configuration>").subcodes.contains(&"ter:NoConfig"));
+    assert!(
+        fault(
+            &cam,
+            TR2,
+            "RemoveConfiguration",
+            "<ProfileToken>main</ProfileToken><Configuration><Type>PTZ</Type></Configuration>"
+        )
+        .subcodes
+        .contains(&"ter:ConfigModify")
+    );
+    assert!(
+        fault(
+            &cam,
+            TR2,
+            "RemoveConfiguration",
+            "<ProfileToken>x</ProfileToken>"
+        )
+        .subcodes
+        .contains(&"ter:NoProfile")
     );
 }

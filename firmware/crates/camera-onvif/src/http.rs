@@ -581,6 +581,7 @@ fn route(
         rtsp_port: server.rtsp_port,
         http_port,
         camera: server.camera.as_ref(),
+        user: &server.creds.user,
         subscription,
     };
     // Only the Events services touch the subscription book; every other call (PTZ moves, preset writes

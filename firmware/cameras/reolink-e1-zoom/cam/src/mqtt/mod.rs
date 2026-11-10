@@ -314,6 +314,14 @@ pub enum Command {
     PanBy(i32),
     TiltBy(i32),
     ZoomBy(i32),
+    /// Pan and tilt together to an absolute position, both axes in one move (ONVIF `AbsoluteMove`).
+    PanTilt(u32, u32),
+    /// Pan and tilt by a fraction of the picture shown, in thousandths: `x` of its width right, `y` of its
+    /// height up (ONVIF `RelativeMove` in the field-of-view space), both axes in one move.
+    Fov {
+        x: i16,
+        y: i16,
+    },
     /// Go to the named preset; its position is resolved on the hardware thread.
     Preset(String),
     /// Save where the camera stands as the named preset's position (`preset_save/set`).
@@ -336,6 +344,28 @@ pub enum Command {
     Focus(u32),
     Stop,
 }
+impl Command {
+    /// Whether this command makes the head or lens move (ONVIF `MoveStatus` reads `MOVING` from its arrival).
+    pub fn moves(&self) -> bool {
+        match self {
+            Self::Pan(_)
+            | Self::Tilt(_)
+            | Self::Zoom(_)
+            | Self::PanBy(_)
+            | Self::TiltBy(_)
+            | Self::ZoomBy(_)
+            | Self::PanTilt(..)
+            | Self::Fov { .. }
+            | Self::Preset(_)
+            | Self::Velocity(_)
+            | Self::Home
+            | Self::Position3d(_) => true,
+            Self::Move(m) => *m != Move::Stop,
+            _ => false,
+        }
+    }
+}
+
 impl Config {
     /// Retained commands are never executed, including a retained reboot from an old connection.
     pub fn command(
@@ -473,11 +503,33 @@ pub trait Hardware: Send {
     fn preset_names(&self) -> Option<Vec<String>> {
         None
     }
+    /// The confirmed pan, tilt and zoom in steps, `None` while pan/tilt is unknown.
+    fn pose(&mut self) -> Option<Pose> {
+        None
+    }
+    /// A hold (pan/tilt or zoom) is running, so the head or lens is still moving after `apply` returned.
+    fn busy(&self) -> bool {
+        false
+    }
+}
+
+/// Confirmed pan, tilt and zoom in motor steps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Pose {
+    pub pan: u32,
+    pub tilt: u32,
+    pub zoom: u32,
 }
 
 impl Hardware for Box<dyn Hardware> {
     fn preset_names(&self) -> Option<Vec<String>> {
         (**self).preset_names()
+    }
+    fn pose(&mut self) -> Option<Pose> {
+        (**self).pose()
+    }
+    fn busy(&self) -> bool {
+        (**self).busy()
     }
     fn failed(&self) -> bool {
         (**self).failed()
@@ -572,6 +624,14 @@ struct Shared<'a, H> {
     log: &'a LogBudget,
 }
 impl<H: Hardware> Shared<'_, H> {
+    /// Publishes whether the head or lens still moves (a hold is running) and, when `read_pose`, where they
+    /// stand, for ONVIF `GetStatus`.
+    fn publish_motion(&mut self, read_pose: bool) {
+        let pose = read_pose.then(|| self.hw.pose()).flatten();
+        self.motion
+            .settle(self.hw.busy(), read_pose.then_some(pose));
+    }
+
     fn sync_presets(&self) {
         if let Some(names) = self.hw.preset_names()
             && self.motion.set_presets(names.clone())
@@ -590,6 +650,10 @@ impl<H: Hardware> transport::Hardware<Command> for Shared<'_, H> {
         command: &transport::Command<Command>,
         received: Duration,
     ) -> Result<(), String> {
+        let moves = matches!(command, transport::Command::App(c) if c.moves());
+        if moves {
+            self.motion.set_busy(true);
+        }
         let result = match command {
             transport::Command::App(c) => self.hw.apply_at(c, received),
             transport::Command::Stop => self.hw.apply_at(&Command::Stop, received),
@@ -597,10 +661,17 @@ impl<H: Hardware> transport::Hardware<Command> for Shared<'_, H> {
             transport::Command::Setting { .. } => Err("no slot settings on this camera".into()),
         };
         self.sync_presets();
+        self.publish_motion(moves || matches!(command, transport::Command::Stop));
         result
     }
     fn tick(&mut self, now: Duration) -> Result<Option<Duration>, String> {
-        self.hw.tick(now)
+        let result = self.hw.tick(now);
+        // A hold ends inside a tick; the pose is read once, as it settles.
+        let was_busy = self.motion.busy();
+        if was_busy || self.hw.busy() {
+            self.publish_motion(was_busy);
+        }
+        result
     }
     fn states(&mut self) -> Result<BTreeMap<String, String>, String> {
         let mut states = self.hw.states()?;
@@ -611,6 +682,7 @@ impl<H: Hardware> transport::Hardware<Command> for Shared<'_, H> {
         for id in ["pan", "tilt", "preset"] {
             states.entry(id.into()).or_default();
         }
+        self.motion.set_states(&states);
         Ok(states)
     }
     fn changed(&mut self) -> bool {

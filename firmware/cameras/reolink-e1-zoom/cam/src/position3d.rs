@@ -95,6 +95,44 @@ impl Optics {
         last.0
     }
 
+    /// The position `dx` frame widths right and `dy` frame widths up of `at`, under the picture's
+    /// `orientation`, clamped to `travel`. The picture is the displayed one: mirror and flip reverse an axis.
+    pub fn shift(
+        &self,
+        dx: f64,
+        dy: f64,
+        at: Position,
+        zoom: u32,
+        orientation: Orientation,
+        travel: (u32, u32),
+    ) -> Position {
+        let sign = |grows: bool, reversed: bool| if grows ^ reversed { 1.0 } else { -1.0 };
+        let pan = sign(self.pan_right_grows, orientation.mirror()) * self.steps(dx, zoom);
+        let tilt =
+            sign(self.tilt_up_grows, orientation.flip()) * self.tilt_ratio * self.steps(dy, zoom);
+        let shift = |from: u32, by: f64, max: u32| {
+            (f64::from(from) + by).round().clamp(0.0, f64::from(max)) as u32
+        };
+        Position {
+            pan: shift(at.pan, pan, travel.0),
+            tilt: shift(at.tilt, tilt, travel.1),
+        }
+    }
+
+    /// [`Optics::shift`] for a move of `x` picture widths and `y` picture **heights** (ONVIF's field-of-view
+    /// space: 1.0 is one whole picture), positive right and up.
+    pub fn shift_fov(
+        &self,
+        x: f64,
+        y: f64,
+        at: Position,
+        zoom: u32,
+        orientation: Orientation,
+        travel: (u32, u32),
+    ) -> Position {
+        self.shift(x, y * ASPECT, at, zoom, orientation, travel)
+    }
+
     /// The target for `req` from the confirmed `at` position and lens `zoom`, under the picture's
     /// `orientation`, clamped to `travel` (pan max, tilt max) and `zoom_max`.
     pub fn target(
@@ -113,17 +151,7 @@ impl Optics {
         );
         // Offsets from the centre in frame widths; y counts from the bottom, so +dy is up.
         let (dx, dy) = (cx - 0.5, (cy - 0.5) * ASPECT);
-        let sign = |grows: bool, reversed: bool| if grows ^ reversed { 1.0 } else { -1.0 };
-        let pan = sign(self.pan_right_grows, orientation.mirror()) * self.steps(dx, zoom);
-        let tilt =
-            sign(self.tilt_up_grows, orientation.flip()) * self.tilt_ratio * self.steps(dy, zoom);
-        let shift = |from: u32, by: f64, max: u32| {
-            (f64::from(from) + by).round().clamp(0.0, f64::from(max)) as u32
-        };
-        let position = Position {
-            pan: shift(at.pan, pan, travel.0),
-            tilt: shift(at.tilt, tilt, travel.1),
-        };
+        let position = self.shift(dx, dy, at, zoom, orientation, travel);
         let zoom = (!req.is_point()).then(|| {
             let w = (unit(req.end.0) - unit(req.start.0)).abs();
             let h = (unit(req.end.1) - unit(req.start.1)).abs();
@@ -265,6 +293,48 @@ mod tests {
         };
         let t = OPTICS.target(&point(0, 255), edge, 0, STOCK, (7360, 1240), 1024);
         assert_eq!(t.position, Position { pan: 0, tilt: 1240 });
+    }
+
+    #[test]
+    fn a_field_of_view_move_is_the_same_map_in_picture_units() {
+        let go = |x, y, zoom, o| OPTICS.shift_fov(x, y, AT, zoom, o, (7360, 1240));
+        // Half a picture right at zoom 0 is the right-edge point: 1050 steps.
+        assert_eq!(go(0.5, 0.0, 0, STOCK).pan, AT.pan + 1050);
+        // A whole picture height up is 0.75 widths: (2000·0.75 + 400·0.75³) · 0.5 tilt steps.
+        let low = Position { pan: 3000, tilt: 0 };
+        let up = OPTICS.shift_fov(0.0, 1.0, low, 0, STOCK, (7360, 1240));
+        assert_eq!(
+            up.tilt,
+            ((2000.0 * 0.75 + 400.0 * 0.421875) * 0.5_f64).round() as u32
+        );
+        // Narrower at zoom 1024, and zero is no move.
+        assert_eq!(go(0.5, 0.0, 1024, STOCK).pan, AT.pan + 500);
+        assert_eq!(go(0.0, 0.0, 0, STOCK), AT);
+        // Mirror reverses pan only, flip tilt only; travel clamps.
+        assert_eq!(
+            go(0.5, 0.0, 0, Orientation::new(true, false)).pan,
+            AT.pan - 1050
+        );
+        assert_eq!(go(0.0, 0.5, 0, Orientation::new(false, true)).pan, AT.pan);
+        assert!(go(0.0, 0.5, 0, Orientation::new(false, true)).tilt < AT.tilt);
+        let edge = OPTICS.shift_fov(
+            1.0,
+            1.0,
+            Position {
+                pan: 7300,
+                tilt: 1230,
+            },
+            0,
+            STOCK,
+            (7360, 1240),
+        );
+        assert_eq!(
+            edge,
+            Position {
+                pan: 7360,
+                tilt: 1240
+            }
+        );
     }
 
     #[test]

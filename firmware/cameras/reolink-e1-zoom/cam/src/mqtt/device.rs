@@ -683,6 +683,8 @@ impl<B: Bus + Send, I: Isp + Send, H: Hw + Send, O: Platform> Hardware for Devic
             | Command::PanBy(_)
             | Command::TiltBy(_)
             | Command::ZoomBy(_)
+            | Command::PanTilt(..)
+            | Command::Fov { .. }
             | Command::Position3d(_)
             | Command::Preset(_) => {
                 self.preset = None;
@@ -695,6 +697,25 @@ impl<B: Bus + Send, I: Isp + Send, H: Hw + Send, O: Platform> Hardware for Devic
                     Command::Pan(n) => pos.pan = *n,
                     Command::Tilt(n) => pos.tilt = *n,
                     Command::Zoom(n) => return self.zoom(*n),
+                    Command::PanTilt(pan, tilt) => {
+                        pos = Position {
+                            pan: (*pan).min(crate::ptz::PAN_MAX),
+                            tilt: (*tilt).min(crate::ptz::TILT_MAX),
+                        }
+                    }
+                    Command::Fov { x, y } => {
+                        // The same measured map as a tap, at the lens's real zoom now: a move made by
+                        // picture fractions covers the right distance wherever the lens stands.
+                        let zoom = self.lens.positions().map_err(|e| e.to_string())?.zoom;
+                        pos = crate::position3d::Optics::E1_ZOOM.shift_fov(
+                            f64::from(*x) / 1000.0,
+                            f64::from(*y) / 1000.0,
+                            pos,
+                            zoom,
+                            self.store.settings().orientation(),
+                            (crate::ptz::PAN_MAX, crate::ptz::TILT_MAX),
+                        )
+                    }
                     Command::PanBy(n) => {
                         pos.pan = pos.pan.saturating_add_signed(*n).min(crate::ptz::PAN_MAX)
                     }
@@ -982,6 +1003,18 @@ impl<B: Bus + Send, I: Isp + Send, H: Hw + Send, O: Platform> Hardware for Devic
     }
     fn preset_names(&self) -> Option<Vec<String>> {
         Some(self.presets.names())
+    }
+    fn pose(&mut self) -> Option<super::Pose> {
+        let p = self.ptz.position()?;
+        let zoom = self.lens.positions().ok()?.zoom;
+        Some(super::Pose {
+            pan: p.pan,
+            tilt: p.tilt,
+            zoom,
+        })
+    }
+    fn busy(&self) -> bool {
+        self.ptz.holding() || self.lens.holding()
     }
 
     fn changed(&mut self) -> bool {

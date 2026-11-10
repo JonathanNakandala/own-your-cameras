@@ -6,9 +6,12 @@
 //! no-op, any other value is `ter:InvalidArgVal`. PTZ moves and presets act through the camera's motion
 //! owner. Unknown actions are `ter:ActionNotSupported`.
 
-use crate::camera::{MediaProfile, OnvifCamera, PtzError, PtzPort, Velocity};
+use crate::camera::{
+    Absolute, MediaProfile, OnvifCamera, PtzError, PtzFeatures, PtzPort, Relative, RelayError,
+    Velocity,
+};
 use crate::events::{self, EventError, Message, PullPointBook, Termination};
-use crate::soap::{Fault, Request, TDS, TEV, TMD, TPTZ, TRT, WSNT};
+use crate::soap::{Fault, Request, TDS, TEV, TIMG, TMD, TPTZ, TR2, TRT, WSNT};
 use crate::time;
 use crate::xml::{Element, escape};
 use std::time::{Duration, SystemTime};
@@ -26,6 +29,14 @@ const PTZ_CONFIG: &str = "ptz_config";
 const PAN_TILT_VELOCITY: &str =
     "http://www.onvif.org/ver10/tptz/PanTiltSpaces/VelocityGenericSpace";
 const ZOOM_VELOCITY: &str = "http://www.onvif.org/ver10/tptz/ZoomSpaces/VelocityGenericSpace";
+const PAN_TILT_POSITION: &str =
+    "http://www.onvif.org/ver10/tptz/PanTiltSpaces/PositionGenericSpace";
+const ZOOM_POSITION: &str = "http://www.onvif.org/ver10/tptz/ZoomSpaces/PositionGenericSpace";
+/// Pan/tilt as a fraction of the picture: what Frigate's autotracking requires of a camera.
+const PAN_TILT_FOV: &str = "http://www.onvif.org/ver10/tptz/PanTiltSpaces/TranslationSpaceFov";
+const ZOOM_TRANSLATION: &str = "http://www.onvif.org/ver10/tptz/ZoomSpaces/TranslationGenericSpace";
+const PAN_TILT_SPEED: &str = "http://www.onvif.org/ver10/tptz/PanTiltSpaces/GenericSpeedSpace";
+const ZOOM_SPEED: &str = "http://www.onvif.org/ver10/tptz/ZoomSpaces/ZoomGenericSpeedSpace";
 /// A ContinuousMove without `Timeout` stops after this (`DefaultPTZTimeout`).
 pub const DEFAULT_MOVE: Duration = Duration::from_secs(10);
 pub const MAX_MOVE: Duration = Duration::from_secs(60);
@@ -42,6 +53,8 @@ pub struct Context<'a> {
     pub rtsp_port: u16,
     pub http_port: u16,
     pub camera: &'a dyn OnvifCamera,
+    /// The one user name the camera knows (its RTSP user), for `GetUsers`.
+    pub user: &'a str,
     /// The subscription a request path names (`/onvif/subscription/N`).
     pub subscription: Option<u32>,
 }
@@ -138,12 +151,17 @@ pub fn handle(req: &Request, ctx: &Context, book: &mut PullPointBook) -> Reply {
     match req.ns.as_str() {
         TDS => device(req, ctx),
         TRT => media(req, ctx),
+        TR2 => media2::handle(req, ctx),
         TPTZ => match ctx.camera.ptz() {
             Some(ptz) => ptz_service(req, ctx, ptz),
             None => Reply::Fault(Fault::action_not_supported()),
         },
         TEV | WSNT => event_service(req, ctx, book),
         TMD => device_io(req, ctx),
+        TIMG => match ctx.camera.imaging() {
+            Some(port) => imaging::handle(req, ctx, port),
+            None => Reply::Fault(Fault::action_not_supported()),
+        },
         _ => Reply::Fault(Fault::action_not_supported()),
     }
 }
@@ -154,20 +172,26 @@ fn services(ctx: &Context) -> Vec<(&'static str, &'static str, &'static str)> {
     let mut out = vec![
         (TDS, "/onvif/device_service", "tds"),
         (TRT, "/onvif/media_service", "trt"),
+        (TR2, "/onvif/media2_service", "tr2"),
         (TEV, "/onvif/events_service", "tev"),
         (TMD, "/onvif/deviceio_service", "tmd"),
     ];
     if ctx.camera.ptz().is_some() {
         out.push((TPTZ, "/onvif/ptz_service", "tptz"));
     }
+    if ctx.camera.imaging().is_some() {
+        out.push((TIMG, "/onvif/imaging_service", "timg"));
+    }
     out
 }
 
-fn device_service_capabilities() -> String {
-    "<tds:Capabilities><tds:Network IPFilter=\"false\" ZeroConfiguration=\"false\" IPVersion6=\"false\" DynDNS=\"false\" NTP=\"0\"/>\
+fn device_service_capabilities(ctx: &Context) -> String {
+    let logging = ctx.camera.keeps_log();
+    format!(
+        "<tds:Capabilities><tds:Network IPFilter=\"false\" ZeroConfiguration=\"false\" IPVersion6=\"false\" DynDNS=\"false\" NTP=\"0\"/>\
 <tds:Security TLS1.0=\"false\" TLS1.1=\"false\" TLS1.2=\"false\" OnboardKeyGeneration=\"false\" AccessPolicyConfig=\"false\" DefaultAccessPolicy=\"false\" Dot1X=\"false\" RemoteUserHandling=\"false\" X.509Token=\"false\" SAMLToken=\"false\" KerberosToken=\"false\" UsernameToken=\"true\" HttpDigest=\"true\" RELToken=\"false\"/>\
-<tds:System DiscoveryResolve=\"false\" DiscoveryBye=\"true\" RemoteDiscovery=\"false\" SystemBackup=\"false\" SystemLogging=\"false\" FirmwareUpgrade=\"false\" HttpFirmwareUpgrade=\"false\" HttpSystemBackup=\"false\" HttpSystemLogging=\"false\" HttpSupportInformation=\"false\"/></tds:Capabilities>"
-        .to_string()
+<tds:System DiscoveryResolve=\"false\" DiscoveryBye=\"true\" RemoteDiscovery=\"false\" SystemBackup=\"false\" SystemLogging=\"{logging}\" FirmwareUpgrade=\"false\" HttpFirmwareUpgrade=\"false\" HttpSystemBackup=\"false\" HttpSystemLogging=\"false\" HttpSupportInformation=\"false\"/></tds:Capabilities>"
+    )
 }
 
 fn media_service_capabilities(profiles: usize) -> String {
@@ -180,9 +204,10 @@ fn media_service_capabilities(profiles: usize) -> String {
 /// button for a camera whose only audio output is in the Media service).
 fn device_io_service_capabilities(ctx: &Context) -> String {
     format!(
-        "<tmd:Capabilities VideoSources=\"1\" VideoOutputs=\"0\" AudioSources=\"{}\" AudioOutputs=\"{}\" RelayOutputs=\"0\" SerialPorts=\"0\" DigitalInputs=\"{}\" DigitalInputOptions=\"false\"/>",
+        "<tmd:Capabilities VideoSources=\"1\" VideoOutputs=\"0\" AudioSources=\"{}\" AudioOutputs=\"{}\" RelayOutputs=\"{}\" SerialPorts=\"0\" DigitalInputs=\"{}\" DigitalInputOptions=\"false\"/>",
         audio_sources(ctx),
         audio_outputs(ctx),
+        ctx.camera.relay_outputs().len(),
         ctx.camera.digital_inputs().len()
     )
 }
@@ -193,6 +218,36 @@ fn audio_sources(ctx: &Context) -> usize {
 
 fn audio_outputs(ctx: &Context) -> usize {
     usize::from(ctx.camera.audio_output())
+}
+
+fn relay_token_fault() -> Reply {
+    Reply::Fault(Fault::invalid_arg("ter:RelayToken", "No such relay output"))
+}
+
+/// Every relay output is bistable and idles open (inactive): the one setting there is. Asking for the
+/// same is accepted, anything else (monostable, an inverted idle state) is refused.
+fn relay_settings(
+    ctx: &Context,
+    token: Option<&str>,
+    props: Option<&Element>,
+) -> Result<(), Fault> {
+    if !token.is_some_and(|t| ctx.camera.relay_outputs().contains(&t)) {
+        return Err(Fault::invalid_arg("ter:RelayToken", "No such relay output"));
+    }
+    let props = props.ok_or_else(|| Fault::invalid_arg("ter:ModeError", "No Properties"))?;
+    if props.text_of("Mode") != Some("Bistable") {
+        return Err(Fault::invalid_arg(
+            "ter:ModeError",
+            "Only the bistable mode is supported",
+        ));
+    }
+    if props.text_of("IdleState") != Some("open") {
+        return Err(Fault::invalid_arg(
+            "ter:ModeError",
+            "The idle state is open",
+        ));
+    }
+    Ok(())
 }
 
 fn device_io(req: &Request, ctx: &Context) -> Reply {
@@ -210,7 +265,31 @@ fn device_io(req: &Request, ctx: &Context) -> Reply {
         "GetVideoSources" => reply(text("tmd:Token", VIDEO_SOURCE)),
         "GetAudioSources" => reply(token(audio_sources(ctx), AUDIO_SOURCE)),
         "GetAudioOutputs" => reply(token(audio_outputs(ctx), AUDIO_OUTPUT)),
-        "GetVideoOutputs" | "GetRelayOutputs" | "GetSerialPorts" => reply(String::new()),
+        "GetVideoOutputs" | "GetSerialPorts" => reply(String::new()),
+        "GetRelayOutputOptions" => {
+            let wanted = req.body.text_of("RelayOutputToken");
+            let known = ctx.camera.relay_outputs();
+            if wanted.is_some_and(|t| !known.contains(&t)) {
+                return relay_token_fault();
+            }
+            reply(
+                known
+                    .iter()
+                    .filter(|t| wanted.is_none_or(|w| w == **t))
+                    .map(|t| {
+                        format!(
+                            "<tmd:RelayOutputOptions token=\"{t}\"><tmd:Mode>Bistable</tmd:Mode></tmd:RelayOutputOptions>"
+                        )
+                    })
+                    .collect(),
+            )
+        }
+        "SetRelayOutputSettings" => {
+            let relay = req.body.child("RelayOutput");
+            let token = relay.and_then(|r| r.attr("token"));
+            relay_settings(ctx, token, relay.and_then(|r| r.child("Properties")))
+                .map_or_else(Reply::Fault, |()| reply(String::new()))
+        }
         "GetDigitalInputs" => reply(
             ctx.camera
                 .digital_inputs()
@@ -222,8 +301,11 @@ fn device_io(req: &Request, ctx: &Context) -> Reply {
     }
 }
 
-fn ptz_service_capabilities() -> String {
-    "<tptz:Capabilities EFlip=\"false\" Reverse=\"false\" GetCompatibleConfigurations=\"false\" MoveStatus=\"true\" StatusPosition=\"false\"/>".into()
+fn ptz_service_capabilities(features: PtzFeatures) -> String {
+    format!(
+        "<tptz:Capabilities EFlip=\"false\" Reverse=\"false\" GetCompatibleConfigurations=\"true\" MoveStatus=\"true\" StatusPosition=\"{}\"/>",
+        features.position
+    )
 }
 
 fn event_service_capabilities() -> String {
@@ -238,19 +320,23 @@ fn capabilities(ctx: &Context, category: &str) -> String {
     let want = |c: &str| all || category == c;
     let mut out = String::new();
     if want("Device") {
+        let system = format!(
+            "<tt:System><tt:DiscoveryResolve>false</tt:DiscoveryResolve><tt:DiscoveryBye>true</tt:DiscoveryBye><tt:RemoteDiscovery>false</tt:RemoteDiscovery><tt:SystemBackup>false</tt:SystemBackup><tt:SystemLogging>{}</tt:SystemLogging><tt:FirmwareUpgrade>false</tt:FirmwareUpgrade><tt:SupportedVersions><tt:Major>2</tt:Major><tt:Minor>5</tt:Minor></tt:SupportedVersions></tt:System>",
+            ctx.camera.keeps_log()
+        );
         out.push_str(&el(
             "tt:Device",
             format!(
                 "{}{}{}{}{}",
                 text("tt:XAddr", url(ctx, "/onvif/device_service")),
                 "<tt:Network><tt:IPFilter>false</tt:IPFilter><tt:ZeroConfiguration>false</tt:ZeroConfiguration><tt:IPVersion6>false</tt:IPVersion6><tt:DynDNS>false</tt:DynDNS></tt:Network>",
-                "<tt:System><tt:DiscoveryResolve>false</tt:DiscoveryResolve><tt:DiscoveryBye>true</tt:DiscoveryBye><tt:RemoteDiscovery>false</tt:RemoteDiscovery><tt:SystemBackup>false</tt:SystemBackup><tt:SystemLogging>false</tt:SystemLogging><tt:FirmwareUpgrade>false</tt:FirmwareUpgrade><tt:SupportedVersions><tt:Major>2</tt:Major><tt:Minor>5</tt:Minor></tt:SupportedVersions></tt:System>",
+                system,
                 el(
                     "tt:IO",
                     format!(
                         "{}{}",
                         text("tt:InputConnectors", ctx.camera.digital_inputs().len()),
-                        text("tt:RelayOutputs", 0)
+                        text("tt:RelayOutputs", ctx.camera.relay_outputs().len())
                     )
                 ),
                 "<tt:Security><tt:TLS1.1>false</tt:TLS1.1><tt:TLS1.2>false</tt:TLS1.2><tt:OnboardKeyGeneration>false</tt:OnboardKeyGeneration><tt:AccessPolicyConfig>false</tt:AccessPolicyConfig><tt:X.509Token>false</tt:X.509Token><tt:SAMLToken>false</tt:SAMLToken><tt:KerberosToken>false</tt:KerberosToken><tt:RELToken>false</tt:RELToken></tt:Security>",
@@ -264,6 +350,12 @@ fn capabilities(ctx: &Context, category: &str) -> String {
                 "{}<tt:WSSubscriptionPolicySupport>false</tt:WSSubscriptionPolicySupport><tt:WSPullPointSupport>true</tt:WSPullPointSupport><tt:WSPausableSubscriptionManagerInterfaceSupport>false</tt:WSPausableSubscriptionManagerInterfaceSupport>",
                 text("tt:XAddr", url(ctx, "/onvif/events_service"))
             ),
+        ));
+    }
+    if want("Imaging") && ctx.camera.imaging().is_some() {
+        out.push_str(&el(
+            "tt:Imaging",
+            text("tt:XAddr", url(ctx, "/onvif/imaging_service")),
         ));
     }
     if want("Media") {
@@ -293,12 +385,27 @@ fn capabilities(ctx: &Context, category: &str) -> String {
                     text("tt:VideoOutputs", 0),
                     text("tt:AudioSources", audio_sources(ctx)),
                     text("tt:AudioOutputs", audio_outputs(ctx)),
-                    text("tt:RelayOutputs", 0)
+                    text("tt:RelayOutputs", ctx.camera.relay_outputs().len())
                 ),
             ),
         ));
     }
     out
+}
+
+/// What to quote to whoever supports this camera: the identity, one `key: value` per line.
+fn support_information(ctx: &Context) -> String {
+    let id = ctx.camera.identity();
+    format!(
+        "Manufacturer: {}\nModel: {}\nFirmware: {}\nHardware: {}\nSerial: {}\nMAC: {}\nHostname: {}\nONVIF: 2.5 (Profile S)\n",
+        id.manufacturer,
+        id.model,
+        id.firmware,
+        id.hardware,
+        id.serial(),
+        id.mac_text(),
+        id.hostname,
+    )
 }
 
 fn device(req: &Request, ctx: &Context) -> Reply {
@@ -333,10 +440,14 @@ fn device(req: &Request, ctx: &Context) -> Reply {
                 .map(|(ns, path, prefix)| {
                     let caps = if with_caps {
                         let c = match prefix {
-                            "tds" => device_service_capabilities(),
+                            "tds" => device_service_capabilities(ctx),
                             "trt" => media_service_capabilities(profiles),
-                            "tptz" => ptz_service_capabilities(),
+                            "tptz" => ptz_service_capabilities(
+                                ctx.camera.ptz().map(|p| p.features()).unwrap_or_default(),
+                            ),
                             "tmd" => device_io_service_capabilities(ctx),
+                            "timg" => imaging::capabilities(),
+                            "tr2" => media2::capabilities(ctx),
                             _ => event_service_capabilities(),
                         };
                         el("tds:Capabilities", c)
@@ -355,7 +466,7 @@ fn device(req: &Request, ctx: &Context) -> Reply {
                 .collect();
             reply(inner)
         }
-        "GetServiceCapabilities" => reply(device_service_capabilities()),
+        "GetServiceCapabilities" => reply(device_service_capabilities(ctx)),
         "GetSystemDateAndTime" => reply(el(
             "tds:SystemDateAndTime",
             format!(
@@ -474,7 +585,66 @@ fn device(req: &Request, ctx: &Context) -> Reply {
             "<tds:WsdlUrl>http://www.onvif.org/ver10/device/wsdl/devicemgmt.wsdl</tds:WsdlUrl>"
                 .into(),
         ),
-        "GetRelayOutputs" => reply(String::new()),
+        "GetRelayOutputs" => reply(
+            ctx.camera
+                .relay_outputs()
+                .iter()
+                .map(|t| {
+                    format!(
+                        "<tds:RelayOutputs token=\"{t}\"><tt:Properties><tt:Mode>Bistable</tt:Mode><tt:IdleState>open</tt:IdleState></tt:Properties></tds:RelayOutputs>"
+                    )
+                })
+                .collect(),
+        ),
+        "SetRelayOutputState" => {
+            let token = req.body.text_of("RelayOutputToken").unwrap_or_default();
+            let active = match req.body.text_of("LogicalState") {
+                Some("active") => true,
+                Some("inactive") => false,
+                _ => {
+                    return Reply::Fault(Fault::invalid_arg(
+                        "ter:InvalidArgs",
+                        "LogicalState is active or inactive",
+                    ));
+                }
+            };
+            match ctx.camera.set_relay_output(token, active) {
+                Ok(()) => reply(String::new()),
+                Err(RelayError::NoSuchRelay) => relay_token_fault(),
+                Err(RelayError::Failed(why)) => Reply::Fault(Fault::receiver(&["ter:Action"], why)),
+            }
+        }
+        "SetRelayOutputSettings" => relay_settings(
+            ctx,
+            req.body.text_of("RelayOutputToken"),
+            req.body.child("Properties"),
+        )
+        .map_or_else(Reply::Fault, |()| reply(String::new())),
+        "GetUsers" => reply(format!(
+            "<tds:User>{}{}</tds:User>",
+            text("tt:Username", ctx.user),
+            text("tt:UserLevel", "Administrator")
+        )),
+        "SystemReboot" => match ctx.camera.reboot() {
+            Some(Ok(())) => reply(text("tds:Message", "Rebooting")),
+            Some(Err(why)) => Reply::Fault(Fault::receiver(&["ter:Action"], why)),
+            None => Reply::Fault(Fault::action_not_supported()),
+        },
+        "GetSystemLog" => match (req.body.text_of("LogType"), ctx.camera.system_log()) {
+            (Some("System"), Some(log)) => reply(el("tds:SystemLog", text("tt:String", log))),
+            (Some("System" | "Access"), _) => Reply::Fault(Fault::invalid_arg(
+                "ter:SystemlogUnavailable",
+                "The camera keeps no such log",
+            )),
+            _ => Reply::Fault(Fault::invalid_arg(
+                "ter:InvalidArgs",
+                "LogType is System or Access",
+            )),
+        },
+        "GetSystemSupportInformation" => reply(el(
+            "tds:SupportInformation",
+            text("tt:String", support_information(ctx)),
+        )),
         _ => Reply::Fault(Fault::action_not_supported()),
     }
 }
@@ -558,21 +728,57 @@ fn audio_encoder_config(element: &str, uses: usize) -> String {
     )
 }
 
-fn ptz_config(element: &str, uses: usize, zoom: bool) -> String {
-    let zoom_space = if zoom {
-        text("tt:DefaultContinuousZoomVelocitySpace", ZOOM_VELOCITY)
-    } else {
-        String::new()
-    };
+fn ptz_config(element: &str, uses: usize, ptz: &dyn PtzPort) -> String {
+    let (zoom, features) = (ptz.zoom(), ptz.features());
+    let mut defaults = String::new();
+    // The schema's order: absolute, relative, continuous, speed, timeout.
+    if features.absolute {
+        defaults.push_str(&text(
+            "tt:DefaultAbsolutePantTiltPositionSpace",
+            PAN_TILT_POSITION,
+        ));
+        if zoom {
+            defaults.push_str(&text("tt:DefaultAbsoluteZoomPositionSpace", ZOOM_POSITION));
+        }
+    }
+    if features.relative {
+        defaults.push_str(&text(
+            "tt:DefaultRelativePanTiltTranslationSpace",
+            PAN_TILT_FOV,
+        ));
+        if zoom {
+            defaults.push_str(&text(
+                "tt:DefaultRelativeZoomTranslationSpace",
+                ZOOM_TRANSLATION,
+            ));
+        }
+    }
+    defaults.push_str(&text(
+        "tt:DefaultContinuousPanTiltVelocitySpace",
+        PAN_TILT_VELOCITY,
+    ));
+    if zoom {
+        defaults.push_str(&text(
+            "tt:DefaultContinuousZoomVelocitySpace",
+            ZOOM_VELOCITY,
+        ));
+    }
+    if features.relative || features.absolute {
+        // Clients read the default speed to fill their moves' `Speed`; a full-speed default.
+        let zoom_speed = if zoom {
+            format!("<tt:Zoom x=\"1\" space=\"{ZOOM_SPEED}\"/>")
+        } else {
+            String::new()
+        };
+        defaults.push_str(&format!(
+            "<tt:DefaultPTZSpeed><tt:PanTilt x=\"1\" y=\"1\" space=\"{PAN_TILT_SPEED}\"/>{zoom_speed}</tt:DefaultPTZSpeed>"
+        ));
+    }
     format!(
-        "<{element} token=\"{PTZ_CONFIG}\">{}{}{}{}{zoom_space}{}</{element}>",
+        "<{element} token=\"{PTZ_CONFIG}\">{}{}{}{defaults}{}</{element}>",
         text("tt:Name", PTZ_CONFIG),
         text("tt:UseCount", uses),
         text("tt:NodeToken", PTZ_NODE),
-        text(
-            "tt:DefaultContinuousPanTiltVelocitySpace",
-            PAN_TILT_VELOCITY
-        ),
         text("tt:DefaultPTZTimeout", time::format_duration(DEFAULT_MOVE)),
     )
 }
@@ -610,7 +816,7 @@ fn profile_xml(ctx: &Context, p: &MediaProfile, element: &str) -> String {
         inner.push_str(&audio_encoder_config("tt:AudioEncoderConfiguration", uses));
     }
     if let Some(ptz) = ctx.camera.ptz() {
-        inner.push_str(&ptz_config("tt:PTZConfiguration", uses, ptz.zoom()));
+        inner.push_str(&ptz_config("tt:PTZConfiguration", uses, ptz));
     }
     if ctx.camera.audio_output() {
         inner.push_str(&el(
@@ -826,6 +1032,14 @@ fn media(req: &Request, ctx: &Context) -> Reply {
             }
             Err(fault) => fault,
         },
+        // The stream's key frames come every second, so a client that asks for one waits at most that long:
+        // nothing needs forcing, and the request is valid for any profile of ours.
+        "SetSynchronizationPoint" => match find_profile(ctx, req) {
+            Some(_) => reply(String::new()),
+            None => no_profile(),
+        },
+        // No metadata stream exists, so there is nothing to configure.
+        "GetMetadataConfigurations" => reply(String::new()),
         "GetGuaranteedNumberOfVideoEncoderInstances" => reply(format!(
             "{}{}",
             text("trt:TotalNumber", uses),
@@ -998,6 +1212,7 @@ fn ptz_fault(e: PtzError) -> Reply {
             "Preset store is full",
         ),
         PtzError::InvalidName => Fault::invalid_arg("ter:InvalidPresetName", "Invalid preset name"),
+        PtzError::Unsupported => Fault::action_not_supported(),
         PtzError::Failed(why) => Fault::receiver(&["ter:Action"], why),
     })
 }
@@ -1013,12 +1228,57 @@ fn velocity_space(name: &str, uri: &str, axes: &[&str]) -> String {
     )
 }
 
-fn spaces(zoom: bool) -> String {
-    let mut out = velocity_space(
+fn position_space(name: &str, uri: &str, axes: &[(&str, i32)]) -> String {
+    el(
+        name,
+        format!(
+            "{}{}",
+            text("tt:URI", uri),
+            axes.iter()
+                .map(|(a, min)| range(a, min, 1))
+                .collect::<String>()
+        ),
+    )
+}
+
+/// `SupportedPTZSpaces` / the options' `Spaces`, in the schema's order.
+fn spaces(ptz: &dyn PtzPort) -> String {
+    const XY: [(&str, i32); 2] = [("tt:XRange", -1), ("tt:YRange", -1)];
+    let (zoom, features) = (ptz.zoom(), ptz.features());
+    let mut out = String::new();
+    if features.absolute {
+        out.push_str(&position_space(
+            "tt:AbsolutePanTiltPositionSpace",
+            PAN_TILT_POSITION,
+            &XY,
+        ));
+        if zoom {
+            out.push_str(&position_space(
+                "tt:AbsoluteZoomPositionSpace",
+                ZOOM_POSITION,
+                &[("tt:XRange", 0)],
+            ));
+        }
+    }
+    if features.relative {
+        out.push_str(&position_space(
+            "tt:RelativePanTiltTranslationSpace",
+            PAN_TILT_FOV,
+            &XY,
+        ));
+        if zoom {
+            out.push_str(&position_space(
+                "tt:RelativeZoomTranslationSpace",
+                ZOOM_TRANSLATION,
+                &[("tt:XRange", -1)],
+            ));
+        }
+    }
+    out.push_str(&velocity_space(
         "tt:ContinuousPanTiltVelocitySpace",
         PAN_TILT_VELOCITY,
         &["tt:XRange", "tt:YRange"],
-    );
+    ));
     if zoom {
         out.push_str(&velocity_space(
             "tt:ContinuousZoomVelocitySpace",
@@ -1026,7 +1286,54 @@ fn spaces(zoom: bool) -> String {
             &["tt:XRange"],
         ));
     }
+    if features.relative || features.absolute {
+        out.push_str(&position_space(
+            "tt:PanTiltSpeedSpace",
+            PAN_TILT_SPEED,
+            &[("tt:XRange", 0)],
+        ));
+        if zoom {
+            out.push_str(&position_space(
+                "tt:ZoomSpeedSpace",
+                ZOOM_SPEED,
+                &[("tt:XRange", 0)],
+            ));
+        }
+    }
     out
+}
+
+/// An axis value that must be present and finite (a move's target), clamped to `min..=1`.
+fn target(e: &Element, name: &str, min: f32) -> Result<f32, Fault> {
+    e.attr(name)
+        .and_then(|v| v.parse::<f32>().ok())
+        .filter(|v| v.is_finite())
+        .map(|v| v.clamp(min, 1.0))
+        .ok_or_else(|| Fault::invalid_arg("ter:InvalidPosition", "A move needs finite x and y"))
+}
+
+/// The `Translation` / `Position` child `name` of a move: `None` when the axis is absent. A `space` it names
+/// must be the one we offer for it.
+fn move_axes(
+    body: &Element,
+    parent: &str,
+    name: &str,
+    uri: &str,
+    min: f32,
+    both: bool,
+) -> Result<Option<(f32, f32)>, Fault> {
+    let Some(e) = body.child(parent).and_then(|p| p.child(name)) else {
+        return Ok(None);
+    };
+    if e.attr("space").is_some_and(|s| s != uri) {
+        return Err(Fault::invalid_arg(
+            "ter:SpaceNotSupported",
+            "That coordinate space is not supported",
+        ));
+    }
+    let x = target(e, "x", min)?;
+    let y = if both { target(e, "y", min)? } else { 0.0 };
+    Ok(Some((x, y)))
 }
 
 fn axis(e: Option<&Element>, name: &str) -> f32 {
@@ -1041,10 +1348,16 @@ fn ptz_service(req: &Request, ctx: &Context, ptz: &dyn PtzPort) -> Reply {
     let reply = |inner: String| response(action, "tptz", inner);
     let uses = ctx.camera.profiles().len();
     let node = || {
+        let aux: String = ptz
+            .aux_commands()
+            .iter()
+            .map(|c| text("tt:AuxiliaryCommands", c))
+            .collect();
         format!(
-            "<tptz:PTZNode token=\"{PTZ_NODE}\" FixedHomePosition=\"true\">{}{}{}<tt:HomeSupported>true</tt:HomeSupported></tptz:PTZNode>",
+            "<tptz:PTZNode token=\"{PTZ_NODE}\" FixedHomePosition=\"{}\">{}{}{}<tt:HomeSupported>true</tt:HomeSupported>{aux}</tptz:PTZNode>",
+            !ptz.features().set_home,
             text("tt:Name", "PTZ"),
-            el("tt:SupportedPTZSpaces", spaces(ptz.zoom())),
+            el("tt:SupportedPTZSpaces", spaces(ptz)),
             text("tt:MaximumNumberOfPresets", ptz.max_presets()),
         )
     };
@@ -1053,22 +1366,22 @@ fn ptz_service(req: &Request, ctx: &Context, ptz: &dyn PtzPort) -> Reply {
         return no_profile();
     }
     match action {
-        "GetServiceCapabilities" => reply(ptz_service_capabilities()),
+        "GetServiceCapabilities" => reply(ptz_service_capabilities(ptz.features())),
         "GetNodes" => reply(node()),
         "GetNode" => match req.body.text_of("NodeToken") {
             Some(PTZ_NODE) => reply(node()),
             _ => Reply::Fault(Fault::invalid_arg("ter:NoEntity", "No such PTZ node")),
         },
-        "GetConfigurations" => reply(ptz_config("tptz:PTZConfiguration", uses, ptz.zoom())),
+        "GetConfigurations" => reply(ptz_config("tptz:PTZConfiguration", uses, ptz)),
         "GetConfiguration" => match req.body.text_of("PTZConfigurationToken") {
-            Some(PTZ_CONFIG) => reply(ptz_config("tptz:PTZConfiguration", uses, ptz.zoom())),
+            Some(PTZ_CONFIG) => reply(ptz_config("tptz:PTZConfiguration", uses, ptz)),
             _ => no_config(),
         },
         "GetConfigurationOptions" => reply(el(
             "tptz:PTZConfigurationOptions",
             format!(
                 "{}{}",
-                el("tt:Spaces", spaces(ptz.zoom())),
+                el("tt:Spaces", spaces(ptz)),
                 el(
                     "tt:PTZTimeout",
                     format!(
@@ -1086,10 +1399,31 @@ fn ptz_service(req: &Request, ctx: &Context, ptz: &dyn PtzPort) -> Reply {
             } else {
                 String::new()
             };
+            // `Position` precedes `MoveStatus` in the schema; it is left out while the pose is unknown.
+            let position = ptz
+                .features()
+                .position
+                .then(|| ptz.pose())
+                .flatten()
+                .map(|p| {
+                    let zoom = if ptz.zoom() {
+                        format!("<tt:Zoom x=\"{:.4}\" space=\"{ZOOM_POSITION}\"/>", p.zoom)
+                    } else {
+                        String::new()
+                    };
+                    el(
+                        "tt:Position",
+                        format!(
+                            "<tt:PanTilt x=\"{:.4}\" y=\"{:.4}\" space=\"{PAN_TILT_POSITION}\"/>{zoom}",
+                            p.pan, p.tilt
+                        ),
+                    )
+                })
+                .unwrap_or_default();
             reply(el(
                 "tptz:PTZStatus",
                 format!(
-                    "{}{}",
+                    "{position}{}{}",
                     el(
                         "tt:MoveStatus",
                         format!("{}{zoom}", text("tt:PanTilt", status))
@@ -1097,6 +1431,51 @@ fn ptz_service(req: &Request, ctx: &Context, ptz: &dyn PtzPort) -> Reply {
                     text("tt:UtcTime", time::format(ctx.now))
                 ),
             ))
+        }
+        "RelativeMove" | "AbsoluteMove" => {
+            let relative = action == "RelativeMove";
+            let (parent, pt_uri, pt_min, zoom_uri, zoom_min) = if relative {
+                ("Translation", PAN_TILT_FOV, -1.0, ZOOM_TRANSLATION, -1.0)
+            } else {
+                ("Position", PAN_TILT_POSITION, -1.0, ZOOM_POSITION, 0.0)
+            };
+            let features = ptz.features();
+            if !(if relative {
+                features.relative
+            } else {
+                features.absolute
+            }) {
+                return ptz_fault(PtzError::Unsupported);
+            }
+            let axes =
+                move_axes(&req.body, parent, "PanTilt", pt_uri, pt_min, true).and_then(|pt| {
+                    if ptz.zoom() {
+                        move_axes(&req.body, parent, "Zoom", zoom_uri, zoom_min, false)
+                            .map(|z| (pt, z.map(|(x, _)| x)))
+                    } else {
+                        Ok((pt, None))
+                    }
+                });
+            let (pan_tilt, zoom) = match axes {
+                Ok((None, None)) => {
+                    return Reply::Fault(Fault::invalid_arg(
+                        "ter:InvalidPosition",
+                        "The move names no axis",
+                    ));
+                }
+                Ok(axes) => axes,
+                Err(f) => return Reply::Fault(f),
+            };
+            // `Speed` is not honoured: a correction is always made as fast as the head can.
+            let result = if relative {
+                ptz.relative_move(Relative { pan_tilt, zoom })
+            } else {
+                ptz.absolute_move(Absolute { pan_tilt, zoom })
+            };
+            match result {
+                Ok(()) => Reply::Stopped(format!("<tptz:{action}Response/>")),
+                Err(e) => ptz_fault(e),
+            }
         }
         "ContinuousMove" => {
             let velocity = req.body.child("Velocity");
@@ -1126,10 +1505,36 @@ fn ptz_service(req: &Request, ctx: &Context, ptz: &dyn PtzPort) -> Reply {
                 Err(e) => ptz_fault(e),
             }
         }
-        "Stop" => match ptz.stop() {
-            Ok(()) => Reply::Stopped("<tptz:StopResponse/>".into()),
+        "Stop" => {
+            // No flag stops everything. The head cannot stop one axis alone, so a flag naming one axis
+            // stops both (a safe superset); only an explicit "neither" leaves the camera moving.
+            let flag = |name| req.body.text_of(name).map(|v| v == "true" || v == "1");
+            if flag("PanTilt") == Some(false) && flag("Zoom") == Some(false) {
+                return Reply::Ok("<tptz:StopResponse/>".into());
+            }
+            match ptz.stop() {
+                Ok(()) => Reply::Stopped("<tptz:StopResponse/>".into()),
+                Err(e) => ptz_fault(e),
+            }
+        }
+        "SetHomePosition" => match ptz.set_home() {
+            Ok(()) => reply(String::new()),
             Err(e) => ptz_fault(e),
         },
+        "SendAuxiliaryCommand" => {
+            let command = req.body.text_of("AuxiliaryData").unwrap_or_default();
+            if !ptz.aux_commands().contains(&command) {
+                return Reply::Fault(Fault::invalid_arg(
+                    "ter:InvalidArgs",
+                    "That auxiliary command is not offered",
+                ));
+            }
+            match ptz.aux_command(command) {
+                Ok(done) => reply(text("tptz:AuxiliaryResponse", done)),
+                Err(e) => ptz_fault(e),
+            }
+        }
+        "GetCompatibleConfigurations" => reply(ptz_config("tptz:PTZConfiguration", uses, ptz)),
         "GotoHomePosition" => match ptz.home() {
             Ok(()) => Reply::Stopped("<tptz:GotoHomePositionResponse/>".into()),
             Err(e) => ptz_fault(e),
@@ -1330,6 +1735,9 @@ pub fn pull_response(now: SystemTime, expires: SystemTime, messages: &[Message])
         text("tev:TerminationTime", time::format(expires))
     )
 }
+
+mod imaging;
+mod media2;
 
 #[cfg(test)]
 mod tests;

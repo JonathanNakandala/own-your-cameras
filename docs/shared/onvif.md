@@ -10,8 +10,11 @@ the network, read its streams and snapshot, and drive it without a camera-specif
 | Main and sub profiles | yes | yes | yes |
 | Snapshot (hardware JPEG) | 1280×960 | the sub picture, 640×360 | the main picture, 1920×1080 |
 | PTZ: continuous move, home | pan, tilt, zoom | pan, tilt | — |
+| PTZ: relative move (field of view), absolute move, position in `GetStatus` | yes | — | — |
+| Imaging: brightness, saturation, contrast, sharpness, IR-cut filter, focus mode | yes | — | — |
 | PTZ presets: list, go to, create, delete | up to 32 | up to 16 | — |
 | Events: digital inputs | — | — | `call_button`, `door` |
+| Relay outputs (LEDs) | 2 | — | — |
 | Audio output (talkback) | yes | yes | yes |
 
 ## Streams
@@ -56,6 +59,119 @@ Station finds both profiles, records `main_pcmu` with sound and moves PTZ camera
 The ONVIF integration discovers the cameras by itself. It shows the snapshot and the stream, and for PTZ
 cameras offers the `onvif.ptz` action with the camera's presets; for the door panel the call button and the door
 become binary sensors. The cameras' MQTT entities keep working alongside it.
+
+## Relative and absolute PTZ, Frigate
+
+The E1 Zoom also takes `RelativeMove` and `AbsoluteMove`, and `GetStatus` reports `Position` and an honest
+`MoveStatus`. This is what [Frigate's autotracking](https://docs.frigate.video/configuration/autotracking/)
+requires: a `RelativePanTiltTranslationSpace` in the **field-of-view** space
+(`.../PanTiltSpaces/TranslationSpaceFov`) and `MoveStatus`.
+
+| Call | Space | Meaning |
+|---|---|---|
+| `RelativeMove` pan/tilt | `TranslationSpaceFov`, -1…1 | a fraction of the picture shown: 1.0 is one whole width (pan) or height (tilt), right and up positive. Converted to motor steps with the lens map measured for tap-to-centre ([position3d](../../firmware/cameras/reolink-e1-zoom/docs/hardware/position3d.md)) at the lens's zoom now, under the picture's mirror and flip. Both axes move together |
+| `RelativeMove` zoom | `TranslationGenericSpace`, -1…1 | a fraction of the lens travel, positive in |
+| `AbsoluteMove` pan/tilt | `PositionGenericSpace`, -1…1 | across the head's whole travel, raw head coordinates (mirror and flip do not apply) |
+| `AbsoluteMove` zoom | `PositionGenericSpace`, 0…1 | across the lens's travel |
+| `GetStatus` | | `Position` in the same units once the head has homed; `MoveStatus` is `MOVING` from the moment a move is accepted (queued moves included) until head and lens settle, or while a hold runs |
+
+`Speed` is accepted and ignored: a correction is always made with the camera's motion settings
+(`Speed`, `Start speed`, `Ramp`), which stay the place to tune it. A request naming another space, a non-finite
+number or no axis at all is refused with `ter:SpaceNotSupported` / `ter:InvalidPosition` before anything moves.
+Moves go through the same queue as MQTT, so a stop discards them alike.
+
+```yaml
+cameras:
+  e1zoom:
+    onvif:
+      host: CAMERA_IP
+      port: 80
+      user: USER
+      password: PASSWORD
+      autotracking:
+        enabled: true
+        zooming: disabled   # the lens zooms only 1.3×; tracking by pan/tilt alone is the sensible start
+```
+
+## Media2
+
+Every camera also serves the Media2 service (`/onvif/media2_service`), which newer clients and NVRs try
+before Media1. It describes the same two fixed profiles and the same configurations, in Media2's shapes:
+
+| | Media1 | Media2 |
+|---|---|---|
+| Profile contents | always listed | only the `Type`s asked for in `GetProfiles` (`All` for every one); with no `Type`, just the token and name |
+| Video encoder | `GovLength` and `H264Profile` as elements | `GovLength` and `Profile` as attributes, `FrameRateLimit` a float |
+| Audio codec | `G711` | `PCMU` (G.711 µ-law, 8 kHz) |
+| Stream address | `GetStreamUri` returns a `MediaUri` | returns the bare `Uri`, for `RtspUnicast` or `RTSP`; multicast and RTSP over HTTP are `ter:InvalidStreamSetup` |
+
+Like Media1 it is read-only: a `Set…Configuration` that says what is already so succeeds, one that would change
+something is `ter:ConfigModify`; `AddConfiguration` of a configuration the profile holds is a no-op;
+profiles cannot be created, deleted or stripped. `GetMetadataConfigurations` and `GetAnalyticsConfigurations`
+list nothing, and OSDs, masks, multicast, video source modes and audio clips are `ActionNotSupported`.
+
+This is the service Profile T clients call, but **the cameras claim only Profile S** in discovery: Profile T
+also asks for HTTPS, H.265 and motion events, which are not offered.
+
+## Relay outputs
+
+ONVIF models any switched output as a relay, so the E1 Zoom's LEDs are two relay outputs
+(`GetRelayOutputs`, `SetRelayOutputState`; Device IO adds `GetRelayOutputOptions` and `SetRelayOutputSettings`):
+
+| Token | Setting | Active means |
+|---|---|---|
+| `status_led` | `led` | the status LED is on |
+| `ir_leds` | `ir_leds_at_night` | night mode may light the IR LEDs; inactive leaves the night picture dark |
+
+Both are bistable and idle open (inactive). `SetRelayOutputSettings` accepts exactly that and refuses a
+monostable mode or a closed idle state with `ter:ModeError`; an unknown token is `ter:RelayToken`. The state
+is not reported back (ONVIF has no read call for it, and no relay event is sent); the MQTT entities show it.
+
+## More PTZ calls
+
+| Call | Behaviour |
+|---|---|
+| `SetHomePosition` | saves where the camera stands as the `Default` preset, which is where it goes at startup and for `GotoHomePosition` (the node reports `FixedHomePosition="false"`). With no `Default` yet the preset table needs room, as for any new preset |
+| `SendAuxiliaryCommand` | `tt:IRLamp|On`, `tt:IRLamp|Off`, `tt:IRLamp|Auto`: the `ir` mode `night`, `day`, `auto`, the same switch as Imaging's `IrCutFilter` (On is night, with the IR LEDs). Listed in the node's `AuxiliaryCommands`; anything else is `ter:InvalidArgs` |
+| `GetCompatibleConfigurations` | the one PTZ configuration |
+| `Stop` | with no flag, or both flags true, stops everything. The head cannot stop one axis alone, so a flag naming one axis stops both; only `PanTilt` and `Zoom` both false leaves the camera moving |
+
+## Imaging
+
+The E1 Zoom offers the Imaging service at `/onvif/imaging_service`, so a client's image sliders and day/night
+switch work without an MQTT broker. Each field is one of the camera's own [settings](../../firmware/cameras/reolink-e1-zoom/docs/settings.md),
+and the ranges `GetOptions` reports are those settings' ranges (0…200 for the four levels).
+
+| ONVIF | Setting | Notes |
+|---|---|---|
+| `Brightness`, `ColorSaturation`, `Contrast`, `Sharpness` | `isp_brightness`, `isp_saturation`, `isp_contrast`, `isp_sharpness` | whole numbers; a fraction is rounded |
+| `IrCutFilter` `ON` / `OFF` / `AUTO` | `ir` = `day` / `night` / `auto` | `ON` keeps the filter in for day colour, `OFF` takes it out for night |
+| `Focus` `AutoFocusMode` `AUTO` / `MANUAL` | `autofocus` `ON` / `OFF` | |
+
+`GetImagingSettings` reports what the camera says it runs (the state it last published), so a value read
+straight after a set may take a moment to follow. A request with any value out of range, not a number or
+not one of the modes is refused with `ter:SettingsInvalid` and nothing in it is applied. Sections the camera has
+no use for (exposure, white balance, backlight, wide dynamic range) are ignored, so a client that sends back
+the document it read still works. Focus *moves* (`Move`, `GetMoveOptions`, `GetStatus`, `Stop`) are not offered:
+the focus position is not published, and the focus motor follows the lens zoom.
+
+## Device and media calls
+
+Beyond the read-only device calls, these are answered (the E1 Zoom; a camera without the hook says
+`ActionNotSupported`):
+
+| Call | Behaviour |
+|---|---|
+| `SystemReboot` | queues the same restart as the Reboot button (settings are saved first); the reply may arrive before the camera goes down |
+| `GetUsers` | the one user, the RTSP user name, as `Administrator`; users cannot be created or changed |
+| `GetSystemLog` (`System`) | the last 32 KiB of the daemon's log, from a line start; `Access` is `ter:SystemlogUnavailable`. The log never holds passwords, and the call needs the camera's login like every other |
+| `GetSystemSupportInformation` | manufacturer, model, firmware, hardware, serial, MAC and hostname, one per line |
+| `SetSynchronizationPoint` | accepted for any profile; the stream's key frames come every second, so a client waits at most that long and nothing is forced |
+| `GetMetadataConfigurations` | an empty list: there is no metadata stream |
+
+Not offered, because the daemon never writes `cam.toml` and does not set the clock from a client:
+`SetSystemDateAndTime`, `SetNTP`, `SetHostname`, `CreateUsers` and the other writes. Set the NTP servers in
+`cam.toml` instead.
 
 ## Presets
 

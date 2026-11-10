@@ -149,9 +149,11 @@ applied) and resolves every preset command against it.
 
 ## What the daemon talks to
 
-It listens on RTSP 554 and connects only to the configured MQTT broker; `udhcpc` asks for a lease and
-`wpa_supplicant` joins the access point. There is no cloud, P2P, push, NTP or vendor endpoint, and no web, ONVIF or
-Reolink app interface. Root SSH comes from the image's root-SSH hook, not from `cam`.
+It listens on RTSP 554 and, unless `[onvif] port = 0`, on ONVIF (HTTP and WS-Discovery); it connects to the
+configured MQTT broker and, when `cam.toml` names servers, to NTP. `udhcpc` asks for a lease and `wpa_supplicant`
+joins the access point. There is no cloud, P2P, push or vendor endpoint, and no web or Reolink app interface;
+ONVIF is the shared Profile S service ([ONVIF](../../../../docs/shared/onvif.md)). Root SSH comes from the
+image's root-SSH hook, not from `cam`.
 
 ## Hardware notes
 

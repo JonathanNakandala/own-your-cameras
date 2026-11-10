@@ -415,6 +415,72 @@ fn position3d_centres_a_tap_and_zooms_to_a_box_from_the_confirmed_position() {
 }
 
 #[test]
+fn a_field_of_view_move_turns_by_picture_fractions_on_the_lens_map() {
+    let mut d = device(FakeHw::new(1800));
+    d.apply(&Command::Pan(3000)).unwrap();
+    d.apply(&Command::Tilt(600)).unwrap();
+    let state =
+        |d: &mut Device<_, _, _, _>, k: &str| d.states().unwrap()[k].parse::<u32>().unwrap();
+    // Half a picture right at zoom 0 is the right-edge point of a tap: 1050 steps on the measured map.
+    d.apply(&Command::Fov { x: 500, y: 0 }).unwrap();
+    assert_eq!(state(&mut d, "pan"), 3000 + 1050);
+    assert_eq!(state(&mut d, "tilt"), 600);
+    // Both axes in one move; the picture is 4:3, so a quarter of its height is 3/16 of a width up:
+    // 0.91 · (1960.7 · 0.1875 + 553.4 · 0.1875³) = 338 tilt steps.
+    d.apply(&Command::Fov { x: -500, y: 250 }).unwrap();
+    assert_eq!(state(&mut d, "pan"), 3000);
+    assert_eq!(state(&mut d, "tilt"), 600 + 338);
+    // The same move covers less ground zoomed in (the picture is narrower).
+    d.apply(&Command::Zoom(1024)).unwrap();
+    d.apply(&Command::Fov { x: 500, y: 0 }).unwrap();
+    assert!(state(&mut d, "pan") < 3000 + 1050 - 200);
+    // Travel clamps at the ends.
+    d.apply(&Command::PanTilt(7300, 1230)).unwrap();
+    d.apply(&Command::Fov { x: 1000, y: 1000 }).unwrap();
+    assert_eq!((state(&mut d, "pan"), state(&mut d, "tilt")), (7360, 1240));
+}
+
+#[test]
+fn an_absolute_pan_tilt_move_goes_to_both_axes_and_clamps() {
+    let mut d = device(FakeHw::new(1800));
+    d.apply(&Command::PanTilt(100, 200)).unwrap();
+    let pose = d.pose().unwrap();
+    assert_eq!((pose.pan, pose.tilt), (100, 200));
+    d.apply(&Command::PanTilt(u32::MAX, u32::MAX)).unwrap();
+    let pose = d.pose().unwrap();
+    assert_eq!((pose.pan, pose.tilt), (7360, 1240));
+    // The pose is unknown, not stale, once a stop made the head lose count; a relative move then refuses.
+    d.apply(&Command::Stop).unwrap();
+    assert!(d.pose().is_none());
+    assert!(
+        d.apply(&Command::Fov { x: 10, y: 0 })
+            .unwrap_err()
+            .contains("unknown")
+    );
+    assert!(
+        d.apply(&Command::PanTilt(1, 1))
+            .unwrap_err()
+            .contains("unknown")
+    );
+}
+
+#[test]
+fn only_commands_that_move_count_as_moving_and_holds_keep_the_device_busy() {
+    assert!(Command::Fov { x: 1, y: 1 }.moves() && Command::PanTilt(1, 1).moves());
+    assert!(Command::Move(cam::mqtt::Move::Left).moves() && Command::Home.moves());
+    assert!(!Command::Move(cam::mqtt::Move::Stop).moves());
+    assert!(!Command::Stop.moves() && !Command::Refocus.moves() && !Command::Reboot.moves());
+    assert!(!Command::SavePreset("x".into()).moves());
+    let mut d = device(FakeHw::new(1800));
+    assert!(!d.busy());
+    d.apply(&Command::Move(cam::mqtt::Move::Right)).unwrap();
+    assert!(d.busy(), "a hold goes on after apply returned");
+    d.apply(&Command::Move(cam::mqtt::Move::Stop)).unwrap();
+    until_changed(&mut d, Duration::from_secs(1), Duration::from_millis(100));
+    assert!(!d.busy());
+}
+
+#[test]
 fn relative_motion_refuses_unknown_position_after_stop() {
     let cfg = cam::mqtt::Config::default();
     let mut d = device(FakeHw::new(1800));

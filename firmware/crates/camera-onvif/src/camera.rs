@@ -106,11 +106,51 @@ pub struct Velocity {
     pub zoom: f32,
 }
 
+/// A relative move. Pan and tilt are fractions of the **current field of view** (ONVIF `TranslationSpaceFov`:
+/// 1.0 is one full picture width/height, positive is right/up), each -1.0..=1.0. Zoom is a fraction of the
+/// lens travel (`TranslationGenericSpace`), -1.0..=1.0, positive is in. An absent axis does not move.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Relative {
+    pub pan_tilt: Option<(f32, f32)>,
+    pub zoom: Option<f32>,
+}
+
+/// An absolute move in `PositionGenericSpace`. Pan and tilt run -1.0..=1.0 across the head's whole travel,
+/// zoom 0.0..=1.0 across the lens's. An absent axis does not move.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Absolute {
+    pub pan_tilt: Option<(f32, f32)>,
+    pub zoom: Option<f32>,
+}
+
+/// Where the head and lens are, in the same units as [`Absolute`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Pose {
+    pub pan: f32,
+    pub tilt: f32,
+    pub zoom: f32,
+}
+
+/// What a camera's PTZ offers beyond continuous moves and presets; each is advertised in the ONVIF spaces.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PtzFeatures {
+    /// [`PtzPort::relative_move`].
+    pub relative: bool,
+    /// [`PtzPort::absolute_move`].
+    pub absolute: bool,
+    /// [`PtzPort::pose`] reports a position in `GetStatus`.
+    pub position: bool,
+    /// [`PtzPort::set_home`] can overwrite the home position (else it is fixed).
+    pub set_home: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PtzError {
     NoSuchPreset,
     TooManyPresets,
     InvalidName,
+    /// The camera does not do this kind of move.
+    Unsupported,
     /// The motion owner refused or failed the request.
     Failed(String),
 }
@@ -128,7 +168,94 @@ pub trait PtzPort: Send + Sync {
     /// Returns the preset's token.
     fn set_preset(&self, token: Option<&str>, name: Option<&str>) -> Result<String, PtzError>;
     fn remove_preset(&self, token: &str) -> Result<(), PtzError>;
+    /// True from the moment a move is accepted until the head and lens have settled, queued moves included.
     fn moving(&self) -> bool;
+    fn features(&self) -> PtzFeatures {
+        PtzFeatures::default()
+    }
+    fn relative_move(&self, _: Relative) -> Result<(), PtzError> {
+        Err(PtzError::Unsupported)
+    }
+    fn absolute_move(&self, _: Absolute) -> Result<(), PtzError> {
+        Err(PtzError::Unsupported)
+    }
+    /// The confirmed pose, `None` while it is unknown (before homing, after a stop).
+    fn pose(&self) -> Option<Pose> {
+        None
+    }
+    /// Saves where the camera stands as its home position (`SetHomePosition`); see [`PtzFeatures::set_home`].
+    fn set_home(&self) -> Result<(), PtzError> {
+        Err(PtzError::Unsupported)
+    }
+    /// The auxiliary commands `SendAuxiliaryCommand` accepts, as the node lists them (`tt:IRLamp|On`).
+    fn aux_commands(&self) -> &'static [&'static str] {
+        &[]
+    }
+    /// Runs one of [`PtzPort::aux_commands`] (the service has already checked it is listed); returns the
+    /// `AuxiliaryResponse` text.
+    fn aux_command(&self, _command: &str) -> Result<String, PtzError> {
+        Err(PtzError::Unsupported)
+    }
+}
+
+/// `IrCutFilter`: ON keeps the filter in the light path (day colour), OFF takes it out (night, IR), AUTO lets
+/// the camera decide.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IrCutFilter {
+    On,
+    Off,
+    Auto,
+}
+
+/// The picture settings ONVIF's Imaging service reads and writes. Levels are in the camera's own units (the
+/// ranges are in [`ImagingOptions`]); an absent field is unsupported when read and unchanged when written.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct ImagingSettings {
+    pub brightness: Option<f32>,
+    pub saturation: Option<f32>,
+    pub contrast: Option<f32>,
+    pub sharpness: Option<f32>,
+    pub ir_cut: Option<IrCutFilter>,
+    /// Focus mode: true is `AUTO`, false `MANUAL`.
+    pub auto_focus: Option<bool>,
+}
+
+/// What a camera lets Imaging change: the `(min, max)` of each level, and whether the IR-cut filter and the
+/// focus mode can be set.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct ImagingOptions {
+    pub brightness: Option<(f32, f32)>,
+    pub saturation: Option<(f32, f32)>,
+    pub contrast: Option<(f32, f32)>,
+    pub sharpness: Option<(f32, f32)>,
+    pub ir_cut: bool,
+    pub auto_focus: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ImagingError {
+    /// A value outside its range, or a setting the camera does not have.
+    Invalid(String),
+    /// The camera's settings owner refused or failed the request.
+    Failed(String),
+}
+
+/// Picture controls over the camera's own settings owner (the same code MQTT drives).
+pub trait ImagingPort: Send + Sync {
+    fn options(&self) -> ImagingOptions;
+    /// The values in force; every supported field is present.
+    fn settings(&self) -> ImagingSettings;
+    /// Applies the present fields, all or none: a value out of range is [`ImagingError::Invalid`] and
+    /// nothing changes.
+    fn apply(&self, settings: ImagingSettings) -> Result<(), ImagingError>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RelayError {
+    /// No relay output has this token.
+    NoSuchRelay,
+    /// The camera's settings owner refused or failed the request.
+    Failed(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -145,6 +272,32 @@ pub trait OnvifCamera: Send + Sync {
     /// A speaker that takes the RTSP backchannel.
     fn audio_output(&self) -> bool;
     fn ptz(&self) -> Option<&dyn PtzPort>;
+    /// The tokens of the camera's relay outputs. ONVIF models any switched output as one; here they are LEDs.
+    /// Every one is bistable: active until set inactive.
+    fn relay_outputs(&self) -> &'static [&'static str] {
+        &[]
+    }
+    /// Switches the relay output `token` (`SetRelayOutputState`).
+    fn set_relay_output(&self, _token: &str, _active: bool) -> Result<(), RelayError> {
+        Err(RelayError::NoSuchRelay)
+    }
+    /// Reboots the camera (ONVIF `SystemReboot`). `None`: this camera does not offer it. The reply may reach
+    /// the client before the reboot starts.
+    fn reboot(&self) -> Option<Result<(), String>> {
+        None
+    }
+    /// Whether [`OnvifCamera::system_log`] has anything (cheap: it is asked for every capability document).
+    fn keeps_log(&self) -> bool {
+        false
+    }
+    /// The tail of the camera's own log, for `GetSystemLog`; `None` when it keeps none.
+    fn system_log(&self) -> Option<String> {
+        None
+    }
+    /// Picture controls; `None` when the camera offers none.
+    fn imaging(&self) -> Option<&dyn ImagingPort> {
+        None
+    }
     /// `tns1:Device/Trigger/DigitalInput` input tokens (`call_button`, `door`…); empty when none.
     fn digital_inputs(&self) -> &[&'static str];
     /// One hardware JPEG of the main stream, finished before `deadline`.
