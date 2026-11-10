@@ -16,6 +16,7 @@ board, so every register, item and offset was read from the stock firmware or me
 | Audio | codec microphone and speaker, a GPIO-switched speaker amplifier | [audio.md](audio.md) |
 | Network | Realtek RTL8822CU Wi-Fi on USB, Ethernet fallback | [network.md](network.md) |
 | Motion | `kdrv_md` hardware engine, driven by the vendor stack; not used by `cam` | [motion-detection.md](motion-detection.md) |
+| AI detection | Person, vehicle and pet CNN (`ppvd.bin`) on the AI unit via `kdrv_ai`; not used by `cam` | [ai-detection.md](ai-detection.md) |
 
 ## Evidence tags
 
