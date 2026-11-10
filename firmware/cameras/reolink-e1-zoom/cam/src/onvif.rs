@@ -6,8 +6,8 @@ use crate::media_tuning::Handoff;
 use crate::mqtt::{Command, Motion, Move};
 use crate::pipeline::{MainStream, PipelineConfig};
 use camera_onvif::{
-    DeviceIdentity, H264Profile, MediaProfile, OnvifCamera, Preset, PtzError, PtzPort,
-    SnapshotError, Velocity, VideoEncoding,
+    Absolute, DeviceIdentity, H264Profile, MediaProfile, OnvifCamera, Pose, Preset, PtzError,
+    PtzFeatures, PtzPort, Relative, SnapshotError, Velocity, VideoEncoding,
 };
 use camera_transport::motion_control::{self, PresetName};
 use std::sync::Arc;
@@ -50,6 +50,18 @@ fn failed(e: String) -> PtzError {
 /// ONVIF generic velocity (-1..1) as the motion contract's percentage of each axis's ceiling.
 fn percent(v: f32) -> i16 {
     (v.clamp(-1.0, 1.0) * 100.0).round() as i16
+}
+
+/// ONVIF -1..1 or 0..1 across a travel of `max` steps, from a position in steps.
+fn unit(steps: u32, max: u32, signed: bool) -> f32 {
+    let u = steps as f32 / max as f32;
+    if signed { u * 2.0 - 1.0 } else { u }
+}
+
+/// The inverse of [`unit`]: a value already clamped by the service becomes steps in `0..=max`.
+fn steps(value: f32, max: u32, signed: bool) -> u32 {
+    let u = if signed { (value + 1.0) / 2.0 } else { value };
+    (u.clamp(0.0, 1.0) * max as f32).round() as u32
 }
 
 impl OnvifCamera for E1Onvif {
@@ -176,7 +188,90 @@ impl PtzPort for E1Onvif {
             .map_err(failed)
     }
 
+    /// Moving from the moment a move is queued until the head and lens settle (a hold still running counts).
     fn moving(&self) -> bool {
-        false
+        self.motion.moving()
+    }
+
+    fn features(&self) -> PtzFeatures {
+        PtzFeatures {
+            relative: true,
+            absolute: true,
+            position: true,
+        }
+    }
+
+    /// Pan and tilt together by fractions of the picture, one concurrent move on the measured lens map
+    /// (`Optics::shift_fov`); zoom is a fraction of the lens travel, applied after.
+    fn relative_move(&self, r: Relative) -> Result<(), PtzError> {
+        if let Some((x, y)) = r.pan_tilt {
+            let milli = |v: f32| (v.clamp(-1.0, 1.0) * 1000.0).round() as i16;
+            self.motion
+                .submit(Command::Fov {
+                    x: milli(x),
+                    y: milli(y),
+                })
+                .map_err(failed)?;
+        }
+        if let Some(z) = r.zoom {
+            let by = (z.clamp(-1.0, 1.0) * crate::mqtt::ZOOM_MAX as f32).round() as i32;
+            self.motion.submit(Command::ZoomBy(by)).map_err(failed)?;
+        }
+        Ok(())
+    }
+
+    /// Pan and tilt across the head's whole travel in one move, zoom across the lens's. Raw head
+    /// coordinates: the picture's mirror and flip do not apply.
+    fn absolute_move(&self, a: Absolute) -> Result<(), PtzError> {
+        if let Some((x, y)) = a.pan_tilt {
+            self.motion
+                .submit(Command::PanTilt(
+                    steps(x, crate::ptz::PAN_MAX, true),
+                    steps(y, crate::ptz::TILT_MAX, true),
+                ))
+                .map_err(failed)?;
+        }
+        if let Some(z) = a.zoom {
+            self.motion
+                .submit(Command::Zoom(steps(z, crate::mqtt::ZOOM_MAX, false)))
+                .map_err(failed)?;
+        }
+        Ok(())
+    }
+
+    fn pose(&self) -> Option<Pose> {
+        let p = self.motion.pose()?;
+        Some(Pose {
+            pan: unit(p.pan, crate::ptz::PAN_MAX, true),
+            tilt: unit(p.tilt, crate::ptz::TILT_MAX, true),
+            zoom: unit(p.zoom, crate::mqtt::ZOOM_MAX, false),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn onvif_units_map_across_the_travel_and_back() {
+        let (pan, tilt, zoom) = (
+            crate::ptz::PAN_MAX,
+            crate::ptz::TILT_MAX,
+            crate::mqtt::ZOOM_MAX,
+        );
+        assert_eq!(steps(-1.0, pan, true), 0);
+        assert_eq!(steps(0.0, pan, true), pan / 2);
+        assert_eq!(steps(1.0, tilt, true), tilt);
+        assert_eq!(steps(0.0, zoom, false), 0);
+        assert_eq!(steps(1.0, zoom, false), zoom);
+        // Out-of-range values clamp rather than wrap.
+        assert_eq!(steps(7.0, pan, true), pan);
+        assert_eq!(steps(-7.0, zoom, false), 0);
+        for at in [0, 1, pan / 3, pan] {
+            let back = steps(unit(at, pan, true), pan, true);
+            assert!(back.abs_diff(at) <= 1, "{at} -> {back}");
+        }
+        assert_eq!(unit(zoom, zoom, false), 1.0);
     }
 }

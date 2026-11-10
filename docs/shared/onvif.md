@@ -10,6 +10,7 @@ the network, read its streams and snapshot, and drive it without a camera-specif
 | Main and sub profiles | yes | yes | yes |
 | Snapshot (hardware JPEG) | 1280×960 | the sub picture, 640×360 | the main picture, 1920×1080 |
 | PTZ: continuous move, home | pan, tilt, zoom | pan, tilt | — |
+| PTZ: relative move (field of view), absolute move, position in `GetStatus` | yes | — | — |
 | PTZ presets: list, go to, create, delete | up to 32 | up to 16 | — |
 | Events: digital inputs | — | — | `call_button`, `door` |
 | Audio output (talkback) | yes | yes | yes |
@@ -56,6 +57,39 @@ Station finds both profiles, records `main_pcmu` with sound and moves PTZ camera
 The ONVIF integration discovers the cameras by itself. It shows the snapshot and the stream, and for PTZ
 cameras offers the `onvif.ptz` action with the camera's presets; for the door panel the call button and the door
 become binary sensors. The cameras' MQTT entities keep working alongside it.
+
+## Relative and absolute PTZ, Frigate
+
+The E1 Zoom also takes `RelativeMove` and `AbsoluteMove`, and `GetStatus` reports `Position` and an honest
+`MoveStatus`. This is what [Frigate's autotracking](https://docs.frigate.video/configuration/autotracking/)
+requires: a `RelativePanTiltTranslationSpace` in the **field-of-view** space
+(`.../PanTiltSpaces/TranslationSpaceFov`) and `MoveStatus`.
+
+| Call | Space | Meaning |
+|---|---|---|
+| `RelativeMove` pan/tilt | `TranslationSpaceFov`, -1…1 | a fraction of the picture shown: 1.0 is one whole width (pan) or height (tilt), right and up positive. Converted to motor steps with the lens map measured for tap-to-centre ([position3d](../../firmware/cameras/reolink-e1-zoom/docs/hardware/position3d.md)) at the lens's zoom now, under the picture's mirror and flip. Both axes move together |
+| `RelativeMove` zoom | `TranslationGenericSpace`, -1…1 | a fraction of the lens travel, positive in |
+| `AbsoluteMove` pan/tilt | `PositionGenericSpace`, -1…1 | across the head's whole travel, raw head coordinates (mirror and flip do not apply) |
+| `AbsoluteMove` zoom | `PositionGenericSpace`, 0…1 | across the lens's travel |
+| `GetStatus` | | `Position` in the same units once the head has homed; `MoveStatus` is `MOVING` from the moment a move is accepted (queued moves included) until head and lens settle, or while a hold runs |
+
+`Speed` is accepted and ignored: a correction is always made with the camera's motion settings
+(`Speed`, `Start speed`, `Ramp`), which stay the place to tune it. A request naming another space, a non-finite
+number or no axis at all is refused with `ter:SpaceNotSupported` / `ter:InvalidPosition` before anything moves.
+Moves go through the same queue as MQTT, so a stop discards them alike.
+
+```yaml
+cameras:
+  e1zoom:
+    onvif:
+      host: CAMERA_IP
+      port: 80
+      user: USER
+      password: PASSWORD
+      autotracking:
+        enabled: true
+        zooming: disabled   # the lens zooms only 1.3×; tracking by pan/tilt alone is the sensible start
+```
 
 ## Presets
 

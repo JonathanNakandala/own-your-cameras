@@ -682,6 +682,174 @@ fn ptz_moves_stop_and_presets_go_through_the_port() {
     );
 }
 
+/// What Frigate's autotracking reads: an FOV translation space in the options, a default one in the
+/// configuration, and `MoveStatus` in the service capabilities.
+#[test]
+fn ptz_advertises_what_frigate_needs() {
+    let cam = FakeCamera::new(true, &[]);
+    let fov = "http://www.onvif.org/ver10/tptz/PanTiltSpaces/TranslationSpaceFov";
+    let opts = call(
+        &cam,
+        TPTZ,
+        "GetConfigurationOptions",
+        "<ConfigurationToken>ptz_config</ConfigurationToken>",
+    );
+    let space = path(
+        &opts,
+        &[
+            "PTZConfigurationOptions",
+            "Spaces",
+            "RelativePanTiltTranslationSpace",
+        ],
+    );
+    assert_eq!(space.text_of("URI"), Some(fov));
+    assert_eq!(path(space, &["XRange", "Min"]).text, "-1");
+    assert_eq!(path(space, &["YRange", "Max"]).text, "1");
+    let config = call(&cam, TPTZ, "GetConfigurations", "");
+    let config = path(&config, &["PTZConfiguration"]);
+    assert_eq!(
+        config.text_of("DefaultRelativePanTiltTranslationSpace"),
+        Some(fov)
+    );
+    assert!(config.child("DefaultAbsoluteZoomPositionSpace").is_some());
+    assert!(config.child("DefaultPTZSpeed").is_some());
+    let caps = call(&cam, TPTZ, "GetServiceCapabilities", "");
+    let caps = path(&caps, &["Capabilities"]);
+    assert_eq!(caps.attr("MoveStatus"), Some("true"));
+    assert_eq!(caps.attr("StatusPosition"), Some("true"));
+    // The schema's order: Position, then MoveStatus.
+    let status = call(&cam, TPTZ, "GetStatus", "<ProfileToken>main</ProfileToken>");
+    let status = path(&status, &["PTZStatus"]);
+    let names: Vec<_> = status.children.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["Position", "MoveStatus", "UtcTime"]);
+    assert_eq!(
+        path(status, &["Position", "PanTilt"]).attr("x"),
+        Some("0.2500")
+    );
+}
+
+#[test]
+fn relative_and_absolute_moves_reach_the_port() {
+    let cam = FakeCamera::new(true, &[]);
+    let fov = "http://www.onvif.org/ver10/tptz/PanTiltSpaces/TranslationSpaceFov";
+    call(
+        &cam,
+        TPTZ,
+        "RelativeMove",
+        &format!(
+            r#"<ProfileToken>main</ProfileToken><Translation><tt:PanTilt x="0.25" y="-3" space="{fov}"/><tt:Zoom x="0.5"/></Translation><Speed><tt:PanTilt x="1" y="1"/></Speed>"#
+        ),
+    );
+    // No space named: the default (FOV) applies; a pan/tilt-only move leaves zoom alone.
+    call(
+        &cam,
+        TPTZ,
+        "RelativeMove",
+        r#"<ProfileToken>main</ProfileToken><Translation><tt:PanTilt x="-0.1" y="0"/></Translation>"#,
+    );
+    call(
+        &cam,
+        TPTZ,
+        "AbsoluteMove",
+        r#"<ProfileToken>main</ProfileToken><Position><tt:Zoom x="2"/></Position>"#,
+    );
+    assert_eq!(
+        cam.ptz.as_ref().unwrap().calls(),
+        [
+            "relative Some((0.25, -1.0)) Some(0.5)",
+            "relative Some((-0.1, 0.0)) None",
+            "absolute None Some(1.0)",
+        ]
+    );
+    for (action, body, subcode) in [
+        (
+            "RelativeMove",
+            r#"<ProfileToken>main</ProfileToken><Translation><tt:PanTilt x="0.1" y="0.1" space="http://www.onvif.org/ver10/tptz/PanTiltSpaces/TranslationGenericSpace"/></Translation>"#,
+            "ter:SpaceNotSupported",
+        ),
+        (
+            "RelativeMove",
+            r#"<ProfileToken>main</ProfileToken><Translation><tt:PanTilt x="nan" y="0"/></Translation>"#,
+            "ter:InvalidPosition",
+        ),
+        (
+            "RelativeMove",
+            r#"<ProfileToken>main</ProfileToken><Translation/>"#,
+            "ter:InvalidPosition",
+        ),
+        (
+            "AbsoluteMove",
+            r#"<ProfileToken>main</ProfileToken><Position><tt:PanTilt x="0.1"/></Position>"#,
+            "ter:InvalidPosition",
+        ),
+    ] {
+        assert!(
+            fault(&cam, TPTZ, action, body).subcodes.contains(&subcode),
+            "{action} {body}"
+        );
+    }
+    assert_eq!(
+        cam.ptz.as_ref().unwrap().calls().len(),
+        3,
+        "faults move nothing"
+    );
+}
+
+#[test]
+fn a_camera_without_relative_moves_refuses_them() {
+    // The default trait methods: continuous only, nothing advertised.
+    struct Plain;
+    impl PtzPort for Plain {
+        fn zoom(&self) -> bool {
+            false
+        }
+        fn max_presets(&self) -> usize {
+            0
+        }
+        fn continuous_move(&self, _: crate::Velocity) -> Result<(), PtzError> {
+            Ok(())
+        }
+        fn stop(&self) -> Result<(), PtzError> {
+            Ok(())
+        }
+        fn home(&self) -> Result<(), PtzError> {
+            Ok(())
+        }
+        fn presets(&self) -> Vec<crate::Preset> {
+            Vec::new()
+        }
+        fn goto_preset(&self, _: &str) -> Result<(), PtzError> {
+            Ok(())
+        }
+        fn set_preset(&self, _: Option<&str>, _: Option<&str>) -> Result<String, PtzError> {
+            Err(PtzError::InvalidName)
+        }
+        fn remove_preset(&self, _: &str) -> Result<(), PtzError> {
+            Ok(())
+        }
+        fn moving(&self) -> bool {
+            false
+        }
+    }
+    let cam = FakeCamera::new(true, &[]);
+    /// The rendered reply (or fault) of `action` on `ptz`, as the wire would carry it.
+    fn through(ptz: &dyn PtzPort, cam: &FakeCamera, action: &str) -> String {
+        let body = "<ProfileToken>main</ProfileToken><Translation><tt:Zoom x=\"1\"/></Translation>";
+        match ptz_service(&request(TPTZ, action, body), &ctx(cam), ptz) {
+            Reply::Ok(b) | Reply::Stopped(b) | Reply::Moving { body: b, .. } => b,
+            Reply::Fault(f) => f.render(),
+            Reply::Pull { .. } => unreachable!(),
+        }
+    }
+    let r = through(&Plain, &cam, "GetConfigurationOptions");
+    assert!(!r.contains("RelativePanTiltTranslationSpace") && !r.contains("AbsolutePanTilt"));
+    assert!(r.contains("ContinuousPanTiltVelocitySpace"));
+    let status = through(&Plain, &cam, "GetStatus");
+    assert!(!status.contains("<tt:Position>"));
+    let refused = through(&Plain, &cam, "RelativeMove");
+    assert!(refused.contains("ActionNotSupported"), "{refused}");
+}
+
 #[test]
 fn pull_point_lifecycle_over_the_service() {
     let cam = FakeCamera::new(false, &["call_button", "door", "tamper"]);

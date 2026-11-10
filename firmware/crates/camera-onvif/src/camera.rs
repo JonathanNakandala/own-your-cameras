@@ -106,11 +106,49 @@ pub struct Velocity {
     pub zoom: f32,
 }
 
+/// A relative move. Pan and tilt are fractions of the **current field of view** (ONVIF `TranslationSpaceFov`:
+/// 1.0 is one full picture width/height, positive is right/up), each -1.0..=1.0. Zoom is a fraction of the
+/// lens travel (`TranslationGenericSpace`), -1.0..=1.0, positive is in. An absent axis does not move.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Relative {
+    pub pan_tilt: Option<(f32, f32)>,
+    pub zoom: Option<f32>,
+}
+
+/// An absolute move in `PositionGenericSpace`. Pan and tilt run -1.0..=1.0 across the head's whole travel,
+/// zoom 0.0..=1.0 across the lens's. An absent axis does not move.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Absolute {
+    pub pan_tilt: Option<(f32, f32)>,
+    pub zoom: Option<f32>,
+}
+
+/// Where the head and lens are, in the same units as [`Absolute`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Pose {
+    pub pan: f32,
+    pub tilt: f32,
+    pub zoom: f32,
+}
+
+/// What a camera's PTZ offers beyond continuous moves and presets; each is advertised in the ONVIF spaces.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PtzFeatures {
+    /// [`PtzPort::relative_move`].
+    pub relative: bool,
+    /// [`PtzPort::absolute_move`].
+    pub absolute: bool,
+    /// [`PtzPort::pose`] reports a position in `GetStatus`.
+    pub position: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PtzError {
     NoSuchPreset,
     TooManyPresets,
     InvalidName,
+    /// The camera does not do this kind of move.
+    Unsupported,
     /// The motion owner refused or failed the request.
     Failed(String),
 }
@@ -128,7 +166,21 @@ pub trait PtzPort: Send + Sync {
     /// Returns the preset's token.
     fn set_preset(&self, token: Option<&str>, name: Option<&str>) -> Result<String, PtzError>;
     fn remove_preset(&self, token: &str) -> Result<(), PtzError>;
+    /// True from the moment a move is accepted until the head and lens have settled, queued moves included.
     fn moving(&self) -> bool;
+    fn features(&self) -> PtzFeatures {
+        PtzFeatures::default()
+    }
+    fn relative_move(&self, _: Relative) -> Result<(), PtzError> {
+        Err(PtzError::Unsupported)
+    }
+    fn absolute_move(&self, _: Absolute) -> Result<(), PtzError> {
+        Err(PtzError::Unsupported)
+    }
+    /// The confirmed pose, `None` while it is unknown (before homing, after a stop).
+    fn pose(&self) -> Option<Pose> {
+        None
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -6,7 +6,9 @@
 //! no-op, any other value is `ter:InvalidArgVal`. PTZ moves and presets act through the camera's motion
 //! owner. Unknown actions are `ter:ActionNotSupported`.
 
-use crate::camera::{MediaProfile, OnvifCamera, PtzError, PtzPort, Velocity};
+use crate::camera::{
+    Absolute, MediaProfile, OnvifCamera, PtzError, PtzFeatures, PtzPort, Relative, Velocity,
+};
 use crate::events::{self, EventError, Message, PullPointBook, Termination};
 use crate::soap::{Fault, Request, TDS, TEV, TMD, TPTZ, TRT, WSNT};
 use crate::time;
@@ -26,6 +28,14 @@ const PTZ_CONFIG: &str = "ptz_config";
 const PAN_TILT_VELOCITY: &str =
     "http://www.onvif.org/ver10/tptz/PanTiltSpaces/VelocityGenericSpace";
 const ZOOM_VELOCITY: &str = "http://www.onvif.org/ver10/tptz/ZoomSpaces/VelocityGenericSpace";
+const PAN_TILT_POSITION: &str =
+    "http://www.onvif.org/ver10/tptz/PanTiltSpaces/PositionGenericSpace";
+const ZOOM_POSITION: &str = "http://www.onvif.org/ver10/tptz/ZoomSpaces/PositionGenericSpace";
+/// Pan/tilt as a fraction of the picture: what Frigate's autotracking requires of a camera.
+const PAN_TILT_FOV: &str = "http://www.onvif.org/ver10/tptz/PanTiltSpaces/TranslationSpaceFov";
+const ZOOM_TRANSLATION: &str = "http://www.onvif.org/ver10/tptz/ZoomSpaces/TranslationGenericSpace";
+const PAN_TILT_SPEED: &str = "http://www.onvif.org/ver10/tptz/PanTiltSpaces/GenericSpeedSpace";
+const ZOOM_SPEED: &str = "http://www.onvif.org/ver10/tptz/ZoomSpaces/ZoomGenericSpeedSpace";
 /// A ContinuousMove without `Timeout` stops after this (`DefaultPTZTimeout`).
 pub const DEFAULT_MOVE: Duration = Duration::from_secs(10);
 pub const MAX_MOVE: Duration = Duration::from_secs(60);
@@ -222,8 +232,11 @@ fn device_io(req: &Request, ctx: &Context) -> Reply {
     }
 }
 
-fn ptz_service_capabilities() -> String {
-    "<tptz:Capabilities EFlip=\"false\" Reverse=\"false\" GetCompatibleConfigurations=\"false\" MoveStatus=\"true\" StatusPosition=\"false\"/>".into()
+fn ptz_service_capabilities(features: PtzFeatures) -> String {
+    format!(
+        "<tptz:Capabilities EFlip=\"false\" Reverse=\"false\" GetCompatibleConfigurations=\"false\" MoveStatus=\"true\" StatusPosition=\"{}\"/>",
+        features.position
+    )
 }
 
 fn event_service_capabilities() -> String {
@@ -335,7 +348,9 @@ fn device(req: &Request, ctx: &Context) -> Reply {
                         let c = match prefix {
                             "tds" => device_service_capabilities(),
                             "trt" => media_service_capabilities(profiles),
-                            "tptz" => ptz_service_capabilities(),
+                            "tptz" => ptz_service_capabilities(
+                                ctx.camera.ptz().map(|p| p.features()).unwrap_or_default(),
+                            ),
                             "tmd" => device_io_service_capabilities(ctx),
                             _ => event_service_capabilities(),
                         };
@@ -558,21 +573,57 @@ fn audio_encoder_config(element: &str, uses: usize) -> String {
     )
 }
 
-fn ptz_config(element: &str, uses: usize, zoom: bool) -> String {
-    let zoom_space = if zoom {
-        text("tt:DefaultContinuousZoomVelocitySpace", ZOOM_VELOCITY)
-    } else {
-        String::new()
-    };
+fn ptz_config(element: &str, uses: usize, ptz: &dyn PtzPort) -> String {
+    let (zoom, features) = (ptz.zoom(), ptz.features());
+    let mut defaults = String::new();
+    // The schema's order: absolute, relative, continuous, speed, timeout.
+    if features.absolute {
+        defaults.push_str(&text(
+            "tt:DefaultAbsolutePantTiltPositionSpace",
+            PAN_TILT_POSITION,
+        ));
+        if zoom {
+            defaults.push_str(&text("tt:DefaultAbsoluteZoomPositionSpace", ZOOM_POSITION));
+        }
+    }
+    if features.relative {
+        defaults.push_str(&text(
+            "tt:DefaultRelativePanTiltTranslationSpace",
+            PAN_TILT_FOV,
+        ));
+        if zoom {
+            defaults.push_str(&text(
+                "tt:DefaultRelativeZoomTranslationSpace",
+                ZOOM_TRANSLATION,
+            ));
+        }
+    }
+    defaults.push_str(&text(
+        "tt:DefaultContinuousPanTiltVelocitySpace",
+        PAN_TILT_VELOCITY,
+    ));
+    if zoom {
+        defaults.push_str(&text(
+            "tt:DefaultContinuousZoomVelocitySpace",
+            ZOOM_VELOCITY,
+        ));
+    }
+    if features.relative || features.absolute {
+        // Clients read the default speed to fill their moves' `Speed`; a full-speed default.
+        let zoom_speed = if zoom {
+            format!("<tt:Zoom x=\"1\" space=\"{ZOOM_SPEED}\"/>")
+        } else {
+            String::new()
+        };
+        defaults.push_str(&format!(
+            "<tt:DefaultPTZSpeed><tt:PanTilt x=\"1\" y=\"1\" space=\"{PAN_TILT_SPEED}\"/>{zoom_speed}</tt:DefaultPTZSpeed>"
+        ));
+    }
     format!(
-        "<{element} token=\"{PTZ_CONFIG}\">{}{}{}{}{zoom_space}{}</{element}>",
+        "<{element} token=\"{PTZ_CONFIG}\">{}{}{}{defaults}{}</{element}>",
         text("tt:Name", PTZ_CONFIG),
         text("tt:UseCount", uses),
         text("tt:NodeToken", PTZ_NODE),
-        text(
-            "tt:DefaultContinuousPanTiltVelocitySpace",
-            PAN_TILT_VELOCITY
-        ),
         text("tt:DefaultPTZTimeout", time::format_duration(DEFAULT_MOVE)),
     )
 }
@@ -610,7 +661,7 @@ fn profile_xml(ctx: &Context, p: &MediaProfile, element: &str) -> String {
         inner.push_str(&audio_encoder_config("tt:AudioEncoderConfiguration", uses));
     }
     if let Some(ptz) = ctx.camera.ptz() {
-        inner.push_str(&ptz_config("tt:PTZConfiguration", uses, ptz.zoom()));
+        inner.push_str(&ptz_config("tt:PTZConfiguration", uses, ptz));
     }
     if ctx.camera.audio_output() {
         inner.push_str(&el(
@@ -998,6 +1049,7 @@ fn ptz_fault(e: PtzError) -> Reply {
             "Preset store is full",
         ),
         PtzError::InvalidName => Fault::invalid_arg("ter:InvalidPresetName", "Invalid preset name"),
+        PtzError::Unsupported => Fault::action_not_supported(),
         PtzError::Failed(why) => Fault::receiver(&["ter:Action"], why),
     })
 }
@@ -1013,12 +1065,57 @@ fn velocity_space(name: &str, uri: &str, axes: &[&str]) -> String {
     )
 }
 
-fn spaces(zoom: bool) -> String {
-    let mut out = velocity_space(
+fn position_space(name: &str, uri: &str, axes: &[(&str, i32)]) -> String {
+    el(
+        name,
+        format!(
+            "{}{}",
+            text("tt:URI", uri),
+            axes.iter()
+                .map(|(a, min)| range(a, min, 1))
+                .collect::<String>()
+        ),
+    )
+}
+
+/// `SupportedPTZSpaces` / the options' `Spaces`, in the schema's order.
+fn spaces(ptz: &dyn PtzPort) -> String {
+    const XY: [(&str, i32); 2] = [("tt:XRange", -1), ("tt:YRange", -1)];
+    let (zoom, features) = (ptz.zoom(), ptz.features());
+    let mut out = String::new();
+    if features.absolute {
+        out.push_str(&position_space(
+            "tt:AbsolutePanTiltPositionSpace",
+            PAN_TILT_POSITION,
+            &XY,
+        ));
+        if zoom {
+            out.push_str(&position_space(
+                "tt:AbsoluteZoomPositionSpace",
+                ZOOM_POSITION,
+                &[("tt:XRange", 0)],
+            ));
+        }
+    }
+    if features.relative {
+        out.push_str(&position_space(
+            "tt:RelativePanTiltTranslationSpace",
+            PAN_TILT_FOV,
+            &XY,
+        ));
+        if zoom {
+            out.push_str(&position_space(
+                "tt:RelativeZoomTranslationSpace",
+                ZOOM_TRANSLATION,
+                &[("tt:XRange", -1)],
+            ));
+        }
+    }
+    out.push_str(&velocity_space(
         "tt:ContinuousPanTiltVelocitySpace",
         PAN_TILT_VELOCITY,
         &["tt:XRange", "tt:YRange"],
-    );
+    ));
     if zoom {
         out.push_str(&velocity_space(
             "tt:ContinuousZoomVelocitySpace",
@@ -1026,7 +1123,54 @@ fn spaces(zoom: bool) -> String {
             &["tt:XRange"],
         ));
     }
+    if features.relative || features.absolute {
+        out.push_str(&position_space(
+            "tt:PanTiltSpeedSpace",
+            PAN_TILT_SPEED,
+            &[("tt:XRange", 0)],
+        ));
+        if zoom {
+            out.push_str(&position_space(
+                "tt:ZoomSpeedSpace",
+                ZOOM_SPEED,
+                &[("tt:XRange", 0)],
+            ));
+        }
+    }
     out
+}
+
+/// An axis value that must be present and finite (a move's target), clamped to `min..=1`.
+fn target(e: &Element, name: &str, min: f32) -> Result<f32, Fault> {
+    e.attr(name)
+        .and_then(|v| v.parse::<f32>().ok())
+        .filter(|v| v.is_finite())
+        .map(|v| v.clamp(min, 1.0))
+        .ok_or_else(|| Fault::invalid_arg("ter:InvalidPosition", "A move needs finite x and y"))
+}
+
+/// The `Translation` / `Position` child `name` of a move: `None` when the axis is absent. A `space` it names
+/// must be the one we offer for it.
+fn move_axes(
+    body: &Element,
+    parent: &str,
+    name: &str,
+    uri: &str,
+    min: f32,
+    both: bool,
+) -> Result<Option<(f32, f32)>, Fault> {
+    let Some(e) = body.child(parent).and_then(|p| p.child(name)) else {
+        return Ok(None);
+    };
+    if e.attr("space").is_some_and(|s| s != uri) {
+        return Err(Fault::invalid_arg(
+            "ter:SpaceNotSupported",
+            "That coordinate space is not supported",
+        ));
+    }
+    let x = target(e, "x", min)?;
+    let y = if both { target(e, "y", min)? } else { 0.0 };
+    Ok(Some((x, y)))
 }
 
 fn axis(e: Option<&Element>, name: &str) -> f32 {
@@ -1044,7 +1188,7 @@ fn ptz_service(req: &Request, ctx: &Context, ptz: &dyn PtzPort) -> Reply {
         format!(
             "<tptz:PTZNode token=\"{PTZ_NODE}\" FixedHomePosition=\"true\">{}{}{}<tt:HomeSupported>true</tt:HomeSupported></tptz:PTZNode>",
             text("tt:Name", "PTZ"),
-            el("tt:SupportedPTZSpaces", spaces(ptz.zoom())),
+            el("tt:SupportedPTZSpaces", spaces(ptz)),
             text("tt:MaximumNumberOfPresets", ptz.max_presets()),
         )
     };
@@ -1053,22 +1197,22 @@ fn ptz_service(req: &Request, ctx: &Context, ptz: &dyn PtzPort) -> Reply {
         return no_profile();
     }
     match action {
-        "GetServiceCapabilities" => reply(ptz_service_capabilities()),
+        "GetServiceCapabilities" => reply(ptz_service_capabilities(ptz.features())),
         "GetNodes" => reply(node()),
         "GetNode" => match req.body.text_of("NodeToken") {
             Some(PTZ_NODE) => reply(node()),
             _ => Reply::Fault(Fault::invalid_arg("ter:NoEntity", "No such PTZ node")),
         },
-        "GetConfigurations" => reply(ptz_config("tptz:PTZConfiguration", uses, ptz.zoom())),
+        "GetConfigurations" => reply(ptz_config("tptz:PTZConfiguration", uses, ptz)),
         "GetConfiguration" => match req.body.text_of("PTZConfigurationToken") {
-            Some(PTZ_CONFIG) => reply(ptz_config("tptz:PTZConfiguration", uses, ptz.zoom())),
+            Some(PTZ_CONFIG) => reply(ptz_config("tptz:PTZConfiguration", uses, ptz)),
             _ => no_config(),
         },
         "GetConfigurationOptions" => reply(el(
             "tptz:PTZConfigurationOptions",
             format!(
                 "{}{}",
-                el("tt:Spaces", spaces(ptz.zoom())),
+                el("tt:Spaces", spaces(ptz)),
                 el(
                     "tt:PTZTimeout",
                     format!(
@@ -1086,10 +1230,31 @@ fn ptz_service(req: &Request, ctx: &Context, ptz: &dyn PtzPort) -> Reply {
             } else {
                 String::new()
             };
+            // `Position` precedes `MoveStatus` in the schema; it is left out while the pose is unknown.
+            let position = ptz
+                .features()
+                .position
+                .then(|| ptz.pose())
+                .flatten()
+                .map(|p| {
+                    let zoom = if ptz.zoom() {
+                        format!("<tt:Zoom x=\"{:.4}\" space=\"{ZOOM_POSITION}\"/>", p.zoom)
+                    } else {
+                        String::new()
+                    };
+                    el(
+                        "tt:Position",
+                        format!(
+                            "<tt:PanTilt x=\"{:.4}\" y=\"{:.4}\" space=\"{PAN_TILT_POSITION}\"/>{zoom}",
+                            p.pan, p.tilt
+                        ),
+                    )
+                })
+                .unwrap_or_default();
             reply(el(
                 "tptz:PTZStatus",
                 format!(
-                    "{}{}",
+                    "{position}{}{}",
                     el(
                         "tt:MoveStatus",
                         format!("{}{zoom}", text("tt:PanTilt", status))
@@ -1097,6 +1262,51 @@ fn ptz_service(req: &Request, ctx: &Context, ptz: &dyn PtzPort) -> Reply {
                     text("tt:UtcTime", time::format(ctx.now))
                 ),
             ))
+        }
+        "RelativeMove" | "AbsoluteMove" => {
+            let relative = action == "RelativeMove";
+            let (parent, pt_uri, pt_min, zoom_uri, zoom_min) = if relative {
+                ("Translation", PAN_TILT_FOV, -1.0, ZOOM_TRANSLATION, -1.0)
+            } else {
+                ("Position", PAN_TILT_POSITION, -1.0, ZOOM_POSITION, 0.0)
+            };
+            let features = ptz.features();
+            if !(if relative {
+                features.relative
+            } else {
+                features.absolute
+            }) {
+                return ptz_fault(PtzError::Unsupported);
+            }
+            let axes =
+                move_axes(&req.body, parent, "PanTilt", pt_uri, pt_min, true).and_then(|pt| {
+                    if ptz.zoom() {
+                        move_axes(&req.body, parent, "Zoom", zoom_uri, zoom_min, false)
+                            .map(|z| (pt, z.map(|(x, _)| x)))
+                    } else {
+                        Ok((pt, None))
+                    }
+                });
+            let (pan_tilt, zoom) = match axes {
+                Ok((None, None)) => {
+                    return Reply::Fault(Fault::invalid_arg(
+                        "ter:InvalidPosition",
+                        "The move names no axis",
+                    ));
+                }
+                Ok(axes) => axes,
+                Err(f) => return Reply::Fault(f),
+            };
+            // `Speed` is not honoured: a correction is always made as fast as the head can.
+            let result = if relative {
+                ptz.relative_move(Relative { pan_tilt, zoom })
+            } else {
+                ptz.absolute_move(Absolute { pan_tilt, zoom })
+            };
+            match result {
+                Ok(()) => Reply::Stopped(format!("<tptz:{action}Response/>")),
+                Err(e) => ptz_fault(e),
+            }
         }
         "ContinuousMove" => {
             let velocity = req.body.child("Velocity");

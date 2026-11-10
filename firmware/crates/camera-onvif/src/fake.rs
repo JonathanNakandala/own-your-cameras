@@ -95,6 +95,28 @@ impl PtzPort for FakePtz {
     fn moving(&self) -> bool {
         self.moving.load(Ordering::Relaxed)
     }
+    fn features(&self) -> crate::PtzFeatures {
+        crate::PtzFeatures {
+            relative: true,
+            absolute: true,
+            position: true,
+        }
+    }
+    fn relative_move(&self, r: crate::Relative) -> Result<(), PtzError> {
+        self.note(format!("relative {:?} {:?}", r.pan_tilt, r.zoom));
+        Ok(())
+    }
+    fn absolute_move(&self, a: crate::Absolute) -> Result<(), PtzError> {
+        self.note(format!("absolute {:?} {:?}", a.pan_tilt, a.zoom));
+        Ok(())
+    }
+    fn pose(&self) -> Option<crate::Pose> {
+        Some(crate::Pose {
+            pan: 0.25,
+            tilt: -0.5,
+            zoom: 0.75,
+        })
+    }
 }
 
 pub struct FakeCamera {
