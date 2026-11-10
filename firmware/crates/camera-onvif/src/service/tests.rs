@@ -3,6 +3,7 @@ use super::*;
 use crate::fake::FakeCamera;
 use crate::soap;
 use crate::xml::{self, Element};
+use std::sync::atomic::Ordering;
 use std::time::UNIX_EPOCH;
 
 const NOW: u64 = 1_794_052_800; // 2026-11-07T12:00:00Z
@@ -15,6 +16,7 @@ fn ctx(camera: &FakeCamera) -> Context<'_> {
         rtsp_port: 554,
         http_port: 80,
         camera,
+        user: "USER",
         subscription: None,
     }
 }
@@ -259,6 +261,7 @@ fn writes_and_unknown_device_actions_are_not_supported() {
         "SystemReboot",
         "SetHostname",
         "CreateUsers",
+        "SetNTP",
     ] {
         assert_eq!(
             fault(&cam, TDS, action, "").subcodes,
@@ -267,6 +270,98 @@ fn writes_and_unknown_device_actions_are_not_supported() {
         );
     }
     assert_eq!(fault(&cam, "urn:other", "Anything", "").status(), 500);
+}
+
+#[test]
+fn device_reboots_lists_its_user_and_serves_its_log() {
+    let cam = FakeCamera::new(true, &[]);
+    let rebooted = call(&cam, TDS, "SystemReboot", "");
+    assert_eq!(rebooted.text_of("Message"), Some("Rebooting"));
+    assert_eq!(
+        cam.system.as_ref().unwrap().reboots.load(Ordering::SeqCst),
+        1
+    );
+    let users = call(&cam, TDS, "GetUsers", "");
+    assert_eq!(users.children_named("User").count(), 1);
+    assert_eq!(path(&users, &["User", "Username"]).text, "USER");
+    assert_eq!(path(&users, &["User", "UserLevel"]).text, "Administrator");
+    // The log is escaped on the way out and back (the test's reader trims the final newline).
+    let log = call(&cam, TDS, "GetSystemLog", "<LogType>System</LogType>");
+    assert_eq!(
+        path(&log, &["SystemLog", "String"]).text,
+        "talk: session ended <ok> & done"
+    );
+    let info = call(&cam, TDS, "GetSystemSupportInformation", "");
+    let text = &path(&info, &["SupportInformation", "String"]).text;
+    assert!(text.contains("Model: ") && text.contains("Serial: ") && text.contains("Profile S"));
+    // The log is advertised in the capability documents.
+    let caps = call(&cam, TDS, "GetServiceCapabilities", "");
+    assert_eq!(
+        path(&caps, &["Capabilities", "System"]).attr("SystemLogging"),
+        Some("true")
+    );
+    let all = call(&cam, TDS, "GetCapabilities", "<Category>Device</Category>");
+    assert_eq!(
+        path(&all, &["Capabilities", "Device", "System", "SystemLogging"]).text,
+        "true"
+    );
+}
+
+#[test]
+fn device_refuses_what_the_camera_does_not_keep() {
+    let cam = FakeCamera::new(true, &[]);
+    assert!(
+        fault(&cam, TDS, "GetSystemLog", "<LogType>Access</LogType>")
+            .subcodes
+            .contains(&"ter:SystemlogUnavailable")
+    );
+    for bad in ["", "<LogType>Debug</LogType>"] {
+        assert!(
+            fault(&cam, TDS, "GetSystemLog", bad)
+                .subcodes
+                .contains(&"ter:InvalidArgs"),
+            "{bad:?}"
+        );
+    }
+    // A camera that keeps no log and cannot reboot says so, and does not advertise either.
+    let panel = FakeCamera::new(false, &[]);
+    assert!(
+        fault(&panel, TDS, "GetSystemLog", "<LogType>System</LogType>")
+            .subcodes
+            .contains(&"ter:SystemlogUnavailable")
+    );
+    assert_eq!(
+        fault(&panel, TDS, "SystemReboot", "").subcodes,
+        ["ter:ActionNotSupported"]
+    );
+    let caps = call(&panel, TDS, "GetServiceCapabilities", "");
+    assert_eq!(
+        path(&caps, &["Capabilities", "System"]).attr("SystemLogging"),
+        Some("false")
+    );
+}
+
+#[test]
+fn media_accepts_a_sync_point_and_lists_no_metadata() {
+    let cam = FakeCamera::new(true, &[]);
+    call(
+        &cam,
+        TRT,
+        "SetSynchronizationPoint",
+        "<ProfileToken>sub</ProfileToken>",
+    );
+    assert!(
+        fault(
+            &cam,
+            TRT,
+            "SetSynchronizationPoint",
+            "<ProfileToken>nope</ProfileToken>"
+        )
+        .subcodes
+        .contains(&"ter:NoProfile")
+    );
+    let none = call(&cam, TRT, "GetMetadataConfigurations", "");
+    assert!(none.children.is_empty());
 }
 
 #[test]

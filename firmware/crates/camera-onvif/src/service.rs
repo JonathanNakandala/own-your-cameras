@@ -52,6 +52,8 @@ pub struct Context<'a> {
     pub rtsp_port: u16,
     pub http_port: u16,
     pub camera: &'a dyn OnvifCamera,
+    /// The one user name the camera knows (its RTSP user), for `GetUsers`.
+    pub user: &'a str,
     /// The subscription a request path names (`/onvif/subscription/N`).
     pub subscription: Option<u32>,
 }
@@ -180,11 +182,13 @@ fn services(ctx: &Context) -> Vec<(&'static str, &'static str, &'static str)> {
     out
 }
 
-fn device_service_capabilities() -> String {
-    "<tds:Capabilities><tds:Network IPFilter=\"false\" ZeroConfiguration=\"false\" IPVersion6=\"false\" DynDNS=\"false\" NTP=\"0\"/>\
+fn device_service_capabilities(ctx: &Context) -> String {
+    let logging = ctx.camera.keeps_log();
+    format!(
+        "<tds:Capabilities><tds:Network IPFilter=\"false\" ZeroConfiguration=\"false\" IPVersion6=\"false\" DynDNS=\"false\" NTP=\"0\"/>\
 <tds:Security TLS1.0=\"false\" TLS1.1=\"false\" TLS1.2=\"false\" OnboardKeyGeneration=\"false\" AccessPolicyConfig=\"false\" DefaultAccessPolicy=\"false\" Dot1X=\"false\" RemoteUserHandling=\"false\" X.509Token=\"false\" SAMLToken=\"false\" KerberosToken=\"false\" UsernameToken=\"true\" HttpDigest=\"true\" RELToken=\"false\"/>\
-<tds:System DiscoveryResolve=\"false\" DiscoveryBye=\"true\" RemoteDiscovery=\"false\" SystemBackup=\"false\" SystemLogging=\"false\" FirmwareUpgrade=\"false\" HttpFirmwareUpgrade=\"false\" HttpSystemBackup=\"false\" HttpSystemLogging=\"false\" HttpSupportInformation=\"false\"/></tds:Capabilities>"
-        .to_string()
+<tds:System DiscoveryResolve=\"false\" DiscoveryBye=\"true\" RemoteDiscovery=\"false\" SystemBackup=\"false\" SystemLogging=\"{logging}\" FirmwareUpgrade=\"false\" HttpFirmwareUpgrade=\"false\" HttpSystemBackup=\"false\" HttpSystemLogging=\"false\" HttpSupportInformation=\"false\"/></tds:Capabilities>"
+    )
 }
 
 fn media_service_capabilities(profiles: usize) -> String {
@@ -258,13 +262,17 @@ fn capabilities(ctx: &Context, category: &str) -> String {
     let want = |c: &str| all || category == c;
     let mut out = String::new();
     if want("Device") {
+        let system = format!(
+            "<tt:System><tt:DiscoveryResolve>false</tt:DiscoveryResolve><tt:DiscoveryBye>true</tt:DiscoveryBye><tt:RemoteDiscovery>false</tt:RemoteDiscovery><tt:SystemBackup>false</tt:SystemBackup><tt:SystemLogging>{}</tt:SystemLogging><tt:FirmwareUpgrade>false</tt:FirmwareUpgrade><tt:SupportedVersions><tt:Major>2</tt:Major><tt:Minor>5</tt:Minor></tt:SupportedVersions></tt:System>",
+            ctx.camera.keeps_log()
+        );
         out.push_str(&el(
             "tt:Device",
             format!(
                 "{}{}{}{}{}",
                 text("tt:XAddr", url(ctx, "/onvif/device_service")),
                 "<tt:Network><tt:IPFilter>false</tt:IPFilter><tt:ZeroConfiguration>false</tt:ZeroConfiguration><tt:IPVersion6>false</tt:IPVersion6><tt:DynDNS>false</tt:DynDNS></tt:Network>",
-                "<tt:System><tt:DiscoveryResolve>false</tt:DiscoveryResolve><tt:DiscoveryBye>true</tt:DiscoveryBye><tt:RemoteDiscovery>false</tt:RemoteDiscovery><tt:SystemBackup>false</tt:SystemBackup><tt:SystemLogging>false</tt:SystemLogging><tt:FirmwareUpgrade>false</tt:FirmwareUpgrade><tt:SupportedVersions><tt:Major>2</tt:Major><tt:Minor>5</tt:Minor></tt:SupportedVersions></tt:System>",
+                system,
                 el(
                     "tt:IO",
                     format!(
@@ -327,6 +335,21 @@ fn capabilities(ctx: &Context, category: &str) -> String {
     out
 }
 
+/// What to quote to whoever supports this camera: the identity, one `key: value` per line.
+fn support_information(ctx: &Context) -> String {
+    let id = ctx.camera.identity();
+    format!(
+        "Manufacturer: {}\nModel: {}\nFirmware: {}\nHardware: {}\nSerial: {}\nMAC: {}\nHostname: {}\nONVIF: 2.5 (Profile S)\n",
+        id.manufacturer,
+        id.model,
+        id.firmware,
+        id.hardware,
+        id.serial(),
+        id.mac_text(),
+        id.hostname,
+    )
+}
+
 fn device(req: &Request, ctx: &Context) -> Reply {
     let id = ctx.camera.identity();
     let action = req.action.as_str();
@@ -359,7 +382,7 @@ fn device(req: &Request, ctx: &Context) -> Reply {
                 .map(|(ns, path, prefix)| {
                     let caps = if with_caps {
                         let c = match prefix {
-                            "tds" => device_service_capabilities(),
+                            "tds" => device_service_capabilities(ctx),
                             "trt" => media_service_capabilities(profiles),
                             "tptz" => ptz_service_capabilities(
                                 ctx.camera.ptz().map(|p| p.features()).unwrap_or_default(),
@@ -384,7 +407,7 @@ fn device(req: &Request, ctx: &Context) -> Reply {
                 .collect();
             reply(inner)
         }
-        "GetServiceCapabilities" => reply(device_service_capabilities()),
+        "GetServiceCapabilities" => reply(device_service_capabilities(ctx)),
         "GetSystemDateAndTime" => reply(el(
             "tds:SystemDateAndTime",
             format!(
@@ -504,6 +527,31 @@ fn device(req: &Request, ctx: &Context) -> Reply {
                 .into(),
         ),
         "GetRelayOutputs" => reply(String::new()),
+        "GetUsers" => reply(format!(
+            "<tds:User>{}{}</tds:User>",
+            text("tt:Username", ctx.user),
+            text("tt:UserLevel", "Administrator")
+        )),
+        "SystemReboot" => match ctx.camera.reboot() {
+            Some(Ok(())) => reply(text("tds:Message", "Rebooting")),
+            Some(Err(why)) => Reply::Fault(Fault::receiver(&["ter:Action"], why)),
+            None => Reply::Fault(Fault::action_not_supported()),
+        },
+        "GetSystemLog" => match (req.body.text_of("LogType"), ctx.camera.system_log()) {
+            (Some("System"), Some(log)) => reply(el("tds:SystemLog", text("tt:String", log))),
+            (Some("System" | "Access"), _) => Reply::Fault(Fault::invalid_arg(
+                "ter:SystemlogUnavailable",
+                "The camera keeps no such log",
+            )),
+            _ => Reply::Fault(Fault::invalid_arg(
+                "ter:InvalidArgs",
+                "LogType is System or Access",
+            )),
+        },
+        "GetSystemSupportInformation" => reply(el(
+            "tds:SupportInformation",
+            text("tt:String", support_information(ctx)),
+        )),
         _ => Reply::Fault(Fault::action_not_supported()),
     }
 }
@@ -891,6 +939,14 @@ fn media(req: &Request, ctx: &Context) -> Reply {
             }
             Err(fault) => fault,
         },
+        // The stream's key frames come every second, so a client that asks for one waits at most that long:
+        // nothing needs forcing, and the request is valid for any profile of ours.
+        "SetSynchronizationPoint" => match find_profile(ctx, req) {
+            Some(_) => reply(String::new()),
+            None => no_profile(),
+        },
+        // No metadata stream exists, so there is nothing to configure.
+        "GetMetadataConfigurations" => reply(String::new()),
         "GetGuaranteedNumberOfVideoEncoderInstances" => reply(format!(
             "{}{}",
             text("trt:TotalNumber", uses),

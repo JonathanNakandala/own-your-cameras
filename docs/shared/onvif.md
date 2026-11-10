@@ -111,6 +111,24 @@ no use for (exposure, white balance, backlight, wide dynamic range) are ignored,
 the document it read still works. Focus *moves* (`Move`, `GetMoveOptions`, `GetStatus`, `Stop`) are not offered:
 the focus position is not published, and the focus motor follows the lens zoom.
 
+## Device and media calls
+
+Beyond the read-only device calls, these are answered (the E1 Zoom; a camera without the hook says
+`ActionNotSupported`):
+
+| Call | Behaviour |
+|---|---|
+| `SystemReboot` | queues the same restart as the Reboot button (settings are saved first); the reply may arrive before the camera goes down |
+| `GetUsers` | the one user, the RTSP user name, as `Administrator`; users cannot be created or changed |
+| `GetSystemLog` (`System`) | the last 32 KiB of the daemon's log, from a line start; `Access` is `ter:SystemlogUnavailable`. The log never holds passwords, and the call needs the camera's login like every other |
+| `GetSystemSupportInformation` | manufacturer, model, firmware, hardware, serial, MAC and hostname, one per line |
+| `SetSynchronizationPoint` | accepted for any profile; the stream's key frames come every second, so a client waits at most that long and nothing is forced |
+| `GetMetadataConfigurations` | an empty list: there is no metadata stream |
+
+Not offered, because the daemon never writes `cam.toml` and does not set the clock from a client:
+`SetSystemDateAndTime`, `SetNTP`, `SetHostname`, `CreateUsers` and the other writes. Set the NTP servers in
+`cam.toml` instead.
+
 ## Presets
 
 Preset tokens are the preset names. Creating a preset through ONVIF saves the camera's current position under a

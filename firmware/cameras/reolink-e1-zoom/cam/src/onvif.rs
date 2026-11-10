@@ -53,6 +53,22 @@ fn percent(v: f32) -> i16 {
     (v.clamp(-1.0, 1.0) * 100.0).round() as i16
 }
 
+/// How much of the log `GetSystemLog` returns: the log is capped at 256 KiB and a SOAP reply should not be.
+const LOG_TAIL: usize = 32 * 1024;
+
+/// The last `max` bytes of `log` as text, starting at a line: a cut through a line or a character is dropped.
+fn tail(log: &[u8], max: usize) -> String {
+    let cut = log.len().saturating_sub(max);
+    let kept = &log[cut..];
+    // A cut that falls inside a line drops the rest of that line; one that falls on a line start keeps it.
+    let mid_line = cut > 0 && log[cut - 1] != b'\n';
+    let kept = match (mid_line, kept.iter().position(|b| *b == b'\n')) {
+        (true, Some(i)) => &kept[i + 1..],
+        _ => kept,
+    };
+    String::from_utf8_lossy(kept).into_owned()
+}
+
 /// ONVIF -1..1 or 0..1 across a travel of `max` steps, from a position in steps.
 fn unit(steps: u32, max: u32, signed: bool) -> f32 {
     let u = steps as f32 / max as f32;
@@ -102,6 +118,24 @@ impl OnvifCamera for E1Onvif {
 
     fn imaging(&self) -> Option<&dyn ImagingPort> {
         Some(self)
+    }
+
+    /// The same path as the Reboot button: settings are saved first, then the camera restarts.
+    fn reboot(&self) -> Option<Result<(), String>> {
+        Some(self.motion.submit(Command::Reboot))
+    }
+
+    fn keeps_log(&self) -> bool {
+        true
+    }
+
+    fn system_log(&self) -> Option<String> {
+        let bytes = crate::files::read_regular(
+            std::path::Path::new(crate::logcap::LOG_FILE),
+            crate::logcap::CAP_BYTES + 1024,
+        )
+        .ok()?;
+        Some(tail(&bytes, LOG_TAIL))
     }
 
     fn digital_inputs(&self) -> &[&'static str] {
@@ -360,6 +394,29 @@ mod tests {
             Arc::new(Handoff::default()),
             Arc::new(Motion::default()),
         )
+    }
+
+    #[test]
+    fn the_log_tail_starts_at_a_line_and_keeps_a_short_log_whole() {
+        assert_eq!(tail(b"one\ntwo\n", 100), "one\ntwo\n");
+        assert_eq!(tail(b"", 10), "");
+        // Cut mid-line: the partial first line goes.
+        assert_eq!(tail(b"alpha\nbeta\ngamma\n", 9), "gamma\n");
+        // Cut exactly on a line start keeps that line; one byte further in drops it.
+        assert_eq!(tail(b"alpha\nbeta\n", 5), "beta\n");
+        assert_eq!(tail(b"alpha\nbeta\n", 4), "");
+        // A cut through a multi-byte character cannot yield invalid text, even with no newline to start at.
+        let log = "é".repeat(10);
+        let out = tail(log.as_bytes(), 5);
+        assert!(out.chars().all(|c| c == 'é' || c == '\u{fffd}'), "{out:?}");
+    }
+
+    #[test]
+    fn a_reboot_without_a_running_owner_is_reported_not_swallowed() {
+        // The motion owner starts with MQTT; before that the queue does not exist.
+        let err = camera().reboot().unwrap().unwrap_err();
+        assert!(err.contains("not running"), "{err}");
+        assert!(camera().keeps_log());
     }
 
     #[test]

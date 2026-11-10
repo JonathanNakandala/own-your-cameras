@@ -180,10 +180,16 @@ impl crate::ImagingPort for FakeImaging {
     }
 }
 
+/// The camera's system side: counts reboots and keeps a one-line log.
+pub struct FakeSystem {
+    pub reboots: AtomicUsize,
+}
+
 pub struct FakeCamera {
     pub identity: DeviceIdentity,
     pub ptz: Option<FakePtz>,
     pub imaging: Option<FakeImaging>,
+    pub system: Option<FakeSystem>,
     pub inputs: Vec<&'static str>,
     pub encodes: AtomicUsize,
     pub encode_time: Duration,
@@ -209,6 +215,9 @@ impl FakeCamera {
             },
             ptz: ptz.then(FakePtz::new),
             imaging: ptz.then(FakeImaging::new),
+            system: ptz.then(|| FakeSystem {
+                reboots: AtomicUsize::new(0),
+            }),
             inputs: inputs.to_vec(),
             encodes: AtomicUsize::new(0),
             encode_time: Duration::from_millis(50),
@@ -255,6 +264,19 @@ impl OnvifCamera for FakeCamera {
     }
     fn ptz(&self) -> Option<&dyn PtzPort> {
         self.ptz.as_ref().map(|p| p as &dyn PtzPort)
+    }
+    fn reboot(&self) -> Option<Result<(), String>> {
+        let system = self.system.as_ref()?;
+        system.reboots.fetch_add(1, Ordering::SeqCst);
+        Some(Ok(()))
+    }
+    fn keeps_log(&self) -> bool {
+        self.system.is_some()
+    }
+    fn system_log(&self) -> Option<String> {
+        self.system
+            .as_ref()
+            .map(|_| "talk: session ended <ok> & done\n".into())
     }
     fn imaging(&self) -> Option<&dyn crate::ImagingPort> {
         self.imaging.as_ref().map(|i| i as &dyn crate::ImagingPort)

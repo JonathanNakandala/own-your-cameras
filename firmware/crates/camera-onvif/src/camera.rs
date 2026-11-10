@@ -249,6 +249,19 @@ pub trait OnvifCamera: Send + Sync {
     /// A speaker that takes the RTSP backchannel.
     fn audio_output(&self) -> bool;
     fn ptz(&self) -> Option<&dyn PtzPort>;
+    /// Reboots the camera (ONVIF `SystemReboot`). `None`: this camera does not offer it. The reply may reach
+    /// the client before the reboot starts.
+    fn reboot(&self) -> Option<Result<(), String>> {
+        None
+    }
+    /// Whether [`OnvifCamera::system_log`] has anything (cheap: it is asked for every capability document).
+    fn keeps_log(&self) -> bool {
+        false
+    }
+    /// The tail of the camera's own log, for `GetSystemLog`; `None` when it keeps none.
+    fn system_log(&self) -> Option<String> {
+        None
+    }
     /// Picture controls; `None` when the camera offers none.
     fn imaging(&self) -> Option<&dyn ImagingPort> {
         None
