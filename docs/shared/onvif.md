@@ -11,6 +11,7 @@ the network, read its streams and snapshot, and drive it without a camera-specif
 | Snapshot (hardware JPEG) | 1280×960 | the sub picture, 640×360 | the main picture, 1920×1080 |
 | PTZ: continuous move, home | pan, tilt, zoom | pan, tilt | — |
 | PTZ: relative move (field of view), absolute move, position in `GetStatus` | yes | — | — |
+| Imaging: brightness, saturation, contrast, sharpness, IR-cut filter, focus mode | yes | — | — |
 | PTZ presets: list, go to, create, delete | up to 32 | up to 16 | — |
 | Events: digital inputs | — | — | `call_button`, `door` |
 | Audio output (talkback) | yes | yes | yes |
@@ -90,6 +91,25 @@ cameras:
         enabled: true
         zooming: disabled   # the lens zooms only 1.3×; tracking by pan/tilt alone is the sensible start
 ```
+
+## Imaging
+
+The E1 Zoom offers the Imaging service at `/onvif/imaging_service`, so a client's image sliders and day/night
+switch work without an MQTT broker. Each field is one of the camera's own [settings](../../firmware/cameras/reolink-e1-zoom/docs/settings.md),
+and the ranges `GetOptions` reports are those settings' ranges (0…200 for the four levels).
+
+| ONVIF | Setting | Notes |
+|---|---|---|
+| `Brightness`, `ColorSaturation`, `Contrast`, `Sharpness` | `isp_brightness`, `isp_saturation`, `isp_contrast`, `isp_sharpness` | whole numbers; a fraction is rounded |
+| `IrCutFilter` `ON` / `OFF` / `AUTO` | `ir` = `day` / `night` / `auto` | `ON` keeps the filter in for day colour, `OFF` takes it out for night |
+| `Focus` `AutoFocusMode` `AUTO` / `MANUAL` | `autofocus` `ON` / `OFF` | |
+
+`GetImagingSettings` reports what the camera says it runs (the state it last published), so a value read
+straight after a set may take a moment to follow. A request with any value out of range, not a number or
+not one of the modes is refused with `ter:SettingsInvalid` and nothing in it is applied. Sections the camera has
+no use for (exposure, white balance, backlight, wide dynamic range) are ignored, so a client that sends back
+the document it read still works. Focus *moves* (`Move`, `GetMoveOptions`, `GetStatus`, `Stop`) are not offered:
+the focus position is not published, and the focus motor follows the lens zoom.
 
 ## Presets
 

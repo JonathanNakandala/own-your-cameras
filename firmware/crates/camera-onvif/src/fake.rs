@@ -119,9 +119,71 @@ impl PtzPort for FakePtz {
     }
 }
 
+/// A camera with brightness 0..200 and the IR-cut and focus-mode switches; records what it was asked.
+pub struct FakeImaging {
+    pub log: Mutex<Vec<String>>,
+    pub settings: Mutex<crate::ImagingSettings>,
+}
+
+impl FakeImaging {
+    pub fn new() -> Self {
+        Self {
+            log: Mutex::new(Vec::new()),
+            settings: Mutex::new(crate::ImagingSettings {
+                brightness: Some(100.0),
+                saturation: Some(100.0),
+                contrast: Some(100.0),
+                sharpness: Some(60.0),
+                ir_cut: Some(crate::IrCutFilter::Auto),
+                auto_focus: Some(true),
+            }),
+        }
+    }
+
+    pub fn calls(&self) -> Vec<String> {
+        self.log.lock().unwrap().clone()
+    }
+}
+
+impl Default for FakeImaging {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl crate::ImagingPort for FakeImaging {
+    fn options(&self) -> crate::ImagingOptions {
+        crate::ImagingOptions {
+            brightness: Some((0.0, 200.0)),
+            saturation: Some((0.0, 200.0)),
+            contrast: Some((0.0, 200.0)),
+            sharpness: Some((0.0, 200.0)),
+            ir_cut: true,
+            auto_focus: true,
+        }
+    }
+    fn settings(&self) -> crate::ImagingSettings {
+        *self.settings.lock().unwrap()
+    }
+    fn apply(&self, s: crate::ImagingSettings) -> Result<(), crate::ImagingError> {
+        if s.brightness.is_some_and(|b| !(0.0..=200.0).contains(&b)) {
+            return Err(crate::ImagingError::Invalid(
+                "Brightness is 0 to 200".into(),
+            ));
+        }
+        self.log.lock().unwrap().push(format!("{s:?}"));
+        let mut now = self.settings.lock().unwrap();
+        now.brightness = s.brightness.or(now.brightness);
+        now.ir_cut = s.ir_cut.or(now.ir_cut);
+        now.auto_focus = s.auto_focus.or(now.auto_focus);
+        Ok(())
+    }
+}
+
 pub struct FakeCamera {
     pub identity: DeviceIdentity,
     pub ptz: Option<FakePtz>,
+    pub imaging: Option<FakeImaging>,
     pub inputs: Vec<&'static str>,
     pub encodes: AtomicUsize,
     pub encode_time: Duration,
@@ -146,6 +208,7 @@ impl FakeCamera {
                 uuid: DeviceIdentity::endpoint(&[0x02, 0, 0, 0, 0, 1]),
             },
             ptz: ptz.then(FakePtz::new),
+            imaging: ptz.then(FakeImaging::new),
             inputs: inputs.to_vec(),
             encodes: AtomicUsize::new(0),
             encode_time: Duration::from_millis(50),
@@ -192,6 +255,9 @@ impl OnvifCamera for FakeCamera {
     }
     fn ptz(&self) -> Option<&dyn PtzPort> {
         self.ptz.as_ref().map(|p| p as &dyn PtzPort)
+    }
+    fn imaging(&self) -> Option<&dyn crate::ImagingPort> {
+        self.imaging.as_ref().map(|i| i as &dyn crate::ImagingPort)
     }
     fn digital_inputs(&self) -> &[&'static str] {
         &self.inputs

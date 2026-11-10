@@ -11,6 +11,7 @@ pub const TRT: &str = "http://www.onvif.org/ver10/media/wsdl";
 pub const TPTZ: &str = "http://www.onvif.org/ver20/ptz/wsdl";
 pub const TEV: &str = "http://www.onvif.org/ver10/events/wsdl";
 pub const TMD: &str = "http://www.onvif.org/ver10/deviceIO/wsdl";
+pub const TIMG: &str = "http://www.onvif.org/ver20/imaging/wsdl";
 pub const WSNT: &str = "http://docs.oasis-open.org/wsn/b-2";
 const WSSE: &str =
     "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd";
@@ -26,6 +27,7 @@ const NAMESPACES: &str = concat!(
     r#"xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl" "#,
     r#"xmlns:tev="http://www.onvif.org/ver10/events/wsdl" "#,
     r#"xmlns:tmd="http://www.onvif.org/ver10/deviceIO/wsdl" "#,
+    r#"xmlns:timg="http://www.onvif.org/ver20/imaging/wsdl" "#,
     r#"xmlns:ter="http://www.onvif.org/ver10/error" "#,
     r#"xmlns:tns1="http://www.onvif.org/ver10/topics" "#,
     r#"xmlns:wsnt="http://docs.oasis-open.org/wsn/b-2" "#,

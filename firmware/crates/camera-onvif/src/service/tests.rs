@@ -127,7 +127,19 @@ fn services_name_each_namespace_with_capabilities_on_request() {
         "<IncludeCapability>true</IncludeCapability>",
     );
     let services: Vec<&Element> = r.children_named("Service").collect();
-    assert_eq!(services.len(), 5);
+    assert_eq!(services.len(), 6);
+    let imaging = services
+        .iter()
+        .find(|s| s.text_of("Namespace") == Some(TIMG))
+        .unwrap();
+    assert_eq!(
+        imaging.text_of("XAddr"),
+        Some("http://CAMERA_HOST:80/onvif/imaging_service")
+    );
+    assert_eq!(
+        path(imaging, &["Capabilities", "Capabilities"]).attr("Presets"),
+        Some("false")
+    );
     let io = services
         .iter()
         .find(|s| s.text_of("Namespace") == Some(crate::soap::TMD))
@@ -848,6 +860,130 @@ fn a_camera_without_relative_moves_refuses_them() {
     assert!(!status.contains("<tt:Position>"));
     let refused = through(&Plain, &cam, "RelativeMove");
     assert!(refused.contains("ActionNotSupported"), "{refused}");
+}
+
+const SOURCE: &str = "<VideoSourceToken>video_source</VideoSourceToken>";
+
+#[test]
+fn imaging_reports_settings_and_options_in_the_schemas_order() {
+    let cam = FakeCamera::new(true, &[]);
+    let got = call(&cam, TIMG, "GetImagingSettings", SOURCE);
+    let settings = path(&got, &["ImagingSettings"]);
+    let names: Vec<_> = settings.children.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "Brightness",
+            "ColorSaturation",
+            "Contrast",
+            "Focus",
+            "IrCutFilter",
+            "Sharpness"
+        ]
+    );
+    assert_eq!(settings.text_of("Brightness"), Some("100"));
+    assert_eq!(settings.text_of("IrCutFilter"), Some("AUTO"));
+    assert_eq!(path(settings, &["Focus", "AutoFocusMode"]).text, "AUTO");
+    let got = call(&cam, TIMG, "GetOptions", SOURCE);
+    let options = path(&got, &["ImagingOptions"]);
+    assert_eq!(path(options, &["Brightness", "Max"]).text, "200");
+    assert_eq!(options.children_named("IrCutFilterModes").count(), 3);
+    assert_eq!(
+        path(options, &["Focus"])
+            .children_named("AutoFocusModes")
+            .count(),
+        2
+    );
+    // The service is in the capability documents too.
+    let caps = call(&cam, TIMG, "GetServiceCapabilities", "");
+    assert_eq!(
+        path(&caps, &["Capabilities"]).attr("ImageStabilization"),
+        Some("false")
+    );
+    let all = call(&cam, TDS, "GetCapabilities", "");
+    assert_eq!(
+        path(&all, &["Capabilities", "Imaging", "XAddr"]).text,
+        "http://CAMERA_HOST:80/onvif/imaging_service"
+    );
+}
+
+#[test]
+fn imaging_sets_what_is_sent_and_ignores_sections_the_camera_lacks() {
+    let cam = FakeCamera::new(true, &[]);
+    call(
+        &cam,
+        TIMG,
+        "SetImagingSettings",
+        &format!(
+            r#"{SOURCE}<ImagingSettings><tt:Brightness>150.5</tt:Brightness><tt:IrCutFilter>OFF</tt:IrCutFilter><tt:Focus><tt:AutoFocusMode>MANUAL</tt:AutoFocusMode></tt:Focus><tt:WhiteBalance><tt:Mode>AUTO</tt:Mode></tt:WhiteBalance></ImagingSettings><ForcePersistence>true</ForcePersistence>"#
+        ),
+    );
+    let got = call(&cam, TIMG, "GetImagingSettings", SOURCE);
+    let settings = path(&got, &["ImagingSettings"]);
+    assert_eq!(settings.text_of("Brightness"), Some("150.5"));
+    assert_eq!(settings.text_of("IrCutFilter"), Some("OFF"));
+    assert_eq!(path(settings, &["Focus", "AutoFocusMode"]).text, "MANUAL");
+    assert_eq!(settings.text_of("Contrast"), Some("100"), "unsent stays");
+    assert_eq!(cam.imaging.as_ref().unwrap().calls().len(), 1);
+}
+
+#[test]
+fn imaging_refuses_what_it_cannot_do_before_changing_anything() {
+    let cam = FakeCamera::new(true, &[]);
+    let set = |body: &str| {
+        fault(
+            &cam,
+            TIMG,
+            "SetImagingSettings",
+            &format!("{SOURCE}<ImagingSettings>{body}</ImagingSettings>"),
+        )
+    };
+    for bad in [
+        "<tt:Brightness>nan</tt:Brightness>",
+        "<tt:Brightness>soon</tt:Brightness>",
+        "<tt:Brightness>201</tt:Brightness>",
+        "<tt:IrCutFilter>MAYBE</tt:IrCutFilter>",
+        "<tt:Focus><tt:AutoFocusMode>SOMETIMES</tt:AutoFocusMode></tt:Focus>",
+    ] {
+        assert!(set(bad).subcodes.contains(&"ter:SettingsInvalid"), "{bad}");
+    }
+    let none = fault(&cam, TIMG, "SetImagingSettings", SOURCE);
+    assert!(none.subcodes.contains(&"ter:SettingsInvalid"));
+    // A valid field beside an invalid one: neither is applied.
+    assert!(
+        set("<tt:Contrast>10</tt:Contrast><tt:Brightness>999</tt:Brightness>")
+            .subcodes
+            .contains(&"ter:SettingsInvalid")
+    );
+    assert!(cam.imaging.as_ref().unwrap().calls().is_empty());
+    assert!(
+        fault(
+            &cam,
+            TIMG,
+            "GetImagingSettings",
+            "<VideoSourceToken>nope</VideoSourceToken>"
+        )
+        .subcodes
+        .contains(&"ter:NoSource")
+    );
+    // Focus moves are not offered.
+    for action in ["Move", "GetMoveOptions", "GetStatus", "Stop"] {
+        assert_eq!(
+            fault(&cam, TIMG, action, SOURCE).subcodes,
+            ["ter:ActionNotSupported"],
+            "{action}"
+        );
+    }
+    // A camera without imaging offers no service.
+    let panel = FakeCamera::new(false, &[]);
+    assert!(matches!(
+        handle(
+            &request(TIMG, "GetImagingSettings", SOURCE),
+            &ctx(&panel),
+            &mut PullPointBook::new(&[])
+        ),
+        Reply::Fault(_)
+    ));
 }
 
 #[test]

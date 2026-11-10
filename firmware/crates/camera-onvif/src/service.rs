@@ -10,7 +10,7 @@ use crate::camera::{
     Absolute, MediaProfile, OnvifCamera, PtzError, PtzFeatures, PtzPort, Relative, Velocity,
 };
 use crate::events::{self, EventError, Message, PullPointBook, Termination};
-use crate::soap::{Fault, Request, TDS, TEV, TMD, TPTZ, TRT, WSNT};
+use crate::soap::{Fault, Request, TDS, TEV, TIMG, TMD, TPTZ, TRT, WSNT};
 use crate::time;
 use crate::xml::{Element, escape};
 use std::time::{Duration, SystemTime};
@@ -154,6 +154,10 @@ pub fn handle(req: &Request, ctx: &Context, book: &mut PullPointBook) -> Reply {
         },
         TEV | WSNT => event_service(req, ctx, book),
         TMD => device_io(req, ctx),
+        TIMG => match ctx.camera.imaging() {
+            Some(port) => imaging::handle(req, ctx, port),
+            None => Reply::Fault(Fault::action_not_supported()),
+        },
         _ => Reply::Fault(Fault::action_not_supported()),
     }
 }
@@ -169,6 +173,9 @@ fn services(ctx: &Context) -> Vec<(&'static str, &'static str, &'static str)> {
     ];
     if ctx.camera.ptz().is_some() {
         out.push((TPTZ, "/onvif/ptz_service", "tptz"));
+    }
+    if ctx.camera.imaging().is_some() {
+        out.push((TIMG, "/onvif/imaging_service", "timg"));
     }
     out
 }
@@ -279,6 +286,12 @@ fn capabilities(ctx: &Context, category: &str) -> String {
             ),
         ));
     }
+    if want("Imaging") && ctx.camera.imaging().is_some() {
+        out.push_str(&el(
+            "tt:Imaging",
+            text("tt:XAddr", url(ctx, "/onvif/imaging_service")),
+        ));
+    }
     if want("Media") {
         out.push_str(&el(
             "tt:Media",
@@ -352,6 +365,7 @@ fn device(req: &Request, ctx: &Context) -> Reply {
                                 ctx.camera.ptz().map(|p| p.features()).unwrap_or_default(),
                             ),
                             "tmd" => device_io_service_capabilities(ctx),
+                            "timg" => imaging::capabilities(),
                             _ => event_service_capabilities(),
                         };
                         el("tds:Capabilities", c)
@@ -1540,6 +1554,8 @@ pub fn pull_response(now: SystemTime, expires: SystemTime, messages: &[Message])
         text("tev:TerminationTime", time::format(expires))
     )
 }
+
+mod imaging;
 
 #[cfg(test)]
 mod tests;

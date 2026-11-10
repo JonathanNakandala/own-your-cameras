@@ -31,6 +31,8 @@ pub struct Motion {
     queued_until: AtomicU64,
     /// The pose after the latest move, for ONVIF `GetStatus`.
     pose: Mutex<Option<super::Pose>>,
+    /// The latest published states (id to text), for ONVIF to read the settings in force.
+    states: Mutex<std::collections::BTreeMap<String, String>>,
 }
 
 #[derive(Clone)]
@@ -82,6 +84,23 @@ impl Motion {
             *self.pose.lock().unwrap_or_else(|e| e.into_inner()) = pose;
         }
         self.set_busy(busy);
+    }
+
+    /// Replaces the snapshot of published states.
+    pub(crate) fn set_states(&self, states: &std::collections::BTreeMap<String, String>) {
+        let mut held = self.states.lock().unwrap_or_else(|e| e.into_inner());
+        if *held != *states {
+            held.clone_from(states);
+        }
+    }
+
+    /// The last published state of `id` (a setting key such as `isp_brightness`), as MQTT carries it.
+    pub fn state(&self, id: &str) -> Option<String> {
+        self.states
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(id)
+            .cloned()
     }
 
     /// The confirmed pan, tilt and zoom after the latest move; `None` while pan/tilt is unknown.

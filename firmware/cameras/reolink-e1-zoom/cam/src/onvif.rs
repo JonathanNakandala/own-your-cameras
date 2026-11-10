@@ -6,8 +6,9 @@ use crate::media_tuning::Handoff;
 use crate::mqtt::{Command, Motion, Move};
 use crate::pipeline::{MainStream, PipelineConfig};
 use camera_onvif::{
-    Absolute, DeviceIdentity, H264Profile, MediaProfile, OnvifCamera, Pose, Preset, PtzError,
-    PtzFeatures, PtzPort, Relative, SnapshotError, Velocity, VideoEncoding,
+    Absolute, DeviceIdentity, H264Profile, ImagingError, ImagingOptions, ImagingPort,
+    ImagingSettings, IrCutFilter, MediaProfile, OnvifCamera, Pose, Preset, PtzError, PtzFeatures,
+    PtzPort, Relative, SnapshotError, Velocity, VideoEncoding,
 };
 use camera_transport::motion_control::{self, PresetName};
 use std::sync::Arc;
@@ -96,6 +97,10 @@ impl OnvifCamera for E1Onvif {
     }
 
     fn ptz(&self) -> Option<&dyn PtzPort> {
+        Some(self)
+    }
+
+    fn imaging(&self) -> Option<&dyn ImagingPort> {
         Some(self)
     }
 
@@ -249,9 +254,168 @@ impl PtzPort for E1Onvif {
     }
 }
 
+/// The picture levels ONVIF can set, as the settings that carry them.
+const LEVELS: [&str; 4] = [
+    "isp_brightness",
+    "isp_saturation",
+    "isp_contrast",
+    "isp_sharpness",
+];
+
+/// The `(min, max)` of a numeric setting, from the one table MQTT and the files use.
+fn range_of(key: &str) -> Option<(f32, f32)> {
+    match crate::settings::spec(key)?.spec.kind {
+        camera_transport::settings::Kind::Number { min, max, .. } => Some((min as f32, max as f32)),
+        _ => None,
+    }
+}
+
+impl E1Onvif {
+    /// A level validated against its setting's range, as the `Command::Setting` that applies it.
+    fn level(key: &'static str, value: f32) -> Result<Command, ImagingError> {
+        let spec = crate::settings::spec(key)
+            .ok_or_else(|| ImagingError::Invalid(format!("no {key} setting")))?;
+        let text = value.round().to_string();
+        spec.parse(&text).map_err(|_| {
+            ImagingError::Invalid(format!("{} is outside its range", spec.spec.name))
+        })?;
+        Ok(Command::Setting(spec.spec.key, text))
+    }
+
+    fn read(&self, key: &str) -> Option<f32> {
+        self.motion.state(key)?.parse().ok()
+    }
+}
+
+impl ImagingPort for E1Onvif {
+    fn options(&self) -> ImagingOptions {
+        ImagingOptions {
+            brightness: range_of("isp_brightness"),
+            saturation: range_of("isp_saturation"),
+            contrast: range_of("isp_contrast"),
+            sharpness: range_of("isp_sharpness"),
+            ir_cut: true,
+            auto_focus: true,
+        }
+    }
+
+    /// What the camera reports it runs (the published state), not what was last asked for.
+    fn settings(&self) -> ImagingSettings {
+        ImagingSettings {
+            brightness: self.read("isp_brightness"),
+            saturation: self.read("isp_saturation"),
+            contrast: self.read("isp_contrast"),
+            sharpness: self.read("isp_sharpness"),
+            // The filter is in (ON) for day colour and out (OFF) at night.
+            ir_cut: self.motion.state("ir").and_then(|m| match m.as_str() {
+                "day" => Some(IrCutFilter::On),
+                "night" => Some(IrCutFilter::Off),
+                "auto" => Some(IrCutFilter::Auto),
+                _ => None,
+            }),
+            auto_focus: self.motion.state("autofocus").map(|s| s == "ON"),
+        }
+    }
+
+    fn apply(&self, s: ImagingSettings) -> Result<(), ImagingError> {
+        let mut commands = Vec::new();
+        for (key, value) in
+            LEVELS
+                .into_iter()
+                .zip([s.brightness, s.saturation, s.contrast, s.sharpness])
+        {
+            if let Some(v) = value {
+                commands.push(Self::level(key, v)?);
+            }
+        }
+        if let Some(mode) = s.ir_cut {
+            let text = match mode {
+                IrCutFilter::On => "day",
+                IrCutFilter::Off => "night",
+                IrCutFilter::Auto => "auto",
+            };
+            commands.push(Command::Setting("ir", text.into()));
+        }
+        if let Some(auto) = s.auto_focus {
+            commands.push(Command::Setting(
+                "autofocus",
+                if auto { "ON" } else { "OFF" }.into(),
+            ));
+        }
+        // Everything was validated first: a bad value changes nothing.
+        for command in commands {
+            self.motion.submit(command).map_err(ImagingError::Failed)?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn camera() -> E1Onvif {
+        E1Onvif::new(
+            DeviceIdentity::default(),
+            Arc::new(Handoff::default()),
+            Arc::new(Motion::default()),
+        )
+    }
+
+    #[test]
+    fn the_imaging_ranges_are_the_settings_ranges() {
+        let o = camera().options();
+        assert_eq!(o.brightness, Some((0.0, 200.0)));
+        assert_eq!(o.sharpness, Some((0.0, 200.0)));
+        assert!(o.ir_cut && o.auto_focus);
+    }
+
+    #[test]
+    fn levels_are_validated_into_the_settings_that_carry_them() {
+        assert_eq!(
+            E1Onvif::level("isp_contrast", 150.4).unwrap(),
+            Command::Setting("isp_contrast", "150".into())
+        );
+        for bad in [200.6, -0.6, f32::NAN] {
+            assert!(
+                matches!(
+                    E1Onvif::level("isp_contrast", bad),
+                    Err(ImagingError::Invalid(_))
+                ),
+                "{bad}"
+            );
+        }
+        // A bad value anywhere in a request stops the whole request before anything is queued.
+        let bad = ImagingSettings {
+            sharpness: Some(500.0),
+            ..Default::default()
+        };
+        assert!(matches!(camera().apply(bad), Err(ImagingError::Invalid(_))));
+    }
+
+    #[test]
+    fn settings_read_back_what_the_camera_published() {
+        let c = camera();
+        assert_eq!(
+            c.settings(),
+            ImagingSettings::default(),
+            "nothing published yet"
+        );
+        c.motion.set_states(
+            &[
+                ("isp_brightness", "120"),
+                ("ir", "night"),
+                ("autofocus", "OFF"),
+            ]
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .into(),
+        );
+        let s = c.settings();
+        assert_eq!(s.brightness, Some(120.0));
+        assert_eq!(s.ir_cut, Some(IrCutFilter::Off));
+        assert_eq!(s.auto_focus, Some(false));
+        assert_eq!(s.contrast, None);
+    }
 
     #[test]
     fn onvif_units_map_across_the_travel_and_back() {

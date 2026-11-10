@@ -682,6 +682,7 @@ impl<H: Hardware> transport::Hardware<Command> for Shared<'_, H> {
         for id in ["pan", "tilt", "preset"] {
             states.entry(id.into()).or_default();
         }
+        self.motion.set_states(&states);
         Ok(states)
     }
     fn changed(&mut self) -> bool {

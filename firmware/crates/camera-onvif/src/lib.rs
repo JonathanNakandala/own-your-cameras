@@ -24,8 +24,9 @@ pub mod udp;
 pub mod xml;
 
 pub use camera::{
-    Absolute, DeviceIdentity, H264Profile, MediaProfile, OnvifCamera, Pose, Preset, PtzError,
-    PtzFeatures, PtzPort, Relative, SnapshotError, Velocity, VideoEncoding,
+    Absolute, DeviceIdentity, H264Profile, ImagingError, ImagingOptions, ImagingPort,
+    ImagingSettings, IrCutFilter, MediaProfile, OnvifCamera, Pose, Preset, PtzError, PtzFeatures,
+    PtzPort, Relative, SnapshotError, Velocity, VideoEncoding,
 };
 pub use http::{Events, HttpLimits};
 pub use runtime::{Product, Service, identity, start};

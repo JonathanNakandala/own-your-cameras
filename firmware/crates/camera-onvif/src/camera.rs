@@ -183,6 +183,58 @@ pub trait PtzPort: Send + Sync {
     }
 }
 
+/// `IrCutFilter`: ON keeps the filter in the light path (day colour), OFF takes it out (night, IR), AUTO lets
+/// the camera decide.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IrCutFilter {
+    On,
+    Off,
+    Auto,
+}
+
+/// The picture settings ONVIF's Imaging service reads and writes. Levels are in the camera's own units (the
+/// ranges are in [`ImagingOptions`]); an absent field is unsupported when read and unchanged when written.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct ImagingSettings {
+    pub brightness: Option<f32>,
+    pub saturation: Option<f32>,
+    pub contrast: Option<f32>,
+    pub sharpness: Option<f32>,
+    pub ir_cut: Option<IrCutFilter>,
+    /// Focus mode: true is `AUTO`, false `MANUAL`.
+    pub auto_focus: Option<bool>,
+}
+
+/// What a camera lets Imaging change: the `(min, max)` of each level, and whether the IR-cut filter and the
+/// focus mode can be set.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct ImagingOptions {
+    pub brightness: Option<(f32, f32)>,
+    pub saturation: Option<(f32, f32)>,
+    pub contrast: Option<(f32, f32)>,
+    pub sharpness: Option<(f32, f32)>,
+    pub ir_cut: bool,
+    pub auto_focus: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ImagingError {
+    /// A value outside its range, or a setting the camera does not have.
+    Invalid(String),
+    /// The camera's settings owner refused or failed the request.
+    Failed(String),
+}
+
+/// Picture controls over the camera's own settings owner (the same code MQTT drives).
+pub trait ImagingPort: Send + Sync {
+    fn options(&self) -> ImagingOptions;
+    /// The values in force; every supported field is present.
+    fn settings(&self) -> ImagingSettings;
+    /// Applies the present fields, all or none: a value out of range is [`ImagingError::Invalid`] and
+    /// nothing changes.
+    fn apply(&self, settings: ImagingSettings) -> Result<(), ImagingError>;
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SnapshotError {
     /// The encoder is not up yet, is being rebuilt, or missed the deadline.
@@ -197,6 +249,10 @@ pub trait OnvifCamera: Send + Sync {
     /// A speaker that takes the RTSP backchannel.
     fn audio_output(&self) -> bool;
     fn ptz(&self) -> Option<&dyn PtzPort>;
+    /// Picture controls; `None` when the camera offers none.
+    fn imaging(&self) -> Option<&dyn ImagingPort> {
+        None
+    }
     /// `tns1:Device/Trigger/DigitalInput` input tokens (`call_button`, `door`…); empty when none.
     fn digital_inputs(&self) -> &[&'static str];
     /// One hardware JPEG of the main stream, finished before `deadline`.
