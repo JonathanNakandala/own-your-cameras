@@ -160,6 +160,9 @@ impl Host for FakeNet {
     fn ipv4(&self, _: &str) -> Option<Ipv4Addr> {
         None
     }
+    fn clear_address(&mut self, _: &str) -> io::Result<()> {
+        Ok(())
+    }
     fn alive(&mut self, _: Proc) -> io::Result<bool> {
         Ok(false)
     }

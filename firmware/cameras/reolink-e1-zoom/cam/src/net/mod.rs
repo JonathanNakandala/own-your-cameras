@@ -39,6 +39,8 @@ pub trait Host {
     fn iface_up(&mut self, name: &str) -> io::Result<()>;
     fn carrier(&self, name: &str) -> bool;
     fn ipv4(&self, name: &str) -> Option<Ipv4Addr>;
+    /// Remove every IPv4 address from `name` (and so its connected route).
+    fn clear_address(&mut self, name: &str) -> io::Result<()>;
     /// Alive means ours or one adopted from the vendor stack.
     fn alive(&mut self, p: Proc) -> io::Result<bool>;
     fn spawn(&mut self, p: Proc) -> io::Result<()>;
@@ -71,6 +73,8 @@ pub enum Event {
     /// Power is off; the next module retry completes the cycle by powering Wi-Fi on.
     WifiPowerCycled,
     EthModuleLoaded,
+    /// The stock boot script's static fallback address on `eth0` was removed, with the route it makes.
+    EthAddressCleared,
     Spawned(Proc),
     Killed(Proc),
     Failed(&'static str, String),
@@ -83,6 +87,8 @@ pub struct Supervisor {
     load_failed: bool,
     wifi_retry_at: Duration,
     eth_retry_at: Duration,
+    eth_cleared: bool,
+    eth_clear_retry_at: Duration,
     respawn_at: HashMap<Proc, Duration>,
     wlan_without_ip_since: Option<Duration>,
 }
@@ -96,6 +102,8 @@ impl Supervisor {
             load_failed: false,
             wifi_retry_at: Duration::ZERO,
             eth_retry_at: Duration::ZERO,
+            eth_cleared: false,
+            eth_clear_retry_at: Duration::ZERO,
             respawn_at: HashMap::new(),
             wlan_without_ip_since: None,
         }
@@ -190,6 +198,35 @@ impl Supervisor {
         }
     }
 
+    /// The stock `S25_Net` leaves `eth0` at 192.168.0.3/24 (the vendor stack removes it later; here nothing
+    /// would). Its connected route is more specific than a /23 or /16 Wi-Fi network around 192.168.0.x, so every
+    /// packet for the router, DNS server and clients would leave through the cable-less `eth0` and vanish while
+    /// `wlan0` held a perfectly good lease. Cleared once, before any DHCP of ours runs on `eth0` (later the
+    /// cable fallback configures it again); skipped if a DHCP client already owns it.
+    fn clear_stock_eth_address(&mut self, host: &mut dyn Host, now: Duration, ev: &mut Vec<Event>) {
+        if self.eth_cleared || now < self.eth_clear_retry_at || !host.iface_exists(ETH) {
+            return;
+        }
+        if host.alive(Proc::DhcpEth).unwrap_or(true) {
+            self.eth_cleared = true;
+            return;
+        }
+        if host.ipv4(ETH).is_none() {
+            self.eth_cleared = true;
+            return;
+        }
+        match host.clear_address(ETH) {
+            Ok(()) => {
+                self.eth_cleared = true;
+                ev.push(Event::EthAddressCleared);
+            }
+            Err(e) => {
+                self.eth_clear_retry_at = now + self.timing.restart_delay;
+                ev.push(Event::Failed("clear eth0 address", e.to_string()));
+            }
+        }
+    }
+
     fn eth(&mut self, host: &mut dyn Host, now: Duration, ev: &mut Vec<Event>) {
         if !host.iface_exists(ETH) && now >= self.eth_retry_at {
             self.eth_retry_at = now + self.timing.restart_delay;
@@ -208,6 +245,7 @@ impl Supervisor {
                 }
             }
         }
+        self.clear_stock_eth_address(host, now, ev);
         let wifi_down_long = self
             .wlan_without_ip_since
             .is_some_and(|s| now.saturating_sub(s) >= self.timing.eth_fallback_after);
@@ -246,6 +284,8 @@ mod tests {
         eth_present: bool,
         eth_up: bool,
         eth_carrier: bool,
+        eth_ip: Option<Ipv4Addr>,
+        clear_fails: bool,
         wifi_loaded: bool,
         wifi_powered: bool,
         unload_fails: bool,
@@ -311,7 +351,21 @@ mod tests {
             self.eth_carrier
         }
         fn ipv4(&self, name: &str) -> Option<Ipv4Addr> {
-            if name == WLAN { self.wlan_ip } else { None }
+            if name == WLAN {
+                self.wlan_ip
+            } else {
+                self.eth_ip
+            }
+        }
+        fn clear_address(&mut self, name: &str) -> io::Result<()> {
+            self.calls.push(format!("clear {name}"));
+            if self.clear_fails {
+                return Err(io::Error::other("ifconfig failed"));
+            }
+            if name != WLAN {
+                self.eth_ip = None;
+            }
+            Ok(())
         }
         fn alive(&mut self, p: Proc) -> io::Result<bool> {
             Ok(self.alive.contains(&p))
@@ -438,6 +492,80 @@ mod tests {
         );
         assert!(sup.tick(&mut host, s(11)).is_empty());
         assert_eq!(sup.tick(&mut host, s(12)), [Event::WifiModulesLoaded]);
+    }
+
+    fn with_stock_eth_address() -> Fake {
+        let mut host = healthy_wifi();
+        host.eth_ip = Some(Ipv4Addr::new(192, 168, 0, 3));
+        host.alive.insert(Proc::Wpa);
+        host.alive.insert(Proc::DhcpWlan);
+        host
+    }
+
+    #[test]
+    fn the_stock_static_address_on_eth0_is_removed_once() {
+        // Its connected 192.168.0.0/24 route outranks a /23 Wi-Fi network and swallows all LAN traffic.
+        let mut host = with_stock_eth_address();
+        let mut sup = Supervisor::new(Timing::default());
+        assert_eq!(sup.tick(&mut host, s(0)), [Event::EthAddressCleared]);
+        assert_eq!(host.eth_ip, None);
+        assert!(sup.tick(&mut host, s(2)).is_empty());
+        assert_eq!(host.calls.iter().filter(|c| *c == "clear eth0").count(), 1);
+        assert!(!host.calls.contains(&"clear wlan0".to_string()));
+    }
+
+    #[test]
+    fn an_eth0_without_an_address_is_left_alone() {
+        let mut host = healthy_wifi();
+        host.alive.insert(Proc::Wpa);
+        host.alive.insert(Proc::DhcpWlan);
+        let mut sup = Supervisor::new(Timing::default());
+        assert!(sup.tick(&mut host, s(0)).is_empty());
+        assert!(!host.calls.iter().any(|c| c.starts_with("clear")));
+    }
+
+    #[test]
+    fn eth0_is_left_alone_while_a_dhcp_client_owns_it() {
+        let mut host = with_stock_eth_address();
+        host.alive.insert(Proc::DhcpEth);
+        host.eth_carrier = true;
+        host.wlan_ip = None;
+        let mut sup = Supervisor::new(Timing::default());
+        sup.tick(&mut host, s(0));
+        assert!(!host.calls.iter().any(|c| c.starts_with("clear")));
+        assert_eq!(host.eth_ip, Some(Ipv4Addr::new(192, 168, 0, 3)));
+    }
+
+    #[test]
+    fn a_failed_clear_is_reported_and_retried_after_the_restart_delay() {
+        let mut host = with_stock_eth_address();
+        host.clear_fails = true;
+        let mut sup = Supervisor::new(Timing::default());
+        let first = sup.tick(&mut host, s(0));
+        assert!(matches!(
+            first.as_slice(),
+            [Event::Failed("clear eth0 address", _)]
+        ));
+        // not again before the delay
+        assert!(
+            sup.tick(&mut host, s(0) + Duration::from_millis(500))
+                .is_empty()
+        );
+        host.clear_fails = false;
+        let retry = sup.tick(&mut host, s(0) + Timing::default().restart_delay);
+        assert_eq!(retry, [Event::EthAddressCleared]);
+        assert_eq!(host.eth_ip, None);
+    }
+
+    #[test]
+    fn the_cable_fallback_still_works_after_the_stock_address_is_cleared() {
+        let mut host = with_stock_eth_address();
+        host.wlan_ip = None;
+        host.eth_carrier = true;
+        let mut sup = Supervisor::new(Timing::default());
+        assert_eq!(sup.tick(&mut host, s(0)), [Event::EthAddressCleared]);
+        assert!(sup.tick(&mut host, s(29)).is_empty());
+        assert_eq!(sup.tick(&mut host, s(30)), [Event::Spawned(Proc::DhcpEth)]);
     }
 
     #[test]

@@ -401,6 +401,12 @@ impl Host for LinuxHost {
         ipv4_of(name)
     }
 
+    fn clear_address(&mut self, name: &str) -> io::Result<()> {
+        let mut c = Command::new(self.path("/sbin/ifconfig"));
+        c.args([name, "0.0.0.0"]);
+        run(c)
+    }
+
     fn alive(&mut self, p: Proc) -> io::Result<bool> {
         if let Some(child) = self.children.get_mut(&p) {
             match child_finished(child) {

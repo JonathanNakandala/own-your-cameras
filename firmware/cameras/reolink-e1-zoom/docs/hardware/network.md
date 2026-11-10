@@ -18,6 +18,17 @@ worker, never on the watchdog feeder.
 5. `udhcpc -f -i wlan0 -x hostname:<camera id> -p /var/run/udhcpc_wlan0.pid`.
 6. While `wlan0` has had no address for 30 s and the Ethernet cable is up, the same `udhcpc` on `eth0`.
 
+The stock `S25_Net` leaves `eth0` configured as 192.168.0.3/24 at every boot (the vendor stack removes it later; with
+the vendor stack gone nothing would). Its connected route is more specific than the one `wlan0` gets on a /23 (or any
+network that covers 192.168.0.x), so every packet for the router, the DNS server and every client would leave through
+the cable-less `eth0`, while `wlan0` held a perfectly good lease: DHCP worked (it needs no route), then DNS lookups
+failed ("Name or service not known"), the MQTT worker stalled, and nothing could reach the camera over the LAN. On a
+192.168.1.x or 10.x network the stray route is harmless, which is why it can go unnoticed. The supervisor therefore
+removes every IPv4 address from `eth0` once, as soon as the interface exists and no DHCP client of ours or the vendor's
+owns it (`Event::EthAddressCleared`, logged as `net: … EthAddressCleared`); the cable fallback below configures `eth0`
+again when it is needed. The stray route was observed on a unit whose LAN is 192.168.0.0/23 (routing table from a cold
+boot); the removal itself is not yet confirmed on hardware. [I]
+
 Recovery: exited children are respawned after 2 s. A failed load or a missing interface powers the dongle down:
 `rmmod wlan`, `rmmod cfg80211`, GPIO 133 low (each attempted even if an earlier one failed), at least 500 ms off
 measured from the successful GPIO write, then the sequence again. Wi-Fi and Ethernet retries keep separate clocks.
