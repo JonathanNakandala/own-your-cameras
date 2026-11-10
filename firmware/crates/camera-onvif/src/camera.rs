@@ -140,6 +140,8 @@ pub struct PtzFeatures {
     pub absolute: bool,
     /// [`PtzPort::pose`] reports a position in `GetStatus`.
     pub position: bool,
+    /// [`PtzPort::set_home`] can overwrite the home position (else it is fixed).
+    pub set_home: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -180,6 +182,19 @@ pub trait PtzPort: Send + Sync {
     /// The confirmed pose, `None` while it is unknown (before homing, after a stop).
     fn pose(&self) -> Option<Pose> {
         None
+    }
+    /// Saves where the camera stands as its home position (`SetHomePosition`); see [`PtzFeatures::set_home`].
+    fn set_home(&self) -> Result<(), PtzError> {
+        Err(PtzError::Unsupported)
+    }
+    /// The auxiliary commands `SendAuxiliaryCommand` accepts, as the node lists them (`tt:IRLamp|On`).
+    fn aux_commands(&self) -> &'static [&'static str] {
+        &[]
+    }
+    /// Runs one of [`PtzPort::aux_commands`] (the service has already checked it is listed); returns the
+    /// `AuxiliaryResponse` text.
+    fn aux_command(&self, _command: &str) -> Result<String, PtzError> {
+        Err(PtzError::Unsupported)
     }
 }
 

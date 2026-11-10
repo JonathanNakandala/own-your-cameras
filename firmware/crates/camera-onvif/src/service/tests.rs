@@ -836,6 +836,153 @@ fn ptz_advertises_what_frigate_needs() {
 }
 
 #[test]
+fn home_can_be_set_and_auxiliary_commands_are_listed_and_checked() {
+    let cam = FakeCamera::new(true, &[]);
+    let node = call(&cam, TPTZ, "GetNodes", "");
+    let node = path(&node, &["PTZNode"]);
+    assert_eq!(node.attr("FixedHomePosition"), Some("false"));
+    let aux: Vec<_> = node
+        .children_named("AuxiliaryCommands")
+        .map(|c| c.text.as_str())
+        .collect();
+    assert_eq!(aux, ["tt:IRLamp|On", "tt:IRLamp|Off"]);
+    call(
+        &cam,
+        TPTZ,
+        "SetHomePosition",
+        "<ProfileToken>main</ProfileToken>",
+    );
+    let sent = call(
+        &cam,
+        TPTZ,
+        "SendAuxiliaryCommand",
+        "<ProfileToken>main</ProfileToken><AuxiliaryData>tt:IRLamp|On</AuxiliaryData>",
+    );
+    assert_eq!(sent.text_of("AuxiliaryResponse"), Some("OK"));
+    for bad in ["", "tt:Wiper|On", "tt:IRLamp|Auto"] {
+        assert!(
+            fault(
+                &cam,
+                TPTZ,
+                "SendAuxiliaryCommand",
+                &format!("<ProfileToken>main</ProfileToken><AuxiliaryData>{bad}</AuxiliaryData>")
+            )
+            .subcodes
+            .contains(&"ter:InvalidArgs"),
+            "{bad:?}"
+        );
+    }
+    assert_eq!(
+        cam.ptz.as_ref().unwrap().calls(),
+        ["sethome", "aux tt:IRLamp|On"]
+    );
+    let caps = call(&cam, TPTZ, "GetServiceCapabilities", "");
+    assert_eq!(
+        path(&caps, &["Capabilities"]).attr("GetCompatibleConfigurations"),
+        Some("true")
+    );
+    let compatible = call(
+        &cam,
+        TPTZ,
+        "GetCompatibleConfigurations",
+        "<ProfileToken>main</ProfileToken>",
+    );
+    assert_eq!(
+        path(&compatible, &["PTZConfiguration"]).attr("token"),
+        Some("ptz_config")
+    );
+    assert!(
+        fault(
+            &cam,
+            TPTZ,
+            "GetCompatibleConfigurations",
+            "<ProfileToken>x</ProfileToken>"
+        )
+        .subcodes
+        .contains(&"ter:NoProfile")
+    );
+}
+
+#[test]
+fn stop_stops_everything_unless_told_to_stop_neither() {
+    let cam = FakeCamera::new(true, &[]);
+    let stop = |flags: &str| {
+        call(
+            &cam,
+            TPTZ,
+            "Stop",
+            &format!("<ProfileToken>main</ProfileToken>{flags}"),
+        );
+        cam.ptz.as_ref().unwrap().calls().len()
+    };
+    assert_eq!(stop(""), 1, "no flag: all");
+    assert_eq!(stop("<PanTilt>true</PanTilt><Zoom>true</Zoom>"), 2);
+    assert_eq!(stop("<Zoom>true</Zoom>"), 3, "one axis named: both stop");
+    assert_eq!(
+        stop("<PanTilt>false</PanTilt><Zoom>false</Zoom>"),
+        3,
+        "neither: nothing"
+    );
+}
+
+#[test]
+fn a_camera_with_a_fixed_home_and_no_aux_says_so() {
+    struct Plain;
+    impl PtzPort for Plain {
+        fn zoom(&self) -> bool {
+            false
+        }
+        fn max_presets(&self) -> usize {
+            0
+        }
+        fn continuous_move(&self, _: crate::Velocity) -> Result<(), PtzError> {
+            Ok(())
+        }
+        fn stop(&self) -> Result<(), PtzError> {
+            Ok(())
+        }
+        fn home(&self) -> Result<(), PtzError> {
+            Ok(())
+        }
+        fn presets(&self) -> Vec<crate::Preset> {
+            Vec::new()
+        }
+        fn goto_preset(&self, _: &str) -> Result<(), PtzError> {
+            Ok(())
+        }
+        fn set_preset(&self, _: Option<&str>, _: Option<&str>) -> Result<String, PtzError> {
+            Err(PtzError::InvalidName)
+        }
+        fn remove_preset(&self, _: &str) -> Result<(), PtzError> {
+            Ok(())
+        }
+        fn moving(&self) -> bool {
+            false
+        }
+    }
+    let cam = FakeCamera::new(true, &[]);
+    let through = |action: &str, body: &str| match ptz_service(
+        &request(TPTZ, action, body),
+        &ctx(&cam),
+        &Plain,
+    ) {
+        Reply::Ok(b) | Reply::Stopped(b) | Reply::Moving { body: b, .. } => b,
+        Reply::Fault(f) => f.render(),
+        Reply::Pull { .. } => unreachable!(),
+    };
+    let node = through("GetNodes", "");
+    assert!(node.contains("FixedHomePosition=\"true\"") && !node.contains("AuxiliaryCommands"));
+    assert!(through("SetHomePosition", "").contains("ActionNotSupported"));
+    assert!(
+        through(
+            "SendAuxiliaryCommand",
+            "<AuxiliaryData>tt:IRLamp|On</AuxiliaryData>"
+        )
+        .contains("InvalidArgs")
+    );
+}
+
+#[test]
 fn relative_and_absolute_moves_reach_the_port() {
     let cam = FakeCamera::new(true, &[]);
     let fov = "http://www.onvif.org/ver10/tptz/PanTiltSpaces/TranslationSpaceFov";

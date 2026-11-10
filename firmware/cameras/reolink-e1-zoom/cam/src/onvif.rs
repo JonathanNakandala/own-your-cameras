@@ -53,6 +53,18 @@ fn percent(v: f32) -> i16 {
     (v.clamp(-1.0, 1.0) * 100.0).round() as i16
 }
 
+/// The preset the camera goes to at startup and for the Home button (`mqtt/mod.rs`).
+const HOME_PRESET: &str = "Default";
+
+/// `SendAuxiliaryCommand` strings and the `ir` mode each sets: the IR lamp is the day/night mode, the same
+/// switch as Imaging's `IrCutFilter` (On is night with the LEDs, Off is day colour).
+const AUX_COMMANDS: [&str; 3] = ["tt:IRLamp|On", "tt:IRLamp|Off", "tt:IRLamp|Auto"];
+const AUX_IR_LAMP: [(&str, &str); 3] = [
+    ("tt:IRLamp|On", "night"),
+    ("tt:IRLamp|Off", "day"),
+    ("tt:IRLamp|Auto", "auto"),
+];
+
 /// How much of the log `GetSystemLog` returns: the log is capped at 256 KiB and a SOAP reply should not be.
 const LOG_TAIL: usize = 32 * 1024;
 
@@ -237,7 +249,29 @@ impl PtzPort for E1Onvif {
             relative: true,
             absolute: true,
             position: true,
+            set_home: true,
         }
+    }
+
+    /// Home is the `Default` preset: the camera goes there at startup and for the Home button, so saving
+    /// it moves home. An existing `Default` is overwritten; with none, the preset table needs room.
+    fn set_home(&self) -> Result<(), PtzError> {
+        self.set_preset(None, Some(HOME_PRESET)).map(|_| ())
+    }
+
+    fn aux_commands(&self) -> &'static [&'static str] {
+        &AUX_COMMANDS
+    }
+
+    fn aux_command(&self, command: &str) -> Result<String, PtzError> {
+        let (_, mode) = AUX_IR_LAMP
+            .iter()
+            .find(|(c, _)| *c == command)
+            .ok_or(PtzError::Unsupported)?;
+        self.motion
+            .submit(Command::Setting("ir", (*mode).into()))
+            .map_err(failed)?;
+        Ok("OK".into())
     }
 
     /// Pan and tilt together by fractions of the picture, one concurrent move on the measured lens map
@@ -394,6 +428,36 @@ mod tests {
             Arc::new(Handoff::default()),
             Arc::new(Motion::default()),
         )
+    }
+
+    #[test]
+    fn the_ir_lamp_commands_are_the_ir_modes_and_nothing_else_is_accepted() {
+        let c = camera();
+        assert_eq!(
+            c.aux_commands(),
+            ["tt:IRLamp|On", "tt:IRLamp|Off", "tt:IRLamp|Auto"]
+        );
+        // The list and the table that runs the commands cannot drift apart.
+        assert_eq!(AUX_COMMANDS, AUX_IR_LAMP.map(|(command, _)| command));
+        // Every listed mode is a real value of the `ir` setting.
+        let ir = crate::settings::spec("ir").unwrap();
+        for (_, mode) in AUX_IR_LAMP {
+            assert!(ir.parse(mode).is_ok(), "{mode}");
+        }
+        assert_eq!(c.aux_command("tt:Wiper|On"), Err(PtzError::Unsupported));
+        // Before the motion owner runs the queue does not exist, and that is reported.
+        assert!(matches!(
+            c.aux_command("tt:IRLamp|On"),
+            Err(PtzError::Failed(_))
+        ));
+    }
+
+    #[test]
+    fn setting_home_is_saving_the_default_preset() {
+        assert!(camera().features().set_home);
+        assert!(matches!(camera().set_home(), Err(PtzError::Failed(_))));
+        // The name is a valid preset name, or saving home would always be refused.
+        assert!(PresetName::parse(HOME_PRESET).is_ok());
     }
 
     #[test]

@@ -100,7 +100,19 @@ impl PtzPort for FakePtz {
             relative: true,
             absolute: true,
             position: true,
+            set_home: true,
         }
+    }
+    fn set_home(&self) -> Result<(), PtzError> {
+        self.note("sethome".into());
+        Ok(())
+    }
+    fn aux_commands(&self) -> &'static [&'static str] {
+        &["tt:IRLamp|On", "tt:IRLamp|Off"]
+    }
+    fn aux_command(&self, command: &str) -> Result<String, PtzError> {
+        self.note(format!("aux {command}"));
+        Ok("OK".into())
     }
     fn relative_move(&self, r: crate::Relative) -> Result<(), PtzError> {
         self.note(format!("relative {:?} {:?}", r.pan_tilt, r.zoom));

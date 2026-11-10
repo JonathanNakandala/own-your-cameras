@@ -92,6 +92,15 @@ cameras:
         zooming: disabled   # the lens zooms only 1.3×; tracking by pan/tilt alone is the sensible start
 ```
 
+## More PTZ calls
+
+| Call | Behaviour |
+|---|---|
+| `SetHomePosition` | saves where the camera stands as the `Default` preset, which is where it goes at startup and for `GotoHomePosition` (the node reports `FixedHomePosition="false"`). With no `Default` yet the preset table needs room, as for any new preset |
+| `SendAuxiliaryCommand` | `tt:IRLamp|On`, `tt:IRLamp|Off`, `tt:IRLamp|Auto`: the `ir` mode `night`, `day`, `auto`, the same switch as Imaging's `IrCutFilter` (On is night, with the IR LEDs). Listed in the node's `AuxiliaryCommands`; anything else is `ter:InvalidArgs` |
+| `GetCompatibleConfigurations` | the one PTZ configuration |
+| `Stop` | with no flag, or both flags true, stops everything. The head cannot stop one axis alone, so a flag naming one axis stops both; only `PanTilt` and `Zoom` both false leaves the camera moving |
+
 ## Imaging
 
 The E1 Zoom offers the Imaging service at `/onvif/imaging_service`, so a client's image sliders and day/night

@@ -245,7 +245,7 @@ fn device_io(req: &Request, ctx: &Context) -> Reply {
 
 fn ptz_service_capabilities(features: PtzFeatures) -> String {
     format!(
-        "<tptz:Capabilities EFlip=\"false\" Reverse=\"false\" GetCompatibleConfigurations=\"false\" MoveStatus=\"true\" StatusPosition=\"{}\"/>",
+        "<tptz:Capabilities EFlip=\"false\" Reverse=\"false\" GetCompatibleConfigurations=\"true\" MoveStatus=\"true\" StatusPosition=\"{}\"/>",
         features.position
     )
 }
@@ -1255,8 +1255,14 @@ fn ptz_service(req: &Request, ctx: &Context, ptz: &dyn PtzPort) -> Reply {
     let reply = |inner: String| response(action, "tptz", inner);
     let uses = ctx.camera.profiles().len();
     let node = || {
+        let aux: String = ptz
+            .aux_commands()
+            .iter()
+            .map(|c| text("tt:AuxiliaryCommands", c))
+            .collect();
         format!(
-            "<tptz:PTZNode token=\"{PTZ_NODE}\" FixedHomePosition=\"true\">{}{}{}<tt:HomeSupported>true</tt:HomeSupported></tptz:PTZNode>",
+            "<tptz:PTZNode token=\"{PTZ_NODE}\" FixedHomePosition=\"{}\">{}{}{}<tt:HomeSupported>true</tt:HomeSupported>{aux}</tptz:PTZNode>",
+            !ptz.features().set_home,
             text("tt:Name", "PTZ"),
             el("tt:SupportedPTZSpaces", spaces(ptz)),
             text("tt:MaximumNumberOfPresets", ptz.max_presets()),
@@ -1406,10 +1412,36 @@ fn ptz_service(req: &Request, ctx: &Context, ptz: &dyn PtzPort) -> Reply {
                 Err(e) => ptz_fault(e),
             }
         }
-        "Stop" => match ptz.stop() {
-            Ok(()) => Reply::Stopped("<tptz:StopResponse/>".into()),
+        "Stop" => {
+            // No flag stops everything. The head cannot stop one axis alone, so a flag naming one axis
+            // stops both (a safe superset); only an explicit "neither" leaves the camera moving.
+            let flag = |name| req.body.text_of(name).map(|v| v == "true" || v == "1");
+            if flag("PanTilt") == Some(false) && flag("Zoom") == Some(false) {
+                return Reply::Ok("<tptz:StopResponse/>".into());
+            }
+            match ptz.stop() {
+                Ok(()) => Reply::Stopped("<tptz:StopResponse/>".into()),
+                Err(e) => ptz_fault(e),
+            }
+        }
+        "SetHomePosition" => match ptz.set_home() {
+            Ok(()) => reply(String::new()),
             Err(e) => ptz_fault(e),
         },
+        "SendAuxiliaryCommand" => {
+            let command = req.body.text_of("AuxiliaryData").unwrap_or_default();
+            if !ptz.aux_commands().contains(&command) {
+                return Reply::Fault(Fault::invalid_arg(
+                    "ter:InvalidArgs",
+                    "That auxiliary command is not offered",
+                ));
+            }
+            match ptz.aux_command(command) {
+                Ok(done) => reply(text("tptz:AuxiliaryResponse", done)),
+                Err(e) => ptz_fault(e),
+            }
+        }
+        "GetCompatibleConfigurations" => reply(ptz_config("tptz:PTZConfiguration", uses, ptz)),
         "GotoHomePosition" => match ptz.home() {
             Ok(()) => Reply::Stopped("<tptz:GotoHomePositionResponse/>".into()),
             Err(e) => ptz_fault(e),
