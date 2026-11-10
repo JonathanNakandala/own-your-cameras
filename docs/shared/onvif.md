@@ -93,6 +93,26 @@ cameras:
         zooming: disabled   # the lens zooms only 1.3×; tracking by pan/tilt alone is the sensible start
 ```
 
+## Media2
+
+Every camera also serves the Media2 service (`/onvif/media2_service`), which newer clients and NVRs try
+before Media1. It describes the same two fixed profiles and the same configurations, in Media2's shapes:
+
+| | Media1 | Media2 |
+|---|---|---|
+| Profile contents | always listed | only the `Type`s asked for in `GetProfiles` (`All` for every one); with no `Type`, just the token and name |
+| Video encoder | `GovLength` and `H264Profile` as elements | `GovLength` and `Profile` as attributes, `FrameRateLimit` a float |
+| Audio codec | `G711` | `PCMU` (G.711 µ-law, 8 kHz) |
+| Stream address | `GetStreamUri` returns a `MediaUri` | returns the bare `Uri`, for `RtspUnicast` or `RTSP`; multicast and RTSP over HTTP are `ter:InvalidStreamSetup` |
+
+Like Media1 it is read-only: a `Set…Configuration` that says what is already so succeeds, one that would change
+something is `ter:ConfigModify`; `AddConfiguration` of a configuration the profile holds is a no-op;
+profiles cannot be created, deleted or stripped. `GetMetadataConfigurations` and `GetAnalyticsConfigurations`
+list nothing, and OSDs, masks, multicast, video source modes and audio clips are `ActionNotSupported`.
+
+This is the service Profile T clients call, but **the cameras claim only Profile S** in discovery: Profile T
+also asks for HTTPS, H.265 and motion events, which are not offered.
+
 ## Relay outputs
 
 ONVIF models any switched output as a relay, so the E1 Zoom's LEDs are two relay outputs

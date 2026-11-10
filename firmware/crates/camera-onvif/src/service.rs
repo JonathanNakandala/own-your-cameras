@@ -11,7 +11,7 @@ use crate::camera::{
     Velocity,
 };
 use crate::events::{self, EventError, Message, PullPointBook, Termination};
-use crate::soap::{Fault, Request, TDS, TEV, TIMG, TMD, TPTZ, TRT, WSNT};
+use crate::soap::{Fault, Request, TDS, TEV, TIMG, TMD, TPTZ, TR2, TRT, WSNT};
 use crate::time;
 use crate::xml::{Element, escape};
 use std::time::{Duration, SystemTime};
@@ -151,6 +151,7 @@ pub fn handle(req: &Request, ctx: &Context, book: &mut PullPointBook) -> Reply {
     match req.ns.as_str() {
         TDS => device(req, ctx),
         TRT => media(req, ctx),
+        TR2 => media2::handle(req, ctx),
         TPTZ => match ctx.camera.ptz() {
             Some(ptz) => ptz_service(req, ctx, ptz),
             None => Reply::Fault(Fault::action_not_supported()),
@@ -171,6 +172,7 @@ fn services(ctx: &Context) -> Vec<(&'static str, &'static str, &'static str)> {
     let mut out = vec![
         (TDS, "/onvif/device_service", "tds"),
         (TRT, "/onvif/media_service", "trt"),
+        (TR2, "/onvif/media2_service", "tr2"),
         (TEV, "/onvif/events_service", "tev"),
         (TMD, "/onvif/deviceio_service", "tmd"),
     ];
@@ -445,6 +447,7 @@ fn device(req: &Request, ctx: &Context) -> Reply {
                             ),
                             "tmd" => device_io_service_capabilities(ctx),
                             "timg" => imaging::capabilities(),
+                            "tr2" => media2::capabilities(ctx),
                             _ => event_service_capabilities(),
                         };
                         el("tds:Capabilities", c)
@@ -1734,6 +1737,7 @@ pub fn pull_response(now: SystemTime, expires: SystemTime, messages: &[Message])
 }
 
 mod imaging;
+mod media2;
 
 #[cfg(test)]
 mod tests;

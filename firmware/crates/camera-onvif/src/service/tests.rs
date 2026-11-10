@@ -1,7 +1,7 @@
 //! Every action's response shape, checked against the element names of the ONVIF WSDLs.
 use super::*;
 use crate::fake::FakeCamera;
-use crate::soap;
+use crate::soap::{self, TR2};
 use crate::xml::{self, Element};
 use std::sync::atomic::Ordering;
 use std::time::UNIX_EPOCH;
@@ -129,7 +129,23 @@ fn services_name_each_namespace_with_capabilities_on_request() {
         "<IncludeCapability>true</IncludeCapability>",
     );
     let services: Vec<&Element> = r.children_named("Service").collect();
-    assert_eq!(services.len(), 6);
+    assert_eq!(services.len(), 7);
+    let media2 = services
+        .iter()
+        .find(|s| s.text_of("Namespace") == Some(TR2))
+        .unwrap();
+    assert_eq!(
+        media2.text_of("XAddr"),
+        Some("http://CAMERA_HOST:80/onvif/media2_service")
+    );
+    assert_eq!(
+        path(
+            media2,
+            &["Capabilities", "Capabilities", "ProfileCapabilities"]
+        )
+        .attr("MaximumNumberOfProfiles"),
+        Some("2")
+    );
     let imaging = services
         .iter()
         .find(|s| s.text_of("Namespace") == Some(TIMG))
@@ -166,8 +182,8 @@ fn services_name_each_namespace_with_capabilities_on_request() {
         call(&panel, TDS, "GetServices", "")
             .children_named("Service")
             .count(),
-        4,
-        "no PTZ service without PTZ"
+        5,
+        "no PTZ and no Imaging service without PTZ"
     );
 }
 
@@ -1481,5 +1497,394 @@ fn device_io_counts_the_audio_output_recorders_need_for_talkback() {
             .child("Capabilities")
             .and_then(|c| c.child("Extension"))
             .is_none()
+    );
+}
+
+// ---------------------------------------------------------------- Media2
+
+#[test]
+fn media2_capabilities_name_the_configurations_a_profile_holds() {
+    let cam = FakeCamera::new(true, &[]);
+    let caps = call(&cam, TR2, "GetServiceCapabilities", "");
+    let caps = path(&caps, &["Capabilities"]);
+    assert_eq!(caps.attr("SnapshotUri"), Some("true"));
+    assert_eq!(caps.attr("OSD"), Some("false"));
+    let profiles = path(caps, &["ProfileCapabilities"]);
+    assert_eq!(profiles.attr("MaximumNumberOfProfiles"), Some("2"));
+    assert_eq!(
+        profiles.attr("ConfigurationsSupported"),
+        Some("VideoSource VideoEncoder AudioSource AudioEncoder PTZ AudioOutput AudioDecoder")
+    );
+    let streaming = path(caps, &["StreamingCapabilities"]);
+    assert_eq!(streaming.attr("RTSPStreaming"), Some("true"));
+    assert_eq!(streaming.attr("RTPMulticast"), Some("false"));
+    // A camera with no PTZ says so (the fake still has its speaker).
+    let panel = FakeCamera::new(false, &[]);
+    let caps = call(&panel, TR2, "GetServiceCapabilities", "");
+    assert_eq!(
+        path(&caps, &["Capabilities", "ProfileCapabilities"]).attr("ConfigurationsSupported"),
+        Some("VideoSource VideoEncoder AudioSource AudioEncoder AudioOutput AudioDecoder")
+    );
+}
+
+#[test]
+fn media2_profiles_carry_only_the_configurations_asked_for() {
+    let cam = FakeCamera::new(true, &[]);
+    // No Type: the token and the name, nothing else.
+    let bare = call(&cam, TR2, "GetProfiles", "");
+    let profiles: Vec<_> = bare.children_named("Profiles").collect();
+    assert_eq!(profiles.len(), 2);
+    assert_eq!(
+        (profiles[0].attr("token"), profiles[0].attr("fixed")),
+        (Some("main"), Some("true"))
+    );
+    assert_eq!(profiles[0].text_of("Name"), Some("main"));
+    assert!(profiles[0].child("Configurations").is_none());
+    // Some types: those, in the schema's order, whatever order they were asked in.
+    let some = call(
+        &cam,
+        TR2,
+        "GetProfiles",
+        "<Token>sub</Token><Type>VideoEncoder</Type><Type>VideoSource</Type>",
+    );
+    let set = path(&some, &["Profiles", "Configurations"]);
+    let names: Vec<_> = set.children.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["VideoSource", "VideoEncoder"]);
+    assert_eq!(some.children_named("Profiles").count(), 1);
+    // All: every configuration the camera has.
+    let all = call(
+        &cam,
+        TR2,
+        "GetProfiles",
+        "<Token>main</Token><Type>All</Type>",
+    );
+    let names: Vec<_> = path(&all, &["Profiles", "Configurations"])
+        .children
+        .iter()
+        .map(|c| c.name.as_str())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "VideoSource",
+            "AudioSource",
+            "VideoEncoder",
+            "AudioEncoder",
+            "PTZ",
+            "AudioOutput",
+            "AudioDecoder"
+        ]
+    );
+    assert!(
+        fault(&cam, TR2, "GetProfiles", "<Token>nope</Token>")
+            .subcodes
+            .contains(&"ter:NoProfile")
+    );
+    // Profiles stay fixed.
+    assert!(
+        fault(&cam, TR2, "CreateProfile", "")
+            .subcodes
+            .contains(&"ter:MaxNVTProfiles")
+    );
+    assert!(
+        fault(&cam, TR2, "DeleteProfile", "<Token>main</Token>")
+            .subcodes
+            .contains(&"ter:DeletionOfFixedProfile")
+    );
+}
+
+#[test]
+fn media2_encoders_use_attributes_and_rfc_3551_names() {
+    let cam = FakeCamera::new(true, &[]);
+    let video = call(
+        &cam,
+        TR2,
+        "GetVideoEncoderConfigurations",
+        "<ConfigurationToken>main_video</ConfigurationToken>",
+    );
+    let e = path(&video, &["Configurations"]);
+    assert_eq!(e.attr("token"), Some("main_video"));
+    assert_eq!(
+        (e.attr("GovLength"), e.attr("Profile")),
+        (Some("30"), Some("Main"))
+    );
+    assert_eq!(e.text_of("Encoding"), Some("H264"));
+    assert_eq!(path(e, &["Resolution", "Width"]).text, "2560");
+    assert_eq!(path(e, &["RateControl", "BitrateLimit"]).text, "2048");
+    assert_eq!(path(e, &["RateControl", "FrameRateLimit"]).text, "15");
+    let names: Vec<_> = e.children.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "Name",
+            "UseCount",
+            "Encoding",
+            "Resolution",
+            "RateControl",
+            "Multicast",
+            "Quality"
+        ]
+    );
+    let both = call(&cam, TR2, "GetVideoEncoderConfigurations", "");
+    assert_eq!(both.children_named("Configurations").count(), 2);
+    assert!(
+        fault(
+            &cam,
+            TR2,
+            "GetVideoEncoderConfigurations",
+            "<ConfigurationToken>x</ConfigurationToken>"
+        )
+        .subcodes
+        .contains(&"ter:NoConfig")
+    );
+    let audio = call(&cam, TR2, "GetAudioEncoderConfigurations", "");
+    assert_eq!(path(&audio, &["Configurations", "Encoding"]).text, "PCMU");
+    assert_eq!(path(&audio, &["Configurations", "SampleRate"]).text, "8");
+    // The options: lists as attributes, the resolutions and the bitrate span as elements.
+    let options = call(&cam, TR2, "GetVideoEncoderConfigurationOptions", "");
+    let o = path(&options, &["Options"]);
+    assert_eq!(o.attr("GovLengthRange"), Some("30"));
+    assert_eq!(o.attr("FrameRatesSupported"), Some("15"));
+    assert_eq!(o.attr("ProfilesSupported"), Some("Main"));
+    assert_eq!(o.children_named("ResolutionsAvailable").count(), 2);
+    assert_eq!(path(o, &["BitrateRange", "Min"]).text, "256");
+    assert_eq!(path(o, &["BitrateRange", "Max"]).text, "2048");
+    let one = call(
+        &cam,
+        TR2,
+        "GetVideoEncoderConfigurationOptions",
+        "<ProfileToken>sub</ProfileToken>",
+    );
+    assert_eq!(
+        path(&one, &["Options"])
+            .children_named("ResolutionsAvailable")
+            .count(),
+        1
+    );
+    let a = call(&cam, TR2, "GetAudioEncoderConfigurationOptions", "");
+    assert_eq!(path(&a, &["Options", "Encoding"]).text, "PCMU");
+}
+
+#[test]
+fn media2_other_configurations_filter_by_token_and_profile() {
+    let cam = FakeCamera::new(true, &[]);
+    for (action, token) in [
+        ("GetVideoSourceConfigurations", "video_source_config"),
+        ("GetAudioSourceConfigurations", "audio_source_config"),
+        ("GetAudioOutputConfigurations", "audio_output_config"),
+        ("GetAudioDecoderConfigurations", "audio_decoder"),
+    ] {
+        let all = call(&cam, TR2, action, "");
+        assert_eq!(
+            path(&all, &["Configurations"]).attr("token"),
+            Some(token),
+            "{action}"
+        );
+        call(
+            &cam,
+            TR2,
+            action,
+            &format!(
+                "<ConfigurationToken>{token}</ConfigurationToken><ProfileToken>sub</ProfileToken>"
+            ),
+        );
+        assert!(
+            fault(
+                &cam,
+                TR2,
+                action,
+                "<ConfigurationToken>x</ConfigurationToken>"
+            )
+            .subcodes
+            .contains(&"ter:NoConfig"),
+            "{action}"
+        );
+        assert!(
+            fault(&cam, TR2, action, "<ProfileToken>x</ProfileToken>")
+                .subcodes
+                .contains(&"ter:NoProfile"),
+            "{action}"
+        );
+    }
+    for action in ["GetMetadataConfigurations", "GetAnalyticsConfigurations"] {
+        assert!(call(&cam, TR2, action, "").children.is_empty(), "{action}");
+    }
+    let instances = call(
+        &cam,
+        TR2,
+        "GetVideoEncoderInstances",
+        "<ConfigurationToken>video_source_config</ConfigurationToken>",
+    );
+    assert_eq!(
+        path(&instances, &["Info", "Codec", "Encoding"]).text,
+        "H264"
+    );
+    assert_eq!(path(&instances, &["Info", "Total"]).text, "2");
+    assert!(
+        fault(
+            &cam,
+            TR2,
+            "GetVideoEncoderInstances",
+            "<ConfigurationToken>x</ConfigurationToken>"
+        )
+        .subcodes
+        .contains(&"ter:NoConfig")
+    );
+    // Features the camera lacks.
+    for action in [
+        "GetOSDs",
+        "GetMasks",
+        "StartMulticastStreaming",
+        "GetVideoSourceModes",
+    ] {
+        assert_eq!(
+            fault(&cam, TR2, action, "").subcodes,
+            ["ter:ActionNotSupported"],
+            "{action}"
+        );
+    }
+}
+
+#[test]
+fn media2_stream_and_snapshot_uris_are_bare() {
+    let cam = FakeCamera::new(false, &[]);
+    for protocol in ["RtspUnicast", "RTSP"] {
+        let r = call(
+            &cam,
+            TR2,
+            "GetStreamUri",
+            &format!("<Protocol>{protocol}</Protocol><ProfileToken>sub</ProfileToken>"),
+        );
+        assert_eq!(
+            r.text_of("Uri"),
+            Some("rtsp://CAMERA_HOST:554/sub_pcmu"),
+            "{protocol}"
+        );
+    }
+    for protocol in ["RtspMulticast", "RtspOverHttp", ""] {
+        assert!(
+            fault(
+                &cam,
+                TR2,
+                "GetStreamUri",
+                &format!("<Protocol>{protocol}</Protocol><ProfileToken>sub</ProfileToken>")
+            )
+            .subcodes
+            .contains(&"ter:InvalidStreamSetup"),
+            "{protocol:?}"
+        );
+    }
+    assert!(
+        fault(
+            &cam,
+            TR2,
+            "GetStreamUri",
+            "<Protocol>RtspUnicast</Protocol><ProfileToken>x</ProfileToken>"
+        )
+        .subcodes
+        .contains(&"ter:NoProfile")
+    );
+    let snap = call(
+        &cam,
+        TR2,
+        "GetSnapshotUri",
+        "<ProfileToken>main</ProfileToken>",
+    );
+    assert_eq!(
+        snap.text_of("Uri"),
+        Some("http://CAMERA_HOST:80/snapshot.jpg")
+    );
+    call(
+        &cam,
+        TR2,
+        "SetSynchronizationPoint",
+        "<ProfileToken>main</ProfileToken>",
+    );
+    assert!(
+        fault(
+            &cam,
+            TR2,
+            "SetSynchronizationPoint",
+            "<ProfileToken>x</ProfileToken>"
+        )
+        .subcodes
+        .contains(&"ter:NoProfile")
+    );
+}
+
+#[test]
+fn media2_is_read_only_and_a_fixed_profile_keeps_its_configurations() {
+    let cam = FakeCamera::new(true, &[]);
+    let set = |body: &str| call(&cam, TR2, "SetVideoEncoderConfiguration", body);
+    // Saying what is already so succeeds (a float frame rate, an unstated field, the attributes).
+    set(
+        r#"<Configuration token="main_video" GovLength="30" Profile="Main"><tt:Encoding>H264</tt:Encoding><tt:Resolution><tt:Width>2560</tt:Width><tt:Height>1440</tt:Height></tt:Resolution><tt:RateControl><tt:FrameRateLimit>15.0</tt:FrameRateLimit><tt:BitrateLimit>2048</tt:BitrateLimit></tt:RateControl></Configuration>"#,
+    );
+    for change in [
+        r#"<Configuration token="main_video" GovLength="60"/>"#,
+        r#"<Configuration token="main_video" Profile="High"/>"#,
+        r#"<Configuration token="main_video"><tt:Encoding>H265</tt:Encoding></Configuration>"#,
+        r#"<Configuration token="main_video"><tt:RateControl><tt:BitrateLimit>4096</tt:BitrateLimit></tt:RateControl></Configuration>"#,
+        r#"<Configuration token="main_video"><tt:RateControl><tt:FrameRateLimit>soon</tt:FrameRateLimit></tt:RateControl></Configuration>"#,
+        r#"<Configuration token="main_video"><tt:Resolution><tt:Width>640</tt:Width><tt:Height>360</tt:Height></tt:Resolution></Configuration>"#,
+    ] {
+        assert!(
+            fault(&cam, TR2, "SetVideoEncoderConfiguration", change)
+                .subcodes
+                .contains(&"ter:ConfigModify"),
+            "{change}"
+        );
+    }
+    assert!(
+        fault(
+            &cam,
+            TR2,
+            "SetVideoEncoderConfiguration",
+            r#"<Configuration token="x"/>"#
+        )
+        .subcodes
+        .contains(&"ter:NoConfig")
+    );
+    call(
+        &cam,
+        TR2,
+        "SetAudioEncoderConfiguration",
+        r#"<Configuration token="audio_encoder"><tt:Encoding>PCMU</tt:Encoding><tt:SampleRate>8</tt:SampleRate></Configuration>"#,
+    );
+    assert!(fault(&cam, TR2, "SetAudioEncoderConfiguration", r#"<Configuration token="audio_encoder"><tt:Encoding>PCMA</tt:Encoding></Configuration>"#).subcodes.contains(&"ter:ConfigModify"));
+    call(
+        &cam,
+        TR2,
+        "SetVideoSourceConfiguration",
+        r#"<Configuration token="video_source_config"><tt:Bounds x="0" y="0" width="2560" height="1440"/></Configuration>"#,
+    );
+    assert!(fault(&cam, TR2, "SetVideoSourceConfiguration", r#"<Configuration token="video_source_config"><tt:Bounds x="0" y="0" width="1" height="1"/></Configuration>"#).subcodes.contains(&"ter:ConfigModify"));
+    // Adding what the profile holds is a no-op; anything else is unknown; nothing can be removed.
+    call(
+        &cam,
+        TR2,
+        "AddConfiguration",
+        "<ProfileToken>main</ProfileToken><Configuration><Type>VideoEncoder</Type><Token>main_video</Token></Configuration>",
+    );
+    assert!(fault(&cam, TR2, "AddConfiguration", "<ProfileToken>main</ProfileToken><Configuration><Type>VideoEncoder</Type><Token>sub_video</Token></Configuration>").subcodes.contains(&"ter:NoConfig"));
+    assert!(
+        fault(
+            &cam,
+            TR2,
+            "RemoveConfiguration",
+            "<ProfileToken>main</ProfileToken><Configuration><Type>PTZ</Type></Configuration>"
+        )
+        .subcodes
+        .contains(&"ter:ConfigModify")
+    );
+    assert!(
+        fault(
+            &cam,
+            TR2,
+            "RemoveConfiguration",
+            "<ProfileToken>x</ProfileToken>"
+        )
+        .subcodes
+        .contains(&"ter:NoProfile")
     );
 }
