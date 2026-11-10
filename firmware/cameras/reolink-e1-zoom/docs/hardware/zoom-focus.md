@@ -10,7 +10,7 @@ below).
 
 ## Lens curve rows
 
-Before either motor homes, the daemon checks the lens variant (1) and the read-only ZFTable in mtd7 (below), then
+Before either motor homes, the daemon checks the lens variant (1 or 2) and the read-only ZFTable in mtd7 (below), then
 installs and reads back all 50 `MOTOR_MISC` curve rows plus the focus backlash (`Lens::configure`). The rows keep the
 ZFTable's zooms and sharp points; their windows are ours: 300 steps either side of each sharp point, widened further
 around learned focus points (the map, below), clamped to mechanical travel. Unused rows are sentinels and row 49
@@ -73,13 +73,20 @@ visibly soft focus (301 where the sharp point was ≈200), so `cam` does not use
 by `Sp_get_zoomfocustable` (0x65b50) and consumed by `Na_af_refresh_zf_info` (0xa5130) as pairs:
 
 - pair *i*: zoom = low 16 bits of the even word, sharp focus = low 16 bits of the odd word;
-- first pair's even word bits 24..25: lens variant (1 here), picks the spread table; first pair's odd word bits
+- first pair's even word bits 24..25: lens variant (1 on the first tested unit, 2 on another), picks the spread table; first pair's odd word bits
   16..23: focus backlash (3 here, `Na_af_set_backlash`); top byte of other odd words: per-row spread class (0 here).
 
 The tested unit: `1000000,300e6,20,f3,40,125,…,400,3fe` = 33 points (0, 230), (32, 243), (64, 293) … (1024, 1022).
 
+A second unit has `2000000,500dd,20,de,40,11f,…,400,3f3`: lens variant 2, backlash 5, the same 33 zoom positions, (0, 221) … (1024, 1011).
+The first build refused it ("unsupported factory lens calibration"), which made the daemon exit at start. In the stock
+`device` the dispatch in `Na_af_adapt_lens_focus_range` is a 13-entry jump table on the variant: entries 1, 2 and 9
+(and anything above 12) all go to the bare return at 0xa49fc, so variants 1 and 2 get the default windows above, and
+the AF parameter loader (0xa4e0c) takes `variant - 1 < 2` as one group. `cam` therefore accepts 1 and 2 and still
+refuses every other variant until its entry in that table has been read. [D]
+
 `device` turns each point into a driver row (focus min, max) = (sharp − 144, sharp + 100) for row 0 and
-(sharp − 64, sharp + 64) for the rest (`Na_af_adapt_lens_focus_range` @ 0xa4658 for lens variant 1), loads them with
+(sharp − 64, sharp + 64) for the rest (`Na_af_adapt_lens_focus_range` @ 0xa4658 for lens variants 1 and 2), loads them with
 `MOTOR_MISC` set cmd 1 and repeats the last row in slot 49. Verified: the 33 rows read back from the driver match
 exactly (row 0 = 86..330, row 1 = 179..307 … row 32 = 958..1086). Those rows are the zoom limit and the focus window.
 
