@@ -26,8 +26,9 @@ failed ("Name or service not known"), the MQTT worker stalled, and nothing could
 192.168.1.x or 10.x network the stray route is harmless, which is why it can go unnoticed. The supervisor therefore
 removes every IPv4 address from `eth0` once, as soon as the interface exists and no DHCP client of ours or the vendor's
 owns it (`Event::EthAddressCleared`, logged as `net: … EthAddressCleared`); the cable fallback below configures `eth0`
-again when it is needed. The stray route was observed on a unit whose LAN is 192.168.0.0/23 (routing table from a cold
-boot); the removal itself is not yet confirmed on hardware. [I]
+again when it is needed. Observed on a unit whose LAN is 192.168.0.0/23: the cold-boot routing table
+held both routes and the daemon was reset three times; with the removal the same cold boot logs `EthAddressCleared`,
+keeps only the `wlan0` route, resolves the broker, qualifies after 180 s of health and serves RTSP. [V]
 
 Recovery: exited children are respawned after 2 s. A failed load or a missing interface powers the dongle down:
 `rmmod wlan`, `rmmod cfg80211`, GPIO 133 low (each attempted even if an earlier one failed), at least 500 ms off
