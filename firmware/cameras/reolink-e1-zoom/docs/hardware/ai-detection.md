@@ -35,6 +35,21 @@ followed by layer names such as `Conv_670_Y`):
 matches the three models above. `kdrv_ai` and `kflow_ai` are present in the stock kernel tree that `cam` keeps.
 `cam` does not load them today.
 
+## The userspace-to-kernel boundary
+
+- Install flow: the build already starts from the reader's own stock PAK and writes a patched one, so the
+  models are on the camera at `/mnt/src/CNNLib/para/` and `cam` would read them there. Nothing is copied into
+  this repository.
+- `device` opens `/dev/kflow_ai_net` (and `/dev/nvt_ai_module0`). `kflow_ai.ko` serves it with
+  `vendor_ais_flow_miscdev_ioctl`, an ioctl set with magic `'f'` (0x66) and command numbers up to 91.
+- Twenty-one of them are visible as plain constants in the handler (the rest are reached by offsets from
+  these), all read-write: nr 1 (16 bytes), 3 (8), 19 (140), 23 (12), 26 (24), 28 (64), 34 (20), 38 (24), 39 (4),
+  45, 47 and 49 (24 each), 53 and 55 (8 each), 62 and 64 (208 each), 71 (24), 72 (4), 74 (48), 90 and 91 (4).
+  Their meanings are not decoded.
+- The kernel module schedules jobs onto the two engines (`NUE`, `NUE2`) from per-layer command lists, with
+  per-process job graphs (`proc[%d].job[%d]`), so userspace compiles the network into hardware commands. That
+  compiler is the part statically linked into `device`.
+
 ## What reusing it would take
 
 1. Load `kdrv_ai` and `kflow_ai` from `cam`'s boot path.
@@ -49,8 +64,8 @@ Step 2 is the large one. A wrong call can reset the camera, as with the media ca
 
 ## Open questions
 
-- Is the `vendor_ai` ioctl interface to `kdrv_ai` small enough to drive directly?
+- Can the ioctl set above be driven from `cam` without the stock model compiler? Unlikely: the commands carry
+  compiled engine parameters, so the compiler has to be reproduced.
 - What are `ppvd.bin`'s output tensors, and which class index is cat or dog?
 - What input size and format does it take, and from which stream does `device` take frames?
-- Redistribution: the models are Reolink's and Novatek's. They would have to stay on the camera (copied from the
-  stock image at install) and out of this repository.
+- Redistribution is not an issue as long as the models stay on the camera, where the stock image put them.
