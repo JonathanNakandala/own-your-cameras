@@ -195,6 +195,7 @@ impl crate::ImagingPort for FakeImaging {
 /// The camera's system side: counts reboots and keeps a one-line log.
 pub struct FakeSystem {
     pub reboots: AtomicUsize,
+    pub relays: Mutex<Vec<String>>,
 }
 
 pub struct FakeCamera {
@@ -229,6 +230,7 @@ impl FakeCamera {
             imaging: ptz.then(FakeImaging::new),
             system: ptz.then(|| FakeSystem {
                 reboots: AtomicUsize::new(0),
+                relays: Mutex::new(Vec::new()),
             }),
             inputs: inputs.to_vec(),
             encodes: AtomicUsize::new(0),
@@ -276,6 +278,25 @@ impl OnvifCamera for FakeCamera {
     }
     fn ptz(&self) -> Option<&dyn PtzPort> {
         self.ptz.as_ref().map(|p| p as &dyn PtzPort)
+    }
+    fn relay_outputs(&self) -> &'static [&'static str] {
+        if self.system.is_some() {
+            &["status_led", "ir_leds"]
+        } else {
+            &[]
+        }
+    }
+    fn set_relay_output(&self, token: &str, active: bool) -> Result<(), crate::RelayError> {
+        let system = self.system.as_ref().ok_or(crate::RelayError::NoSuchRelay)?;
+        if !self.relay_outputs().contains(&token) {
+            return Err(crate::RelayError::NoSuchRelay);
+        }
+        system
+            .relays
+            .lock()
+            .unwrap()
+            .push(format!("{token} {active}"));
+        Ok(())
     }
     fn reboot(&self) -> Option<Result<(), String>> {
         let system = self.system.as_ref()?;

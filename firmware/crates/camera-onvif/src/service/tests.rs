@@ -342,6 +342,158 @@ fn device_refuses_what_the_camera_does_not_keep() {
 }
 
 #[test]
+fn relay_outputs_are_listed_counted_and_switched() {
+    let cam = FakeCamera::new(true, &[]);
+    let relays = call(&cam, TDS, "GetRelayOutputs", "");
+    let tokens: Vec<_> = relays
+        .children_named("RelayOutputs")
+        .map(|r| r.attr("token"))
+        .collect();
+    assert_eq!(tokens, [Some("status_led"), Some("ir_leds")]);
+    let first = path(&relays, &["RelayOutputs", "Properties"]);
+    assert_eq!(first.text_of("Mode"), Some("Bistable"));
+    assert_eq!(first.text_of("IdleState"), Some("open"));
+    // The count is in every capability document.
+    let io = call(&cam, TMD, "GetServiceCapabilities", "");
+    assert_eq!(path(&io, &["Capabilities"]).attr("RelayOutputs"), Some("2"));
+    let all = call(&cam, TDS, "GetCapabilities", "");
+    assert_eq!(
+        path(&all, &["Capabilities", "Device", "IO", "RelayOutputs"]).text,
+        "2"
+    );
+    assert_eq!(
+        path(
+            &all,
+            &["Capabilities", "Extension", "DeviceIO", "RelayOutputs"]
+        )
+        .text,
+        "2"
+    );
+    call(
+        &cam,
+        TDS,
+        "SetRelayOutputState",
+        "<RelayOutputToken>ir_leds</RelayOutputToken><LogicalState>active</LogicalState>",
+    );
+    call(
+        &cam,
+        TDS,
+        "SetRelayOutputState",
+        "<RelayOutputToken>status_led</RelayOutputToken><LogicalState>inactive</LogicalState>",
+    );
+    assert_eq!(
+        *cam.system.as_ref().unwrap().relays.lock().unwrap(),
+        ["ir_leds true", "status_led false"]
+    );
+    // DeviceIO lists the options per relay, or for one.
+    let options = call(&cam, TMD, "GetRelayOutputOptions", "");
+    assert_eq!(options.children_named("RelayOutputOptions").count(), 2);
+    let one = call(
+        &cam,
+        TMD,
+        "GetRelayOutputOptions",
+        "<RelayOutputToken>ir_leds</RelayOutputToken>",
+    );
+    assert_eq!(
+        path(&one, &["RelayOutputOptions"]).attr("token"),
+        Some("ir_leds")
+    );
+    assert_eq!(path(&one, &["RelayOutputOptions", "Mode"]).text, "Bistable");
+}
+
+#[test]
+fn relay_outputs_refuse_what_they_do_not_do() {
+    let cam = FakeCamera::new(true, &[]);
+    let state = |token: &str, logical: &str| {
+        fault(
+            &cam,
+            TDS,
+            "SetRelayOutputState",
+            &format!(
+                "<RelayOutputToken>{token}</RelayOutputToken><LogicalState>{logical}</LogicalState>"
+            ),
+        )
+    };
+    assert!(state("door", "active").subcodes.contains(&"ter:RelayToken"));
+    assert!(state("ir_leds", "on").subcodes.contains(&"ter:InvalidArgs"));
+    assert!(state("ir_leds", "").subcodes.contains(&"ter:InvalidArgs"));
+    assert!(
+        cam.system
+            .as_ref()
+            .unwrap()
+            .relays
+            .lock()
+            .unwrap()
+            .is_empty()
+    );
+    // Settings: the one setting there is is accepted; monostable and an inverted idle state are not.
+    let ok = "<tt:Mode>Bistable</tt:Mode><tt:IdleState>open</tt:IdleState>";
+    call(
+        &cam,
+        TDS,
+        "SetRelayOutputSettings",
+        &format!("<RelayOutputToken>ir_leds</RelayOutputToken><Properties>{ok}</Properties>"),
+    );
+    call(
+        &cam,
+        TMD,
+        "SetRelayOutputSettings",
+        &format!(
+            r#"<RelayOutput token="ir_leds"><tt:Properties>{ok}</tt:Properties></RelayOutput>"#
+        ),
+    );
+    for props in [
+        "<tt:Mode>Monostable</tt:Mode><tt:DelayTime>PT5S</tt:DelayTime><tt:IdleState>open</tt:IdleState>",
+        "<tt:Mode>Bistable</tt:Mode><tt:IdleState>closed</tt:IdleState>",
+    ] {
+        let f = fault(
+            &cam,
+            TDS,
+            "SetRelayOutputSettings",
+            &format!(
+                "<RelayOutputToken>ir_leds</RelayOutputToken><Properties>{props}</Properties>"
+            ),
+        );
+        assert!(f.subcodes.contains(&"ter:ModeError"), "{props}");
+    }
+    assert!(
+        fault(
+            &cam,
+            TDS,
+            "SetRelayOutputSettings",
+            &format!("<RelayOutputToken>x</RelayOutputToken><Properties>{ok}</Properties>")
+        )
+        .subcodes
+        .contains(&"ter:RelayToken")
+    );
+    assert!(
+        fault(
+            &cam,
+            TMD,
+            "GetRelayOutputOptions",
+            "<RelayOutputToken>x</RelayOutputToken>"
+        )
+        .subcodes
+        .contains(&"ter:RelayToken")
+    );
+    // A camera with no relays lists none and counts none.
+    let panel = FakeCamera::new(false, &[]);
+    assert_eq!(call(&panel, TDS, "GetRelayOutputs", "").children.len(), 0);
+    let io = call(&panel, TMD, "GetServiceCapabilities", "");
+    assert_eq!(path(&io, &["Capabilities"]).attr("RelayOutputs"), Some("0"));
+    assert!(
+        fault(
+            &panel,
+            TDS,
+            "SetRelayOutputState",
+            "<RelayOutputToken>ir_leds</RelayOutputToken><LogicalState>active</LogicalState>"
+        )
+        .subcodes
+        .contains(&"ter:RelayToken")
+    );
+}
+
+#[test]
 fn media_accepts_a_sync_point_and_lists_no_metadata() {
     let cam = FakeCamera::new(true, &[]);
     call(

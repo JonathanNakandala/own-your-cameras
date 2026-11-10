@@ -251,6 +251,14 @@ pub trait ImagingPort: Send + Sync {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RelayError {
+    /// No relay output has this token.
+    NoSuchRelay,
+    /// The camera's settings owner refused or failed the request.
+    Failed(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SnapshotError {
     /// The encoder is not up yet, is being rebuilt, or missed the deadline.
     NotReady,
@@ -264,6 +272,15 @@ pub trait OnvifCamera: Send + Sync {
     /// A speaker that takes the RTSP backchannel.
     fn audio_output(&self) -> bool;
     fn ptz(&self) -> Option<&dyn PtzPort>;
+    /// The tokens of the camera's relay outputs. ONVIF models any switched output as one; here they are LEDs.
+    /// Every one is bistable: active until set inactive.
+    fn relay_outputs(&self) -> &'static [&'static str] {
+        &[]
+    }
+    /// Switches the relay output `token` (`SetRelayOutputState`).
+    fn set_relay_output(&self, _token: &str, _active: bool) -> Result<(), RelayError> {
+        Err(RelayError::NoSuchRelay)
+    }
     /// Reboots the camera (ONVIF `SystemReboot`). `None`: this camera does not offer it. The reply may reach
     /// the client before the reboot starts.
     fn reboot(&self) -> Option<Result<(), String>> {

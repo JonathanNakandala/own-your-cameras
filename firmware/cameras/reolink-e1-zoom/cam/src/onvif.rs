@@ -8,7 +8,7 @@ use crate::pipeline::{MainStream, PipelineConfig};
 use camera_onvif::{
     Absolute, DeviceIdentity, H264Profile, ImagingError, ImagingOptions, ImagingPort,
     ImagingSettings, IrCutFilter, MediaProfile, OnvifCamera, Pose, Preset, PtzError, PtzFeatures,
-    PtzPort, Relative, SnapshotError, Velocity, VideoEncoding,
+    PtzPort, Relative, RelayError, SnapshotError, Velocity, VideoEncoding,
 };
 use camera_transport::motion_control::{self, PresetName};
 use std::sync::Arc;
@@ -64,6 +64,10 @@ const AUX_IR_LAMP: [(&str, &str); 3] = [
     ("tt:IRLamp|Off", "day"),
     ("tt:IRLamp|Auto", "auto"),
 ];
+
+/// The relay outputs and the switch setting each one drives.
+const RELAY_TOKENS: [&str; 2] = ["status_led", "ir_leds"];
+const RELAYS: [(&str, &str); 2] = [("status_led", "led"), ("ir_leds", "ir_leds_at_night")];
 
 /// How much of the log `GetSystemLog` returns: the log is capped at 256 KiB and a SOAP reply should not be.
 const LOG_TAIL: usize = 32 * 1024;
@@ -130,6 +134,25 @@ impl OnvifCamera for E1Onvif {
 
     fn imaging(&self) -> Option<&dyn ImagingPort> {
         Some(self)
+    }
+
+    fn relay_outputs(&self) -> &'static [&'static str] {
+        &RELAY_TOKENS
+    }
+
+    /// Active is the LED on. The status LED is the camera's light; `ir_leds` is whether night mode may light
+    /// the IR LEDs (off, the night picture is dark).
+    fn set_relay_output(&self, token: &str, active: bool) -> Result<(), RelayError> {
+        let (_, key) = RELAYS
+            .iter()
+            .find(|(t, _)| *t == token)
+            .ok_or(RelayError::NoSuchRelay)?;
+        self.motion
+            .submit(Command::Setting(
+                key,
+                if active { "ON" } else { "OFF" }.into(),
+            ))
+            .map_err(RelayError::Failed)
     }
 
     /// The same path as the Reboot button: settings are saved first, then the camera restarts.
@@ -428,6 +451,28 @@ mod tests {
             Arc::new(Handoff::default()),
             Arc::new(Motion::default()),
         )
+    }
+
+    #[test]
+    fn each_relay_drives_a_real_on_off_setting() {
+        let c = camera();
+        assert_eq!(c.relay_outputs(), RELAYS.map(|(token, _)| token));
+        for (token, key) in RELAYS {
+            let spec = crate::settings::spec(key).unwrap();
+            assert!(
+                spec.parse("ON").is_ok() && spec.parse("OFF").is_ok(),
+                "{token} -> {key}"
+            );
+            // Before the motion owner runs the queue does not exist, and that is reported.
+            assert!(matches!(
+                c.set_relay_output(token, true),
+                Err(RelayError::Failed(_))
+            ));
+        }
+        assert_eq!(
+            c.set_relay_output("door", true),
+            Err(RelayError::NoSuchRelay)
+        );
     }
 
     #[test]

@@ -7,7 +7,8 @@
 //! owner. Unknown actions are `ter:ActionNotSupported`.
 
 use crate::camera::{
-    Absolute, MediaProfile, OnvifCamera, PtzError, PtzFeatures, PtzPort, Relative, Velocity,
+    Absolute, MediaProfile, OnvifCamera, PtzError, PtzFeatures, PtzPort, Relative, RelayError,
+    Velocity,
 };
 use crate::events::{self, EventError, Message, PullPointBook, Termination};
 use crate::soap::{Fault, Request, TDS, TEV, TIMG, TMD, TPTZ, TRT, WSNT};
@@ -201,9 +202,10 @@ fn media_service_capabilities(profiles: usize) -> String {
 /// button for a camera whose only audio output is in the Media service).
 fn device_io_service_capabilities(ctx: &Context) -> String {
     format!(
-        "<tmd:Capabilities VideoSources=\"1\" VideoOutputs=\"0\" AudioSources=\"{}\" AudioOutputs=\"{}\" RelayOutputs=\"0\" SerialPorts=\"0\" DigitalInputs=\"{}\" DigitalInputOptions=\"false\"/>",
+        "<tmd:Capabilities VideoSources=\"1\" VideoOutputs=\"0\" AudioSources=\"{}\" AudioOutputs=\"{}\" RelayOutputs=\"{}\" SerialPorts=\"0\" DigitalInputs=\"{}\" DigitalInputOptions=\"false\"/>",
         audio_sources(ctx),
         audio_outputs(ctx),
+        ctx.camera.relay_outputs().len(),
         ctx.camera.digital_inputs().len()
     )
 }
@@ -214,6 +216,36 @@ fn audio_sources(ctx: &Context) -> usize {
 
 fn audio_outputs(ctx: &Context) -> usize {
     usize::from(ctx.camera.audio_output())
+}
+
+fn relay_token_fault() -> Reply {
+    Reply::Fault(Fault::invalid_arg("ter:RelayToken", "No such relay output"))
+}
+
+/// Every relay output is bistable and idles open (inactive): the one setting there is. Asking for the
+/// same is accepted, anything else (monostable, an inverted idle state) is refused.
+fn relay_settings(
+    ctx: &Context,
+    token: Option<&str>,
+    props: Option<&Element>,
+) -> Result<(), Fault> {
+    if !token.is_some_and(|t| ctx.camera.relay_outputs().contains(&t)) {
+        return Err(Fault::invalid_arg("ter:RelayToken", "No such relay output"));
+    }
+    let props = props.ok_or_else(|| Fault::invalid_arg("ter:ModeError", "No Properties"))?;
+    if props.text_of("Mode") != Some("Bistable") {
+        return Err(Fault::invalid_arg(
+            "ter:ModeError",
+            "Only the bistable mode is supported",
+        ));
+    }
+    if props.text_of("IdleState") != Some("open") {
+        return Err(Fault::invalid_arg(
+            "ter:ModeError",
+            "The idle state is open",
+        ));
+    }
+    Ok(())
 }
 
 fn device_io(req: &Request, ctx: &Context) -> Reply {
@@ -231,7 +263,31 @@ fn device_io(req: &Request, ctx: &Context) -> Reply {
         "GetVideoSources" => reply(text("tmd:Token", VIDEO_SOURCE)),
         "GetAudioSources" => reply(token(audio_sources(ctx), AUDIO_SOURCE)),
         "GetAudioOutputs" => reply(token(audio_outputs(ctx), AUDIO_OUTPUT)),
-        "GetVideoOutputs" | "GetRelayOutputs" | "GetSerialPorts" => reply(String::new()),
+        "GetVideoOutputs" | "GetSerialPorts" => reply(String::new()),
+        "GetRelayOutputOptions" => {
+            let wanted = req.body.text_of("RelayOutputToken");
+            let known = ctx.camera.relay_outputs();
+            if wanted.is_some_and(|t| !known.contains(&t)) {
+                return relay_token_fault();
+            }
+            reply(
+                known
+                    .iter()
+                    .filter(|t| wanted.is_none_or(|w| w == **t))
+                    .map(|t| {
+                        format!(
+                            "<tmd:RelayOutputOptions token=\"{t}\"><tmd:Mode>Bistable</tmd:Mode></tmd:RelayOutputOptions>"
+                        )
+                    })
+                    .collect(),
+            )
+        }
+        "SetRelayOutputSettings" => {
+            let relay = req.body.child("RelayOutput");
+            let token = relay.and_then(|r| r.attr("token"));
+            relay_settings(ctx, token, relay.and_then(|r| r.child("Properties")))
+                .map_or_else(Reply::Fault, |()| reply(String::new()))
+        }
         "GetDigitalInputs" => reply(
             ctx.camera
                 .digital_inputs()
@@ -278,7 +334,7 @@ fn capabilities(ctx: &Context, category: &str) -> String {
                     format!(
                         "{}{}",
                         text("tt:InputConnectors", ctx.camera.digital_inputs().len()),
-                        text("tt:RelayOutputs", 0)
+                        text("tt:RelayOutputs", ctx.camera.relay_outputs().len())
                     )
                 ),
                 "<tt:Security><tt:TLS1.1>false</tt:TLS1.1><tt:TLS1.2>false</tt:TLS1.2><tt:OnboardKeyGeneration>false</tt:OnboardKeyGeneration><tt:AccessPolicyConfig>false</tt:AccessPolicyConfig><tt:X.509Token>false</tt:X.509Token><tt:SAMLToken>false</tt:SAMLToken><tt:KerberosToken>false</tt:KerberosToken><tt:RELToken>false</tt:RELToken></tt:Security>",
@@ -327,7 +383,7 @@ fn capabilities(ctx: &Context, category: &str) -> String {
                     text("tt:VideoOutputs", 0),
                     text("tt:AudioSources", audio_sources(ctx)),
                     text("tt:AudioOutputs", audio_outputs(ctx)),
-                    text("tt:RelayOutputs", 0)
+                    text("tt:RelayOutputs", ctx.camera.relay_outputs().len())
                 ),
             ),
         ));
@@ -526,7 +582,41 @@ fn device(req: &Request, ctx: &Context) -> Reply {
             "<tds:WsdlUrl>http://www.onvif.org/ver10/device/wsdl/devicemgmt.wsdl</tds:WsdlUrl>"
                 .into(),
         ),
-        "GetRelayOutputs" => reply(String::new()),
+        "GetRelayOutputs" => reply(
+            ctx.camera
+                .relay_outputs()
+                .iter()
+                .map(|t| {
+                    format!(
+                        "<tds:RelayOutputs token=\"{t}\"><tt:Properties><tt:Mode>Bistable</tt:Mode><tt:IdleState>open</tt:IdleState></tt:Properties></tds:RelayOutputs>"
+                    )
+                })
+                .collect(),
+        ),
+        "SetRelayOutputState" => {
+            let token = req.body.text_of("RelayOutputToken").unwrap_or_default();
+            let active = match req.body.text_of("LogicalState") {
+                Some("active") => true,
+                Some("inactive") => false,
+                _ => {
+                    return Reply::Fault(Fault::invalid_arg(
+                        "ter:InvalidArgs",
+                        "LogicalState is active or inactive",
+                    ));
+                }
+            };
+            match ctx.camera.set_relay_output(token, active) {
+                Ok(()) => reply(String::new()),
+                Err(RelayError::NoSuchRelay) => relay_token_fault(),
+                Err(RelayError::Failed(why)) => Reply::Fault(Fault::receiver(&["ter:Action"], why)),
+            }
+        }
+        "SetRelayOutputSettings" => relay_settings(
+            ctx,
+            req.body.text_of("RelayOutputToken"),
+            req.body.child("Properties"),
+        )
+        .map_or_else(Reply::Fault, |()| reply(String::new())),
         "GetUsers" => reply(format!(
             "<tds:User>{}{}</tds:User>",
             text("tt:Username", ctx.user),

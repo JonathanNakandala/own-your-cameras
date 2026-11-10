@@ -14,6 +14,7 @@ the network, read its streams and snapshot, and drive it without a camera-specif
 | Imaging: brightness, saturation, contrast, sharpness, IR-cut filter, focus mode | yes | — | — |
 | PTZ presets: list, go to, create, delete | up to 32 | up to 16 | — |
 | Events: digital inputs | — | — | `call_button`, `door` |
+| Relay outputs (LEDs) | 2 | — | — |
 | Audio output (talkback) | yes | yes | yes |
 
 ## Streams
@@ -91,6 +92,20 @@ cameras:
         enabled: true
         zooming: disabled   # the lens zooms only 1.3×; tracking by pan/tilt alone is the sensible start
 ```
+
+## Relay outputs
+
+ONVIF models any switched output as a relay, so the E1 Zoom's LEDs are two relay outputs
+(`GetRelayOutputs`, `SetRelayOutputState`; Device IO adds `GetRelayOutputOptions` and `SetRelayOutputSettings`):
+
+| Token | Setting | Active means |
+|---|---|---|
+| `status_led` | `led` | the status LED is on |
+| `ir_leds` | `ir_leds_at_night` | night mode may light the IR LEDs; inactive leaves the night picture dark |
+
+Both are bistable and idle open (inactive). `SetRelayOutputSettings` accepts exactly that and refuses a
+monostable mode or a closed idle state with `ter:ModeError`; an unknown token is `ter:RelayToken`. The state
+is not reported back (ONVIF has no read call for it, and no relay event is sent); the MQTT entities show it.
 
 ## More PTZ calls
 
