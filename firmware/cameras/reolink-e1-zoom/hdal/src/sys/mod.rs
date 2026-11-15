@@ -541,6 +541,19 @@ const ENC_IN_FUNC_NVX2: u32 = 2;
 const ENC_PARAM_OUT_GDR: h::_HD_VIDEOENC_PARAM_ID = 11;
 /// `HD_VIDEOENC_PARAM_OUT_SLICE_SPLIT` (id 10 [D]); the struct is `HD_H26XENC_SLICE_SPLIT { enable, slice_row_num }`.
 const ENC_PARAM_OUT_SLICE_SPLIT: h::_HD_VIDEOENC_PARAM_ID = 10;
+/// `HD_VIDEOENC_PARAM_OUT_VUI` (id 6: the name follows `OUT_ENC_PARAM`, 5, in `libhdal`'s encoder parameter name
+/// table, before `OUT_DEBLOCK` and `OUT_RATE_CONTROL`, 8 [D]); the struct is `HD_H26XENC_VUI`.
+const ENC_PARAM_OUT_VUI: h::_HD_VIDEOENC_PARAM_ID = 6;
+/// What the H.264 streams' VUI says about the picture. The video processor writes luma over the whole 0 to 255
+/// range (8 % of a typical frame below 16 or above 235 [V]), as the JPEG encoder it also feeds expects
+/// (`yuv_trans 0` in `venc/info` [V]); without the full-range flag a player assumes 16 to 235 and clips shadows
+/// and highlights. Colours are signalled as BT.709 primaries and transfer with BT.601 (JPEG's) matrix
+/// coefficients; the vendor stack sends no VUI at all [V].
+const VUI_FULL_RANGE: u8 = 1;
+const VUI_PRIMARIES_BT709: u8 = 1;
+const VUI_TRANSFER_BT709: u8 = 1;
+const VUI_MATRIX_BT601: u8 = 6;
+const VUI_FORMAT_UNSPECIFIED: u8 = 5;
 const ENC_IN: [u32; 3] = [
     h::HD_VIDEOENC_0_IN_0 as u32,
     h::HD_VIDEOENC_0_IN_1 as u32,
@@ -1207,6 +1220,30 @@ fn encoder_params(path: PathId, spec: &EncSpec, step: Step) -> Result<(), Error>
                 path.0 as _,
                 h::HD_VIDEOENC_PARAM_OUT_ENC_PARAM,
                 (&mut out as *mut h::HD_VIDEOENC_OUT).cast(),
+            )
+        }),
+    )?;
+
+    // Colour signalling: full-range luma and chroma, so players do not clip the picture.
+    let mut vui = h::HD_H26XENC_VUI {
+        vui_en: 1,
+        sar_width: 1,
+        sar_height: 1,
+        matrix_coef: VUI_MATRIX_BT601,
+        transfer_characteristics: VUI_TRANSFER_BT709,
+        colour_primaries: VUI_PRIMARIES_BT709,
+        video_format: VUI_FORMAT_UNSPECIFIED,
+        color_range: VUI_FULL_RANGE,
+        timing_present_flag: 0,
+    };
+    // SAFETY: `vui` is a `HD_H26XENC_VUI`, the struct this param id takes.
+    check(
+        step,
+        ioctl_capture::result(|| unsafe {
+            h::hd_videoenc_set(
+                path.0 as _,
+                ENC_PARAM_OUT_VUI,
+                (&mut vui as *mut h::HD_H26XENC_VUI).cast(),
             )
         }),
     )?;

@@ -129,6 +129,11 @@ decodes them in hardware:
   slices are optional, and the encoder uses none of them.
 - **Gradual refresh:** the refresh bands are ordinary intra macroblocks inside P frames, and a joining viewer
   still starts at a real key frame, so no decoder support beyond plain P frames is needed.
+- **Colour range:** the video processor writes luma over the whole 0 to 255 range, and both H.264 streams say
+  so in their VUI (full range, BT.709 primaries and transfer, BT.601 matrix as in JPEG). Without the flag, which
+  the vendor stack never sends, a player assumes 16 to 235 and clips what lies outside: 8 to 20 % of the picture
+  in frames from this camera, mostly shadows [V]. Not a setting; a player that ignores the flag shows what it
+  showed before.
 - **Profile and level stay at the vendor's High profile, level 5.1.** Android guarantees only Main profile at level
   3.1, but current phones decode High profile at 5.1 and above in hardware (a Galaxy S24 Ultra, for one), and High
   profile's CABAC and 8x8 transform give a better picture at the same bitrate. The level is kept at 5.1 even for

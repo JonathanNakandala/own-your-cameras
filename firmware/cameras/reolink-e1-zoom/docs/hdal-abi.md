@@ -83,7 +83,8 @@ From the library's disassembly (SHA-256 in the HDAL link manifest):
   then validate both extents. Null or all-ones is never passed to `mem_free`, and an impossible success with
   invalid outputs is an error.
 
-Encoder parameters from the same table [D]: `OUT_SLICE_SPLIT` 10 (`HD_H26XENC_SLICE_SPLIT { enable, slice_row_num }`,
+Encoder parameters from the same table [D]: `OUT_VUI` 6 (`HD_H26XENC_VUI`; `cam` sets it on every H.264 path and
+the flags reach the SPS [V], although `venc/info` lists no rows for it), `OUT_SLICE_SPLIT` 10 (`HD_H26XENC_SLICE_SPLIT { enable, slice_row_num }`,
 rows per slice; it works as documented [V]), `OUT_ENC_GDR` 11
 (`HD_H26XENC_GDR { enable, period, number }`, `number` being macroblock rows a frame), `OUT_REQUEST_IFRAME` 15. The
 last is accepted and **ignored** by this encoder: requests half a second off the GOP grid made no key frame, while
