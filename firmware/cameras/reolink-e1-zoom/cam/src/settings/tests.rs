@@ -371,7 +371,11 @@ fn files_written_before_the_shared_store_load_and_are_rewritten_byte_for_byte() 
             .as_deref()
             .unwrap_or_default()
             .lines()
-            .filter(|l| !l.starts_with("isp_3dnr = ") && !l.starts_with("main_gdr = "))
+            .filter(|l| {
+                !["isp_3dnr = ", "main_gdr = ", "main_slice_split = "]
+                    .iter()
+                    .any(|k| l.starts_with(k))
+            })
             .map(|l| format!("{l}\n"))
             .collect();
         assert_eq!(written, text, "{name}");

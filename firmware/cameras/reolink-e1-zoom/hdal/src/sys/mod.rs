@@ -539,6 +539,8 @@ const ENC_IN_FUNC_NVX2: u32 = 2;
 /// `HD_VIDEOENC_PARAM_OUT_ENC_GDR` (id 11 in `libhdal`'s encoder parameter table [D]); the struct is
 /// `HD_H26XENC_GDR { enable, period, number }`.
 const ENC_PARAM_OUT_GDR: h::_HD_VIDEOENC_PARAM_ID = 11;
+/// `HD_VIDEOENC_PARAM_OUT_SLICE_SPLIT` (id 10 [D]); the struct is `HD_H26XENC_SLICE_SPLIT { enable, slice_row_num }`.
+const ENC_PARAM_OUT_SLICE_SPLIT: h::_HD_VIDEOENC_PARAM_ID = 10;
 const ENC_IN: [u32; 3] = [
     h::HD_VIDEOENC_0_IN_0 as u32,
     h::HD_VIDEOENC_0_IN_1 as u32,
@@ -1224,6 +1226,25 @@ fn encoder_params(path: PathId, spec: &EncSpec, step: Step) -> Result<(), Error>
                     path.0 as _,
                     ENC_PARAM_OUT_GDR,
                     (&mut gdr as *mut h::HD_H26XENC_GDR).cast(),
+                )
+            }),
+        )?;
+    }
+
+    // Slice split. Written when asked for, and on a retune so that turning it off takes effect.
+    if spec.slice_rows.is_some() || step == Step::VideoencRetune {
+        let mut split = h::HD_H26XENC_SLICE_SPLIT {
+            enable: spec.slice_rows.is_some().into(),
+            slice_row_num: spec.slice_rows.unwrap_or(1),
+        };
+        // SAFETY: `split` is a `HD_H26XENC_SLICE_SPLIT`, the 8-byte struct this param id takes.
+        check(
+            step,
+            ioctl_capture::result(|| unsafe {
+                h::hd_videoenc_set(
+                    path.0 as _,
+                    ENC_PARAM_OUT_SLICE_SPLIT,
+                    (&mut split as *mut h::HD_H26XENC_SLICE_SPLIT).cast(),
                 )
             }),
         )?;

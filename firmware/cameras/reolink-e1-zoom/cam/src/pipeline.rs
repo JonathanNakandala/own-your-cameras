@@ -45,7 +45,13 @@ pub struct MainStream {
     /// Gradual decoder refresh instead of a key frame every second: no key-frame spike on the network. New
     /// viewers get their key frame on request, and one more comes every [`GDR_GOP_SECONDS`].
     pub gdr: bool,
+    /// Each frame cut into slices of [`SLICE_ROWS`] macroblock rows: a lost packet damages its slice only.
+    pub slices: bool,
 }
+
+/// Macroblock rows per slice with slice split on: 16 slices a frame at 2592x1944, 12 at 1920x1440, 8 at 1280x960.
+/// The size measured on the camera ([`MainStream::slices`]).
+pub const SLICE_ROWS: u32 = 8;
 
 /// With gradual decoder refresh the encoder still makes a full key frame this often (seconds): the encoder takes no
 /// interval of 0 (`HD_RESULT -2` [V]), and recorders that cut at key frames need some.
@@ -73,6 +79,7 @@ impl MainStream {
             gdr: self
                 .gdr
                 .then(|| hdal::enc::Gdr::per_second(self.dim, self.fps)),
+            slice_rows: self.slices.then_some(SLICE_ROWS),
         }
     }
 
@@ -82,6 +89,7 @@ impl MainStream {
             bitrate_bps: spec.bitrate_bps,
             fps: spec.fps,
             gdr: spec.gdr.is_some(),
+            slices: spec.slice_rows.is_some(),
         }
     }
 }
@@ -205,6 +213,7 @@ impl PipelineConfig {
             gop: 15,
             src_fps: None,
             gdr: None,
+            slice_rows: None,
         };
         let sub = EncSpec {
             dim: Dim { w: 640, h: 480 },
@@ -213,6 +222,7 @@ impl PipelineConfig {
             gop: 10,
             src_fps: None,
             gdr: None,
+            slice_rows: None,
         };
         Self {
             cap,

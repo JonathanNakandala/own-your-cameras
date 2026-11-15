@@ -45,6 +45,7 @@ this table identical to the code).
 | `main_resolution` | Main resolution | Main stream | select | 2592x1944, 1920x1440, 1280x960 | 1920x1440 | main path restart (≤ 2 s) |
 | `main_fps` | Main frame rate | Main stream | number | 5…30 fps | 15 | main path restart (≤ 2 s) |
 | `main_gdr` | Main gradual refresh | Main stream | switch | ON/OFF | OFF | main path restart (≤ 2 s) |
+| `main_slice_split` | Main slice split | Main stream | switch | ON/OFF | OFF | main path restart (≤ 2 s) |
 | `isp_3dnr` | 3D noise reduction | Picture | switch | ON/OFF | ON | after reboot |
 | `isp_brightness` | Brightness | Picture | number | 0…200 | stock `0_isp.cfg` `brightness` (else 100) | live, with readback |
 | `isp_contrast` | Contrast | Picture | number | 0…200 | stock `0_isp.cfg` `contrast` (else 100) | live, with readback |
@@ -94,6 +95,28 @@ Measured on a camera at 2592x1944, 15 fps, 4096 kbit/s with 3D noise reduction [
 
 Worth trying when a client shows a broken band at every key frame over a weak link. Recorders that cut files at key
 frames (Frigate segments, go2rtc HLS) get them every 8 s instead of every second.
+
+## Slice split (`main_slice_split`)
+
+Off by default; live (the main encoder restarts, 6 to 13 ms). With it on, every main-stream frame is cut into slices of
+8 macroblock rows (16 slices at 2592x1944, 12 at 1920x1440, 8 at 1280x960), each one an independently decodable piece
+that travels in its own RTP packets. A lost packet then breaks only its slice; without it the decoder loses everything
+from the hole to the bottom of the frame, until the next key frame (or the next gradual refresh cycle). The ONVIF relay
+output `slice_split` switches the same setting; it combines with `main_gdr` and `isp_3dnr`.
+
+Measured [V]: the camera's encoder reported the split and the stream carried exactly 16 slices a frame at 2592x1944
+(1 with it off); ffmpeg over TCP and UDP decoded it without errors. The damage was measured offline on raw captures
+from the camera, cut into RTP packets as this server does, with one packet lost and the receiver keeping what arrived
+before the hole (as ffmpeg-based clients do), while the camera panned:
+
+| One lost packet in | One slice a frame | 8-row slices |
+|---|---|---|
+| a key frame | 27 % of the picture wrong (up to 32 %), for a second | 2.9 % (up to 7.7 %) |
+| a P frame | 12 % (up to 46 %), for about 7 frames | 1.6 % (up to 3.6 %) |
+
+In a still scene both are small (about 2 % against nothing visible), because the decoder hides a lost band by copying
+it from the previous frame. The cost is a little bitrate efficiency (prediction does not cross slice borders; not
+measured here) and more, smaller packets: a P frame at 4096 kbit/s left as about 22 packets instead of 19.
 
 ## Persistence
 

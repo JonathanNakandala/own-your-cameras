@@ -203,6 +203,7 @@ mod tests {
             bitrate_bps: 512_000,
             fps: 10,
             gdr: false,
+            slices: false,
         };
         h.request_main(m);
         assert_eq!(

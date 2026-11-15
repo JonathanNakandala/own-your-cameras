@@ -66,12 +66,14 @@ const AUX_IR_LAMP: [(&str, &str); 3] = [
 ];
 
 /// The relay outputs and the switch setting each one drives.
-const RELAY_TOKENS: [&str; 3] = ["status_led", "ir_leds", "gradual_refresh"];
-const RELAYS: [(&str, &str); 3] = [
+const RELAY_TOKENS: [&str; 4] = ["status_led", "ir_leds", "gradual_refresh", "slice_split"];
+const RELAYS: [(&str, &str); 4] = [
     ("status_led", "led"),
     ("ir_leds", "ir_leds_at_night"),
     // Active: the main stream refreshes gradually instead of with a key frame every second.
     ("gradual_refresh", "main_gdr"),
+    // Active: the main stream's frames are cut into slices, so a lost packet damages one band only.
+    ("slice_split", "main_slice_split"),
 ];
 
 /// How much of the log `GetSystemLog` returns: the log is capped at 256 KiB and a SOAP reply should not be.

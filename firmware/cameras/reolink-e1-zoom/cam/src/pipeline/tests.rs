@@ -110,7 +110,8 @@ fn main_is_the_full_4_3_frame_and_sub_keeps_the_vendor_settings() {
             fps: 15,
             gop: 15,
             src_fps: None,
-            gdr: None
+            gdr: None,
+            slice_rows: None,
         }
     );
     // The diagnostic dump builds no snapshot path.
@@ -694,6 +695,7 @@ fn small() -> MainStream {
         bitrate_bps: 512_000,
         fps: 10,
         gdr: false,
+        slices: false,
     }
 }
 
@@ -817,6 +819,7 @@ fn a_persisted_main_stream_the_driver_refuses_falls_back_to_stock_at_build() {
         bitrate_bps: 8_000_000,
         fps: 30,
         gdr: false,
+        slices: false,
     });
     run_tuned(&mut hw, &mut tuner, 5).expect("boot never fails on a setting");
     let stock = PipelineConfig::e1_zoom().streams[0];
@@ -874,6 +877,7 @@ fn fast_main() -> MainStream {
         bitrate_bps: 4_096_000,
         fps: 30,
         gdr: false,
+        slices: false,
     }
 }
 
@@ -1173,6 +1177,7 @@ fn gradual(fps: u32) -> MainStream {
         bitrate_bps: 1_024_000,
         fps,
         gdr: true,
+        slices: false,
     }
 }
 
@@ -1330,4 +1335,69 @@ fn gradual_refresh_works_with_3d_noise_reduction_too() {
     run_tuned(&mut hw, &mut tuner, 30).expect("runs");
     let (_, main) = hw.enc_specs.iter().find(|(i, _)| *i == 0).unwrap();
     assert_eq!((main.src_fps, main.gdr.is_some()), (Some(30), true));
+}
+
+#[test]
+fn slice_split_cuts_only_the_main_stream_into_eight_row_slices() {
+    let mut hw = Fake::default();
+    let mut tuner = Script::new(vec![]);
+    tuner.initial.main = Some(MainStream {
+        slices: true,
+        gdr: false,
+        ..gradual(15)
+    });
+    run_tuned(&mut hw, &mut tuner, 20).expect("runs");
+    let (_, main) = hw.enc_specs.iter().find(|(i, _)| *i == 0).unwrap();
+    assert_eq!(main.slice_rows, Some(SLICE_ROWS));
+    let (_, sub) = hw.enc_specs.iter().find(|(i, _)| *i == 1).unwrap();
+    assert_eq!(sub.slice_rows, None);
+    assert!(
+        tuner
+            .reports
+            .iter()
+            .any(|r| matches!(r, Tuned::Main { applied, .. } if applied.slices))
+    );
+}
+
+#[test]
+fn slice_split_switches_live_both_ways() {
+    for (from, to) in [(false, true), (true, false)] {
+        let start = MainStream {
+            slices: from,
+            gdr: false,
+            ..gradual(15)
+        };
+        let mut hw = Fake::default();
+        let mut tuner = Script::new(vec![(
+            20,
+            MediaTuning {
+                main: Some(MainStream {
+                    slices: to,
+                    ..start
+                }),
+                ..Default::default()
+            },
+        )]);
+        tuner.initial.main = Some(start);
+        run_tuned(&mut hw, &mut tuner, 100).expect("runs");
+        let (_, main) = hw.enc_specs.iter().rfind(|(i, _)| *i == 0).unwrap();
+        assert_eq!(main.slice_rows, to.then_some(SLICE_ROWS), "{from} -> {to}");
+        assert_eq!(count(&hw, "videoenc_retune"), 1);
+    }
+}
+
+#[test]
+fn slice_split_and_gradual_refresh_and_3d_noise_reduction_combine() {
+    let mut hw = Fake::default();
+    let mut tuner = denoising(MainStream {
+        gdr: true,
+        slices: true,
+        ..full_main(15)
+    });
+    run_tuned(&mut hw, &mut tuner, 30).expect("runs");
+    let (_, main) = hw.enc_specs.iter().find(|(i, _)| *i == 0).unwrap();
+    assert_eq!(
+        (main.src_fps, main.gdr.is_some(), main.slice_rows),
+        (Some(30), true, Some(SLICE_ROWS))
+    );
 }

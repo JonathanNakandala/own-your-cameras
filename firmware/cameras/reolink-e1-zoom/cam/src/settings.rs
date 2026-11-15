@@ -399,6 +399,12 @@ const BASE: &[Setting] = &[
         15,
     ),
     switch("main_gdr", "Main gradual refresh", Group::MainStream, false),
+    switch(
+        "main_slice_split",
+        "Main slice split",
+        Group::MainStream,
+        false,
+    ),
     switch("isp_3dnr", "3D noise reduction", Group::Startup, true),
 ];
 
@@ -606,6 +612,7 @@ impl Settings {
             bitrate_bps: self.int("main_bitrate") as u32 * 1000,
             fps: self.int("main_fps") as u32,
             gdr: self.on("main_gdr"),
+            slices: self.on("main_slice_split"),
         }
     }
 
@@ -648,6 +655,7 @@ impl Settings {
                 s.set_shown("main_fps", fps);
             }
             s.set_shown("main_gdr", i32::from(m.gdr));
+            s.set_shown("main_slice_split", i32::from(m.slices));
         }
         s
     }
@@ -870,7 +878,13 @@ impl<D: Disk> Store<D> {
     /// setting, so a value the encoders cannot sustain is not persisted.
     pub fn adopt_main(&mut self, m: &MainStream, now: Duration) {
         let shown = self.settings.with_applied(None, Some(m));
-        for key in ["main_resolution", "main_bitrate", "main_fps", "main_gdr"] {
+        for key in [
+            "main_resolution",
+            "main_bitrate",
+            "main_fps",
+            "main_gdr",
+            "main_slice_split",
+        ] {
             if let (Some(spec), Some(v)) = (spec(key), shown.get(key)) {
                 let _ = self.put(spec, v, now);
             }

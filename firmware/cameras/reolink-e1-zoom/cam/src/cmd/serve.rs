@@ -7,7 +7,7 @@ use super::{CliError, OnHdal, Ownership, on_hdal};
 use crate::ownership::Resource;
 use crate::runtime::valid_attempt;
 
-pub const USAGE: &str = "usage: cam serve --attempt TOKEN | cam serve --diagnostic [--port N] [--auth FILE | --no-auth] [--seconds N] [--config FILE] [--retune SECONDS:WxH@FPS@KBPS[@gdr]]...";
+pub const USAGE: &str = "usage: cam serve --attempt TOKEN | cam serve --diagnostic [--port N] [--auth FILE | --no-auth] [--seconds N] [--config FILE] [--retune SECONDS:WxH@FPS@KBPS[@gdr][@slices]]...";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnostic {
@@ -27,13 +27,13 @@ pub fn parse_retune(text: &str) -> Option<(u64, crate::pipeline::MainStream)> {
     let mut it = rest.split('@');
     let (dim, fps, kbps) = (it.next()?, it.next()?, it.next()?);
     let (w, h) = dim.split_once('x')?;
-    let gdr = match it.next() {
-        None => false,
-        Some("gdr") => true,
-        Some(_) => return None,
-    };
-    if it.next().is_some() {
-        return None;
+    let (mut gdr, mut slices) = (false, false);
+    for flag in it {
+        match flag {
+            "gdr" if !gdr => gdr = true,
+            "slices" if !slices => slices = true,
+            _ => return None,
+        }
     }
     Some((
         at.parse().ok()?,
@@ -45,6 +45,7 @@ pub fn parse_retune(text: &str) -> Option<(u64, crate::pipeline::MainStream)> {
             fps: fps.parse().ok()?,
             bitrate_bps: kbps.parse::<u32>().ok()?.checked_mul(1000)?,
             gdr,
+            slices,
         },
     ))
 }
@@ -55,6 +56,16 @@ mod retune_tests {
 
     #[test]
     fn a_retune_is_seconds_size_rate_and_bitrate() {
+        let (_, m) = parse_retune("60:2592x1944@10@4096@gdr@slices").unwrap();
+        assert!(m.gdr && m.slices);
+        let (_, m) = parse_retune("60:2592x1944@10@4096@slices").unwrap();
+        assert!(!m.gdr && m.slices);
+        for bad in [
+            "60:2592x1944@10@4096@slices@slices",
+            "60:2592x1944@10@4096@gdr@x",
+        ] {
+            assert_eq!(parse_retune(bad), None, "{bad}");
+        }
         let (at, m) = parse_retune("60:2592x1944@10@4096").unwrap();
         assert_eq!(
             (at, m.dim.w, m.dim.h, m.fps, m.bitrate_bps),

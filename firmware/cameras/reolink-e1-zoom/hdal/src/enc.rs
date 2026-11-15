@@ -49,6 +49,9 @@ pub struct EncSpec {
     pub src_fps: Option<u32>,
     /// Gradual decoder refresh instead of periodic key frames; `None` keeps the key frame every `gop` frames.
     pub gdr: Option<Gdr>,
+    /// Each frame cut into independently decodable slices of this many macroblock rows; `None` is one slice per
+    /// frame. A lost packet then damages its slice only, not the rest of the frame.
+    pub slice_rows: Option<u32>,
 }
 
 /// One access unit as the encoder returned it: Annex B, packs concatenated.

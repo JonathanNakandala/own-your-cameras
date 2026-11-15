@@ -14,7 +14,7 @@ the network, read its streams and snapshot, and drive it without a camera-specif
 | Imaging: brightness, saturation, contrast, sharpness, IR-cut filter, focus mode | yes | — | — |
 | PTZ presets: list, go to, create, delete | up to 32 | up to 16 | — |
 | Events: digital inputs | — | — | `call_button`, `door` |
-| Relay outputs (LEDs, gradual refresh) | 3 | — | — |
+| Relay outputs (LEDs, gradual refresh, slice split) | 4 | — | — |
 | Audio output (talkback) | yes | yes | yes |
 
 ## Streams
@@ -115,8 +115,8 @@ also asks for HTTPS, H.265 and motion events, which are not offered.
 
 ## Relay outputs
 
-ONVIF models any switched output as a relay, so the E1 Zoom's two LEDs and the main stream's gradual refresh are
-relay outputs (`GetRelayOutputs`, `SetRelayOutputState`; Device IO adds `GetRelayOutputOptions` and
+ONVIF models any switched output as a relay, so the E1 Zoom's two LEDs and the main stream's gradual refresh and
+slice split are relay outputs (`GetRelayOutputs`, `SetRelayOutputState`; Device IO adds `GetRelayOutputOptions` and
 `SetRelayOutputSettings`). Each drives an on/off setting, exactly as the MQTT switch of that setting does:
 
 | Token | Setting | Active means |
@@ -124,6 +124,7 @@ relay outputs (`GetRelayOutputs`, `SetRelayOutputState`; Device IO adds `GetRela
 | `status_led` | `led` | the status LED is on |
 | `ir_leds` | `ir_leds_at_night` | night mode may light the IR LEDs; inactive leaves the night picture dark |
 | `gradual_refresh` | `main_gdr` | the main stream uses gradual decoder refresh instead of a key frame every second ([settings](../../firmware/cameras/reolink-e1-zoom/docs/settings.md#gradual-refresh-main_gdr)); the main profile's `GovLength` follows (8 s of frames) |
+| `slice_split` | `main_slice_split` | the main stream's frames are cut into slices, so a lost packet damages one band ([settings](../../firmware/cameras/reolink-e1-zoom/docs/settings.md#slice-split-main_slice_split)) |
 
 All are bistable and idle open (inactive). `SetRelayOutputSettings` accepts exactly that and refuses a
 monostable mode or a closed idle state with `ter:ModeError`; an unknown token is `ter:RelayToken`. The state
