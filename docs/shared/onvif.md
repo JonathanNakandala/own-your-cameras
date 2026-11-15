@@ -111,7 +111,31 @@ profiles cannot be created, deleted or stripped. `GetMetadataConfigurations` and
 list nothing, and OSDs, masks, multicast, video source modes and audio clips are `ActionNotSupported`.
 
 This is the service Profile T clients call, but **the cameras claim only Profile S** in discovery: Profile T
-also asks for HTTPS, H.265 and motion events, which are not offered.
+also asks for motion and tampering events, editable media profiles, a metadata stream, on-screen text and more, which
+are not offered ([plan](../../firmware/cameras/reolink-e1-zoom/docs/plan-30fps-h265-profile-t.md)). HTTPS is optional
+in Profile T, and one of H.264 and H.265 is enough.
+
+## Video codec
+
+A profile's video encoder says its codec in `Encoding`: `H264` on every camera, and `H265` for the Reolink E1 Zoom's
+main stream while its `main_codec` setting is H.265 (the default; the sub stream is always H.264).
+
+| | Media1 | Media2 |
+|---|---|---|
+| `Encoding` of an H.265 stream | `H265`, outside the schema | `H265` |
+| Options | the `H264` element only (the schema has no other) | one `Options` per codec in use, each with its own ranges |
+| `GetVideoEncoderInstances` | — | one `Codec` per codec in use |
+| Changing it over ONVIF | `ter:ConfigModify`, like every encoder setting | the same: the setting is `main_codec` (MQTT) |
+
+Media1's schema only has `JPEG`, `MPEG4` and `H264`, and H.265 reached ONVIF with Media2. Cameras that stream H.265
+still put `H265` in Media1's `Encoding`, because that is the one honest value, and clients cope in different ways:
+Home Assistant's ONVIF integration lists only profiles whose `Encoding` is exactly `H264`, so with an H.265 main
+stream it shows the sub stream only; Media2 clients such as Profile T tools see both. For a Media1-only client that
+needs the main stream, set `main_codec` to `H.264`. The RTSP stream itself needs nothing from ONVIF: its session
+description carries the codec (`H265/90000`, RFC 7798, with `sprop-vps`, `sprop-sps` and `sprop-pps`).
+
+Changing `main_codec` ends the main stream's open RTSP sessions, because their session description is the old
+codec's; clients reconnect.
 
 ## Relay outputs
 

@@ -42,6 +42,7 @@ fn profile(idc: u32) -> H264Profile {
 
 fn encoding(width: u32, height: u32, fps: u32, kbps: u32, idc: u32) -> VideoEncoding {
     VideoEncoding {
+        codec: Default::default(),
         width,
         height,
         fps,

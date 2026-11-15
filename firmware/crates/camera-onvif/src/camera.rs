@@ -69,9 +69,29 @@ impl H264Profile {
     }
 }
 
-/// The true current settings of one H.264 encoder (read-only over ONVIF).
+/// The video codec of an encoder: H.264 on every camera, H.265 where the encoder can do it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum VideoCodec {
+    #[default]
+    H264,
+    H265,
+}
+
+impl VideoCodec {
+    /// The `Encoding` value. Media1's schema only has `JPEG`, `MPEG4` and `H264`; H.265 there is the value
+    /// cameras that stream it report anyway, and Media2 defines it.
+    pub fn onvif(self) -> &'static str {
+        match self {
+            Self::H264 => "H264",
+            Self::H265 => "H265",
+        }
+    }
+}
+
+/// The true current settings of one encoder (read-only over ONVIF).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VideoEncoding {
+    pub codec: VideoCodec,
     pub width: u32,
     pub height: u32,
     pub fps: u32,

@@ -206,6 +206,8 @@ pub struct FakeCamera {
     pub inputs: Vec<&'static str>,
     pub encodes: AtomicUsize,
     pub encode_time: Duration,
+    /// The codec of the `main` profile (the `sub` profile is H.264).
+    pub main_codec: crate::camera::VideoCodec,
 }
 
 impl FakeCamera {
@@ -235,6 +237,7 @@ impl FakeCamera {
             inputs: inputs.to_vec(),
             encodes: AtomicUsize::new(0),
             encode_time: Duration::from_millis(50),
+            main_codec: Default::default(),
         }
     }
 }
@@ -249,6 +252,7 @@ impl OnvifCamera for FakeCamera {
                 token: "main",
                 stream_path: "main_pcmu",
                 video: VideoEncoding {
+                    codec: self.main_codec,
                     width: 2560,
                     height: 1440,
                     fps: 15,
@@ -262,6 +266,7 @@ impl OnvifCamera for FakeCamera {
                 token: "sub",
                 stream_path: "sub_pcmu",
                 video: VideoEncoding {
+                    codec: Default::default(),
                     width: 640,
                     height: 360,
                     fps: 15,

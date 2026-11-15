@@ -34,6 +34,7 @@ impl E1Onvif {
 
 fn encoding(m: MainStream) -> VideoEncoding {
     VideoEncoding {
+        codec: Default::default(),
         width: m.dim.w,
         height: m.dim.h,
         fps: m.fps,
