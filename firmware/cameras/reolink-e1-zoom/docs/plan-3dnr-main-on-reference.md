@@ -1,6 +1,7 @@
 # Plan: 3D noise reduction with the main encoder on the reference path
 
-Status: **built and verified on a camera in RAM-only sessions; not flashed.** Results are in
+Status: **built, verified on a camera, flashed and running; the setting later became on by default** (it still only acts with
+the 2592x1944 main stream, and the trial marker still guards every start). Results are in
 `hardware/isp-iq.md` (the graph that works, memory, measured effect). What differed from this plan: the reference path
 needs one single-buffer `NVX2` output and the memory pools had to be split per output (section 4 did not foresee
 that), and a diagnostic-only `--retune` option exists to test live changes without a broker. Evidence tags follow

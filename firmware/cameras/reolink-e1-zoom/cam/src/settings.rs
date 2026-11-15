@@ -398,7 +398,7 @@ const BASE: &[Setting] = &[
         Some("fps"),
         15,
     ),
-    switch("isp_3dnr", "3D noise reduction", Group::Startup, false),
+    switch("isp_3dnr", "3D noise reduction", Group::Startup, true),
 ];
 
 static SETTINGS: LazyLock<Vec<Setting>> = LazyLock::new(|| {

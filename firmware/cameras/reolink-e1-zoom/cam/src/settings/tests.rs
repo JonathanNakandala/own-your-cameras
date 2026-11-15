@@ -425,3 +425,39 @@ fn values_are_i32_slots_shared_with_the_reader() {
     assert_eq!(reader.value("ir_to_day"), Some(1900));
     assert_eq!(s.settings().get("ir_to_day"), Some(1900));
 }
+
+#[test]
+fn three_d_noise_reduction_is_on_by_default_but_only_acts_with_the_full_size_main_stream() {
+    let (mut s, problems) = store(None);
+    assert!(problems.is_empty());
+    assert!(s.settings().denoise(), "on by default");
+    assert_eq!(spec("isp_3dnr").unwrap().group, Group::Startup);
+    let scratch = |name: &str| {
+        let dir =
+            std::env::temp_dir().join(format!("cam-3dnr-default-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::denoise::Trial::new(dir.join("cam-3dnr.trial"))
+    };
+    // The first-run main stream is 1920x1440: the default setting runs the plain graph and writes no marker.
+    let first_run = scratch("first-run");
+    let full = |s: &Store<FakeDisk>| s.settings().main_stream().dim == MAIN_SIZES[0];
+    assert!(!full(&s));
+    assert_eq!(
+        first_run.decide(s.settings().denoise(), full(&s)),
+        crate::denoise::Decision::Plain
+    );
+    assert!(!first_run.path().exists());
+    // With the full-size main stream the default starts the guarded trial.
+    s.set("main_resolution", "2592x1944", secs(0)).unwrap();
+    assert!(full(&s));
+    let trial = scratch("full-size");
+    assert_eq!(
+        trial.decide(s.settings().denoise(), full(&s)),
+        crate::denoise::Decision::Trial
+    );
+    assert!(trial.path().exists());
+    // A file that says off stays off.
+    let (off, _) = store(Some("isp_3dnr = false\n"));
+    assert!(!off.settings().denoise());
+}
