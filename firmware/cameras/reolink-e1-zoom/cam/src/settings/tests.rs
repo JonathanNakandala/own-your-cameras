@@ -364,7 +364,17 @@ fn files_written_before_the_shared_store_load_and_are_rewritten_byte_for_byte() 
         s.set("led", led, secs(0)).unwrap();
         s.set("led", back, secs(0)).unwrap();
         s.flush().unwrap();
-        assert_eq!(s.disk().file.as_deref(), Some(text.as_str()), "{name}");
+        // Settings added after the fixtures were written are not in them, and the rewrite adds them.
+        let written: String = s
+            .disk()
+            .file
+            .as_deref()
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| !l.starts_with("isp_3dnr = "))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        assert_eq!(written, text, "{name}");
     }
     let (s, _) = store(Some(&fixture("changed.toml")));
     let s = s.settings();

@@ -83,6 +83,10 @@ From the library's disassembly (SHA-256 in the HDAL link manifest):
   then validate both extents. Null or all-ones is never passed to `mem_free`, and an impossible success with
   invalid outputs is an error.
 
+`hd_common_mem_init` takes up to 128 pools; `cam` gives the plain graph one pool and the graph with 3D noise
+reduction four sized per output ([hardware/isp-iq.md](hardware/isp-iq.md#memory)). `HD_VIDEOPROC_PARAM_FUNC_CONFIG` is
+parameter 24 and `HD_VIDEOENC_PARAM_FUNC_CONFIG` 26 (their name tables in `libhdal`, [D]).
+
 Rules the `hdal` adapters keep:
 
 - Encoder paths validate nonempty, non-wrapping 32-bit physical and host extents. Video rejects zero or excessive

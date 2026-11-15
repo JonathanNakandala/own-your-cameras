@@ -16,6 +16,7 @@ fn diagnostic_reports_service_and_media_cleanup_errors_after_joining() {
         seconds: 2,
         config_path: config.to_string_lossy().into_owned(),
         config_required: true,
+        retunes: Vec::new(),
     };
     let trace = Arc::new(Mutex::new(Vec::new()));
     let mut hw = Fake::failing(Step::AudioCapStop, -77);

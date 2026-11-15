@@ -7,7 +7,7 @@ use super::{CliError, OnHdal, Ownership, on_hdal};
 use crate::ownership::Resource;
 use crate::runtime::valid_attempt;
 
-pub const USAGE: &str = "usage: cam serve --attempt TOKEN | cam serve --diagnostic [--port N] [--auth FILE | --no-auth] [--seconds N] [--config FILE]";
+pub const USAGE: &str = "usage: cam serve --attempt TOKEN | cam serve --diagnostic [--port N] [--auth FILE | --no-auth] [--seconds N] [--config FILE] [--retune SECONDS:WxH@FPS@KBPS]...";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnostic {
@@ -16,6 +16,85 @@ pub struct Diagnostic {
     pub seconds: u64,
     pub config_path: String,
     pub config_required: bool,
+    /// Main-stream changes the run asks for itself, at these seconds after it starts (a RAM-only way to try live
+    /// changes on a camera without a broker): `--retune 60:2592x1944@10@4096`.
+    pub retunes: Vec<(u64, crate::pipeline::MainStream)>,
+}
+
+/// `SECONDS:WxH@FPS@KBPS`.
+pub fn parse_retune(text: &str) -> Option<(u64, crate::pipeline::MainStream)> {
+    let (at, rest) = text.split_once(':')?;
+    let mut it = rest.split('@');
+    let (dim, fps, kbps) = (it.next()?, it.next()?, it.next()?);
+    let (w, h) = dim.split_once('x')?;
+    if it.next().is_some() {
+        return None;
+    }
+    Some((
+        at.parse().ok()?,
+        crate::pipeline::MainStream {
+            dim: hdal::Dim {
+                w: w.parse().ok()?,
+                h: h.parse().ok()?,
+            },
+            fps: fps.parse().ok()?,
+            bitrate_bps: kbps.parse::<u32>().ok()?.checked_mul(1000)?,
+        },
+    ))
+}
+
+#[cfg(test)]
+mod retune_tests {
+    use super::*;
+
+    #[test]
+    fn a_retune_is_seconds_size_rate_and_bitrate() {
+        let (at, m) = parse_retune("60:2592x1944@10@4096").unwrap();
+        assert_eq!(
+            (at, m.dim.w, m.dim.h, m.fps, m.bitrate_bps),
+            (60, 2592, 1944, 10, 4_096_000)
+        );
+        for bad in [
+            "",
+            "60",
+            "60:2592x1944@10",
+            "60:2592x1944@10@4096@1",
+            "x:2592x1944@10@4096",
+            "60:2592@10@4096",
+            "60:2592x1944@x@4096",
+        ] {
+            assert_eq!(parse_retune(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_diagnostic_parser_collects_retunes_in_order() {
+        let args: Vec<String> = [
+            "--diagnostic",
+            "--retune",
+            "30:1920x1440@15@2048",
+            "--retune",
+            "60:2592x1944@15@4096",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let Ok(Serve::Diagnostic(d)) = parse(&args) else {
+            panic!("parse")
+        };
+        assert_eq!(
+            d.retunes.iter().map(|(at, _)| *at).collect::<Vec<_>>(),
+            [30, 60]
+        );
+        assert!(
+            parse(&[
+                "--diagnostic".to_string(),
+                "--retune".to_string(),
+                "nope".to_string()
+            ])
+            .is_err()
+        );
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,6 +125,7 @@ pub fn parse(args: &[String]) -> Result<Serve, CliError> {
                 seconds: 0,
                 config_path: "/mnt/para/cam.toml".into(),
                 config_required: false,
+                retunes: Vec::new(),
             };
             while let Some(a) = it.next() {
                 if a == "--no-auth" {
@@ -61,6 +141,7 @@ pub fn parse(args: &[String]) -> Result<Serve, CliError> {
                         d.config_path = v.clone();
                         d.config_required = true;
                     }
+                    "--retune" => d.retunes.push(parse_retune(v).ok_or_else(usage)?),
                     _ => return Err(usage()),
                 }
             }
@@ -121,6 +202,8 @@ impl OnHdal for Diagnostic {
 pub const DIAGNOSTIC_SETTINGS: &str = "/mnt/tmp/cam-settings.toml";
 pub const DIAGNOSTIC_FOCUS_MAP: &str = "/mnt/tmp/cam-focus-map.toml";
 pub const DIAGNOSTIC_PRESETS: &str = "/mnt/tmp/cam-presets.toml";
+/// The 3D noise reduction trial marker of a diagnostic run (RAM, so a reboot always starts clean).
+pub const DIAGNOSTIC_TRIAL: &str = "/mnt/tmp/cam-3dnr.trial";
 
 /// Actual diagnostic orchestration, injected only at the camera hardware boundary.
 /// Caller retains diagnostic ownership until this returns; all workers join before HDAL teardown.
@@ -210,10 +293,29 @@ pub fn diagnostic_with<
             .unwrap_or_default(),
         Box::new(crate::settings::FileDisk::new(DIAGNOSTIC_PRESETS)),
     ));
+    if let Some(o) = &owner {
+        o.arm_denoise(crate::denoise::Trial::new(DIAGNOSTIC_TRIAL));
+    }
     let media_tuning = owner
         .as_ref()
         .map(|o| std::sync::Arc::clone(&o.media))
         .unwrap_or_default();
+    if !d.retunes.is_empty() {
+        let (media, plan) = (Arc::clone(&media_tuning), d.retunes.clone());
+        let started = Instant::now();
+        std::thread::spawn(move || {
+            for (at, main) in plan {
+                while started.elapsed() < std::time::Duration::from_secs(at) {
+                    if stop.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                eprintln!("diagnostic: asking for main stream {main:?}");
+                media.request_main(main);
+            }
+        });
+    }
     // The same time keeping, motion queue and ONVIF as production (ONVIF needs credentials and a config).
     let motion = Arc::new(crate::mqtt::Motion::default());
     let _onvif = match (&mqtt_config, &onvif_creds) {

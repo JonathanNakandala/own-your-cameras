@@ -229,6 +229,11 @@
       "topic": "homeassistant/number/cam_hall/main_fps/config"
     },
     {
+      "payload": "{\"availability_topic\":\"camera/hall/availability\",\"command_topic\":\"camera/hall/isp_3dnr/set\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"entity_category\":\"config\",\"name\":\"Picture 3D noise reduction\",\"payload_off\":\"OFF\",\"payload_on\":\"ON\",\"retain\":false,\"state_topic\":\"camera/hall/isp_3dnr/state\",\"unique_id\":\"cam_hall_isp_3dnr\"}",
+      "retain": true,
+      "topic": "homeassistant/switch/cam_hall/isp_3dnr/config"
+    },
+    {
       "payload": "{\"availability_topic\":\"camera/hall/availability\",\"command_topic\":\"camera/hall/isp_brightness/set\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"entity_category\":\"config\",\"max\":200,\"min\":0,\"mode\":\"slider\",\"name\":\"Picture Brightness\",\"retain\":false,\"state_topic\":\"camera/hall/isp_brightness/state\",\"step\":1,\"unique_id\":\"cam_hall_isp_brightness\"}",
       "retain": true,
       "topic": "homeassistant/number/cam_hall/isp_brightness/config"
@@ -559,6 +564,11 @@
       "payload": "{\"availability_topic\":\"camera/hall/availability\",\"command_topic\":\"camera/hall/main_fps/set\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"entity_category\":\"config\",\"max\":30,\"min\":5,\"mode\":\"slider\",\"name\":\"Main stream Main frame rate\",\"retain\":false,\"state_topic\":\"camera/hall/main_fps/state\",\"step\":1,\"unique_id\":\"cam_hall_main_fps\",\"unit_of_measurement\":\"fps\"}",
       "retain": true,
       "topic": "homeassistant/number/cam_hall/main_fps/config"
+    },
+    {
+      "payload": "{\"availability_topic\":\"camera/hall/availability\",\"command_topic\":\"camera/hall/isp_3dnr/set\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"entity_category\":\"config\",\"name\":\"Picture 3D noise reduction\",\"payload_off\":\"OFF\",\"payload_on\":\"ON\",\"retain\":false,\"state_topic\":\"camera/hall/isp_3dnr/state\",\"unique_id\":\"cam_hall_isp_3dnr\"}",
+      "retain": true,
+      "topic": "homeassistant/switch/cam_hall/isp_3dnr/config"
     },
     {
       "payload": "{\"availability_topic\":\"camera/hall/availability\",\"command_topic\":\"camera/hall/isp_brightness/set\",\"device\":{\"identifiers\":[\"cam_hall\"],\"manufacturer\":\"Reolink\",\"model\":\"E1 Zoom (cam)\",\"name\":\"Hall camera\"},\"entity_category\":\"config\",\"max\":200,\"min\":0,\"mode\":\"slider\",\"name\":\"Picture Brightness\",\"retain\":false,\"state_topic\":\"camera/hall/isp_brightness/state\",\"step\":1,\"unique_id\":\"cam_hall_isp_brightness\"}",

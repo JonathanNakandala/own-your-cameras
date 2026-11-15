@@ -101,6 +101,9 @@ The OS05A10 runs at its full 2592×1944, 30 fps, over MIPI into `hd_videocap` (w
 | main | `main` | 1920×1440, 15 fps, 1024 kbit/s, 1 s GOP | 2592×1944, 1920×1440 or 1280×960; 5–30 fps; 256–8192 kbit/s |
 | sub | `sub` | 640×480, 10 fps, 512 kbit/s, 1 s GOP | fixed |
 
+With `isp_3dnr` on and a 2592x1944 main stream the main output is instead the compressed reference of the video
+processor's 3D noise reduction, which the main encoder reads directly
+([hardware/isp-iq.md](hardware/isp-iq.md#3d-noise-reduction-in-the-video-processor-isp_3dnr)).
 The main stream's parameters are settings ([settings.md](settings.md)); a change restarts only the main path, and a
 change that starves either stream is rolled back after 2 s. Audio capture pulls raw 48 kHz mono PCM from the
 capture unit and encodes it to Opus in software (libopus), and the speaker output takes 48 kHz signed 16-bit samples
@@ -113,7 +116,9 @@ every pending capture frame and every due mixed speaker block per turn.
 `cam::rtsp` is a small RTSP 1.0 server: OPTIONS, DESCRIBE, SETUP, PLAY, TEARDOWN and GET_PARAMETER as keep-alive,
 digest authentication with the single `user:password` in `/mnt/para/cam-rtsp.auth`, RTP interleaved on the TCP
 connection or over UDP to the client's ports, at most eight connections and 60 s session timeout. Video limits:
-7 MiB access units, 8 MiB shared retained video, 32 queued frames.
+7 MiB access units, 8 MiB shared retained video, 32 queued frames. Over UDP a frame's packets are paced in 2 ms
+slices across three quarters of the frame interval, so a key frame is not one 20 ms burst
+([hardware/network.md](hardware/network.md#the-picture-smears-in-a-band-every-few-seconds-udp-viewers)).
 
 Each path offers H.264 video (track 0) and Opus audio (track 1, RFC 7587: PT 111, `opus/48000/2`,
 `sprop-stereo=0`, 48 kHz mono, 64 kbit/s, one 20 ms frame per packet). A client that sends `Require:

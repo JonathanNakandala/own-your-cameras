@@ -12,23 +12,82 @@ worker, never on the watchdog feeder.
    `ehci-hcd.ko`, `/lib/modules/wifi/firmware_class.ko`, `rfkill.ko`, `wifi_8812ko/cfg80211.ko`, then
    `wifi_8812ko/wlan.ko rtw_channel_plan=0x3A rtw_max_bss_cnt=100`. `0x3A` is the plan `wifi.sh` picks for country
    code `EE`; it is fixed in `cam/src/net/linux.rs`.
-3. Wait up to 10 s for `wlan0`.
-4. `wpa_supplicant -Dnl80211 -iwlan0 -c /mnt/para/cam-wifi.conf`, with `LD_LIBRARY_PATH=/mnt/app` (its `libssl`
+3. Wait up to 10 s for `wlan0`, then `ifconfig wlan0 up`.
+4. `iw wlan0 set power_save off`, right after the interface is up, as the vendor's `device` and `netserver`
+   binaries do (the command string sits next to their `ifconfig %s up`) [D]. Without it the Realtek driver
+   runs its leisure power save (`iw wlan0 get power_save` read `on` on a unit running the daemon [V]): the
+   radio parks between beacons whenever traffic looks light, and each wake-up delays what the camera sends. A
+   sleeping station still transmits once awake, so this costs latency jitter, not uplink packets. The stock
+   `/sbin/iw` is statically linked against libnl and needs no library path. Done once per bring-up of the
+   interface, so again after a dongle power cycle; a failing command is reported and retried at most three
+   times, 2 s apart (`Event::WifiPowerSaveOff`, logged as `net: … WifiPowerSaveOff`).
+5. `wpa_supplicant -Dnl80211 -iwlan0 -c /mnt/para/cam-wifi.conf`, with `LD_LIBRARY_PATH=/mnt/app` (its `libssl`
    lives there).
-5. `udhcpc -f -i wlan0 -x hostname:<camera id> -p /var/run/udhcpc_wlan0.pid`.
-6. While `wlan0` has had no address for 30 s and the Ethernet cable is up, the same `udhcpc` on `eth0`.
+6. `udhcpc -f -i wlan0 -x hostname:<camera id> -p /var/run/udhcpc_wlan0.pid`.
+7. While `wlan0` has had no address for 30 s and the Ethernet cable is up, the same `udhcpc` on `eth0`.
+
+The stock `S25_Net` leaves `eth0` configured as 192.168.0.3/24 at every boot (the vendor stack removes it later; with
+the vendor stack gone nothing would). Its connected route is more specific than the one `wlan0` gets on a /23 (or any
+network that covers 192.168.0.x), so every packet for the router, the DNS server and every client would leave through
+the cable-less `eth0`, while `wlan0` held a perfectly good lease: DHCP worked (it needs no route), then DNS lookups
+failed ("Name or service not known"), the MQTT worker stalled, and nothing could reach the camera over the LAN. On a
+192.168.1.x or 10.x network the stray route is harmless, which is why it can go unnoticed. The supervisor therefore
+removes every IPv4 address from `eth0` once, as soon as the interface exists and no DHCP client of ours or the vendor's
+owns it (`Event::EthAddressCleared`, logged as `net: … EthAddressCleared`); the cable fallback below configures `eth0`
+again when it is needed. Observed on a unit whose LAN is 192.168.0.0/23: the cold-boot routing table
+held both routes and the daemon was reset three times; with the removal the same cold boot logs `EthAddressCleared`,
+keeps only the `wlan0` route, resolves the broker, qualifies after 180 s of health and serves RTSP. [V]
 
 Recovery: exited children are respawned after 2 s. A failed load or a missing interface powers the dongle down:
 `rmmod wlan`, `rmmod cfg80211`, GPIO 133 low (each attempted even if an earlier one failed), at least 500 ms off
 measured from the successful GPIO write, then the sequence again. Wi-Fi and Ethernet retries keep separate clocks.
 
-Every helper (`insmod`, `rmmod`, `modprobe`, `ifconfig`) gets 2 s, runs in its own process group, and on timeout
-the whole group is killed. Completion is observed with `waitid(WNOWAIT)` so the leader's PID cannot be reused before
+Every helper (`insmod`, `rmmod`, `modprobe`, `ifconfig`, `iw`) gets 2 s, runs in its own process group, and on
+timeout the whole group is killed. Completion is observed with `waitid(WNOWAIT)` so the leader's PID cannot be reused before
 the group is signalled. One tick can run seven helpers in a row, which stays inside the 30 s `Network` progress
 budget ([../architecture.md](../architecture.md#threads-and-the-watchdog)).
 
 All child stdout and stderr go to `/dev/null`: zero bytes of child logs in RAM or tmpfs, no drain threads. The
 supervisor's own events (spawn and load failures, exits, timeouts) are logged, at most 64 lines per boot.
+
+## The picture smears in a band every few seconds (UDP viewers)
+
+Reported from tinyCam on a phone, RTSP over UDP, main stream at 2592×1944, 15 fps, 4096 kbit/s: a region
+turns into wrong macroblocks and snaps clean about a second later. That is the signature of lost RTP packets
+(the damaged slice heals at the next key frame). What a unit showing it measured [V]:
+
+- Over Wi-Fi to a laptop, four minutes with three viewers at once (main over TCP, main over UDP, sub over TCP)
+  and two further minutes of single viewers: not one packet lost, not one decoder concealment, in either
+  transport. The bytes the camera sends are sound, and so is the encoder: key frames about 155 KiB, P frames a
+  steady 25 KiB, no encoder drops or errors in `/proc/hdal/venc/info`.
+- The same UDP session timed per packet: every key frame arrived as about 120 packets (160 KiB) inside 20 ms, a
+  60–70 Mbit/s spike; P frames as 19 packets in 2 ms. A phone's UDP socket buffer, or a slower Wi-Fi hop to it,
+  can lose the tail of such a spike where a laptop on 5 GHz does not. The stock server (live555) bursts
+  fragments the same way, so the stock's steadiness on the same phone comes from somewhere else, most likely
+  smaller key frames (its codec, bitrate and GOP differ).
+
+The sender therefore paces UDP (`camera_transport::rtsp::server`, every camera): a frame's packets leave in
+2 ms slices spread over three quarters of the frame interval, at least six packets per slice. At 15 fps a
+120-packet key frame takes about 40 ms (a 35 Mbit/s peak instead of 70), a P frame 6 ms; TCP is unchanged,
+its flow control already paces. The effect on the phone is not yet verified [I].
+
+To tell this apart from anything else in a minute: switch the client to TCP. If the smear is gone, it is UDP
+loss on the way to that client, and the paced build is the camera-side remedy. If it stays over TCP, record
+the stream and count what the decoder conceals; errors there would mean damaged bytes, which no unit has
+shown so far:
+
+```sh
+ffmpeg -rtsp_transport tcp -i rtsp://USER:PASS@CAMERA/main -t 60 -c copy tcp.mkv
+ffmpeg -v warning -i tcp.mkv -f null - 2>&1 | grep -c -i 'conceal\|error'
+```
+
+## The picture looks worse than the stock firmware's
+
+At night with the IR lamps the 1:1 frame is heavily grained [V]: without the `isp_3dnr` setting the video processor
+runs with only the autofocus statistics enabled, so no temporal noise reduction smooths the sensor noise before the
+encoder spends its bitrate on it. With the setting on (and the 2592x1944 main stream) the noise measured about 65 %
+lower at the same bitrate: [settings.md](../settings.md#3d-noise-reduction-isp_3dnr) and
+[isp-iq.md](isp-iq.md#3d-noise-reduction-in-the-video-processor-isp_3dnr).
 
 ## `cam-wifi.conf`
 

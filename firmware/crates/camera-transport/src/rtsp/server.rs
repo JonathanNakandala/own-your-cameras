@@ -1,6 +1,7 @@
 //! The RTSP listener: one thread per connection, plus one sender thread per playing connection. Methods:
 //! OPTIONS, DESCRIBE, SETUP, PLAY, TEARDOWN, GET_PARAMETER (keep-alive). RTP goes interleaved on the RTSP
-//! TCP connection or over UDP to the client's ports.
+//! TCP connection or over UDP to the client's ports; over UDP a frame's packets are paced across most of
+//! the frame interval instead of leaving as one burst.
 
 use std::collections::HashMap;
 use std::io::{self, IoSlice, Read, Write};
@@ -8,7 +9,7 @@ use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::audio::{AudioHub, AudioViewer};
 use super::hub::{Hub, Viewer};
@@ -56,6 +57,28 @@ const MAX_PAYLOAD: usize = 1400;
 const PACKETS_PER_WRITE: usize = 300;
 const DESCRIBE_WAIT: Duration = Duration::from_secs(5);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(2);
+/// UDP: the packets of one access unit leave in slices this far apart. A 2592×1944 key frame at 4 Mbit/s is
+/// about 120 packets; sent back to back they reach the viewer inside 20 ms (a 60–70 Mbit/s spike, measured
+/// on the E1 Zoom), which a phone's socket buffer or a slow Wi-Fi hop drops the tail of, and the picture
+/// smears until the next key frame. TCP needs none of this: the connection's flow control paces it.
+const PACE_SLICE: Duration = Duration::from_millis(2);
+/// At least this many packets per slice, so small frames leave within a few milliseconds.
+const PACE_MIN_PACKETS: usize = 6;
+/// The frame interval assumed for the first frame, or when the timestamp step is implausible.
+const PACE_DEFAULT_INTERVAL_US: u64 = 40_000;
+
+/// Packets per [`PACE_SLICE`] for an access unit of `packets` RTP packets that follows the previous one by
+/// `interval_us`: the unit is spread over three quarters of its interval, never fewer than
+/// [`PACE_MIN_PACKETS`] per slice. A step outside 5–200 ms (a skipped stretch, a clock jump) is not an
+/// interval and the default applies.
+fn pace(packets: usize, interval_us: Option<u64>) -> usize {
+    let interval_us = interval_us
+        .filter(|us| (5_000..=200_000).contains(us))
+        .unwrap_or(PACE_DEFAULT_INTERVAL_US);
+    let window_us = interval_us * 3 / 4;
+    let slices = (window_us / PACE_SLICE.as_micros() as u64).max(1) as usize;
+    packets.div_ceil(slices).max(PACE_MIN_PACKETS)
+}
 
 /// The RTSP paths every camera serves, and nothing else: `main` and `sub` with Opus audio, and the same
 /// video with G.711 µ-law audio for recorders that take no Opus (what ONVIF `GetStreamUri` hands out).
@@ -270,6 +293,7 @@ fn sender(
         return;
     }
     let mut buf = Vec::new();
+    let mut prev_pts: Option<u64> = None;
     while !stop.load(Ordering::Relaxed) {
         let frame = match viewer.next(Duration::from_millis(200)) {
             Ok(Some(f)) => f,
@@ -278,6 +302,8 @@ fn sender(
         };
         let ts = timestamp(frame.pts_us);
         let packets = pk.packets(&frame.data, ts);
+        let interval_us = prev_pts.map(|p| frame.pts_us.saturating_sub(p));
+        prev_pts = Some(frame.pts_us);
         let res = match &sink {
             // One vectored write per frame (in slices of at most PACKETS_PER_WRITE packets) instead of one per
             // RTP packet: on the HiSilicon panel per-packet writes cost ~8 % CPU per main-stream viewer.
@@ -312,17 +338,31 @@ fn sender(
                 res
             }
             Sink::Udp { sock, to } => {
+                let started = Instant::now();
                 let mut res = Ok(());
-                for p in &packets {
-                    if stop.load(Ordering::Relaxed) {
-                        return;
+                'slices: for (i, slice) in
+                    packets.chunks(pace(packets.len(), interval_us)).enumerate()
+                {
+                    if i > 0 {
+                        if stop.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        let due = started + PACE_SLICE * i as u32;
+                        if let Some(wait) = due.checked_duration_since(Instant::now()) {
+                            std::thread::sleep(wait);
+                        }
                     }
-                    buf.clear();
-                    buf.extend_from_slice(p.head());
-                    buf.extend_from_slice(p.payload);
-                    res = sock.send_to(&buf, to).map(|_| ());
-                    if res.is_err() {
-                        break;
+                    for p in slice {
+                        if stop.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        buf.clear();
+                        buf.extend_from_slice(p.head());
+                        buf.extend_from_slice(p.payload);
+                        res = sock.send_to(&buf, to).map(|_| ());
+                        if res.is_err() {
+                            break 'slices;
+                        }
                     }
                 }
                 res

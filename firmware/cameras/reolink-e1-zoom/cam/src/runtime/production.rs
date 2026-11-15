@@ -199,6 +199,10 @@ impl Paths {
         self.under(crate::settings::PATH)
     }
 
+    pub fn denoise_trial(&self) -> PathBuf {
+        self.under(crate::denoise::MARKER)
+    }
+
     pub fn focus_map(&self) -> PathBuf {
         self.under(FOCUS_MAP)
     }
@@ -313,6 +317,7 @@ pub fn start<B>(
         ready.mqtt.presets.clone(),
         Box::new(crate::settings::FileDisk::new(paths.presets())),
     );
+    owner.arm_denoise(crate::denoise::Trial::new(paths.denoise_trial()));
     let media_tuning = Arc::clone(&owner.media);
     let counters = Arc::new(crate::telemetry::StreamCounters::default());
     let telemetry = telemetry_task(Arc::clone(&counters), Arc::clone(&media_tuning));

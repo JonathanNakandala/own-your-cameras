@@ -154,11 +154,17 @@ impl Host for FakeNet {
     fn iface_up(&mut self, _: &str) -> io::Result<()> {
         Ok(())
     }
+    fn disable_wifi_power_save(&mut self) -> io::Result<()> {
+        Ok(())
+    }
     fn carrier(&self, _: &str) -> bool {
         false
     }
     fn ipv4(&self, _: &str) -> Option<Ipv4Addr> {
         None
+    }
+    fn clear_address(&mut self, _: &str) -> io::Result<()> {
+        Ok(())
     }
     fn alive(&mut self, _: Proc) -> io::Result<bool> {
         Ok(false)

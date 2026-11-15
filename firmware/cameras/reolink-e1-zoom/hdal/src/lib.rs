@@ -109,6 +109,8 @@ pub enum Step {
     VideoprocInit,
     VideoprocOpen,
     VideoprocSetDevConfig,
+    VideoprocSetRefOut,
+    VideoprocEnable3dnr,
     VideoprocSetOut,
     VideoprocStart,
     VideoprocStop,
@@ -159,6 +161,8 @@ impl Step {
             Step::VideoprocOpen => "videoproc_open",
             Step::VideoprocSetDevConfig => "videoproc_set_dev_config",
             Step::VideoprocSetOut => "videoproc_set_out",
+            Step::VideoprocSetRefOut => "videoproc_set_ref_out",
+            Step::VideoprocEnable3dnr => "videoproc_enable_3dnr",
             Step::VideoprocStart => "videoproc_start",
             Step::VideoprocStop => "videoproc_stop",
             Step::VideoprocClose => "videoproc_close",
@@ -200,7 +204,8 @@ pub struct Error {
 /// The HDAL calls the probe needs. The real one is `sys::Sys`.
 pub trait Backend {
     fn common_init(&mut self) -> Result<(), Error>;
-    fn common_mem_init(&mut self, pool: &MemPool) -> Result<(), Error>;
+    /// `hd_common_mem_init` with these block pools, in order (the driver takes a block from a pool that fits).
+    fn common_mem_init(&mut self, pools: &[MemPool]) -> Result<(), Error>;
     fn videocap_init(&mut self) -> Result<(), Error>;
     /// Opens the control path (`HD_VIDEOCAP_0_CTRL`).
     fn videocap_open(&mut self) -> Result<PathId, Error>;

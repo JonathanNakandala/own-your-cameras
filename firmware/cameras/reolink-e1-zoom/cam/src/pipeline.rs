@@ -29,6 +29,10 @@ pub struct PipelineConfig {
     /// Snapshots: proc output 2 feeds JPEG encoder 2 at this size, [`SNAPSHOT_FPS`] pictures a second
     /// while the camera streams; a wanted snapshot is the next picture.
     pub snapshot: Option<Dim>,
+    /// The memory pools of the graph with 3D noise reduction, in the order the driver searches them. One
+    /// pool of identical blocks cannot serve it: the raw capture frames and the compressed reference frames
+    /// would take every block and leave none for the sub stream and the snapshots.
+    pub denoise_pools: Vec<MemPool>,
 }
 
 /// Main-stream parameters that may change while the graph runs. The GOP follows the frame rate (one
@@ -47,6 +51,7 @@ impl MainStream {
             fps: self.fps,
             bitrate_bps: self.bitrate_bps,
             gop: self.fps,
+            src_fps: None,
         }
     }
 
@@ -64,6 +69,9 @@ impl MainStream {
 pub struct MediaTuning {
     pub audio: Option<Tuning>,
     pub main: Option<MainStream>,
+    /// Startup only: build the graph with 3D noise reduction (the main encoder on the processor's
+    /// reference path). Ignored unless the main stream is the full sensor frame; never a live request.
+    pub denoise: Option<bool>,
 }
 
 /// What runs after startup or a request. `refused` says why the requested values are not the applied ones.
@@ -96,6 +104,8 @@ pub trait Tuner {
     }
     /// The JPEG (or why there is none) for everyone waiting.
     fn snapshot_done(&mut self, _result: Result<Vec<u8>, String>) {}
+    /// A graph built with 3D noise reduction delivered both streams for [`TRIAL_PROVEN_MS`]: the trial is over.
+    fn denoise_proven(&mut self) {}
 }
 
 /// JPEG quality of snapshots (1–100).
@@ -107,6 +117,9 @@ pub const SNAPSHOT_FPS: u32 = 2;
 const SNAPSHOT_WAIT_MS: u64 = 1500;
 /// The snapshot path's proc output and encoder index.
 const SNAPSHOT_SLOT: u32 = 2;
+/// How long both streams must keep delivering before a 3D noise reduction trial counts as proven (the
+/// runtime's sustained-health window).
+pub const TRIAL_PROVEN_MS: u64 = 180_000;
 
 /// Stock values throughout, for the dump, the diagnostic serve and tests that do not tune.
 pub struct Untuned;
@@ -119,6 +132,32 @@ impl Tuner for Untuned {
         None
     }
     fn report(&mut self, _: Tuned) {}
+}
+
+/// What the graph with 3D noise reduction holds, as measured in `/proc/hdal/comm/info` [V]: two raw sensor
+/// frames (0x605480 bytes each), two compressed full-size frames (0x567f80, the reference's single-buffer
+/// mode takes two), the sub stream's 640x480 frames (stock gives them three blocks of 0x70a00) and the
+/// snapshot's 1280x960 frames. Smallest first, so a request lands in the smallest block that fits. The total
+/// stays within a megabyte of the one 4 x 7.2 MiB pool of the plain graph.
+fn denoise_pools() -> Vec<MemPool> {
+    vec![
+        MemPool {
+            blk_size: 480_000,
+            blk_cnt: 3,
+        },
+        MemPool {
+            blk_size: 1_900_000,
+            blk_cnt: 2,
+        },
+        MemPool {
+            blk_size: 5_800_000,
+            blk_cnt: 2,
+        },
+        MemPool {
+            blk_size: 6_400_000,
+            blk_cnt: 2,
+        },
+    ]
 }
 
 impl PipelineConfig {
@@ -137,12 +176,14 @@ impl PipelineConfig {
             fps: 15,
             bitrate_bps: 1_024_000,
             gop: 15,
+            src_fps: None,
         };
         let sub = EncSpec {
             dim: Dim { w: 640, h: 480 },
             fps: 10,
             bitrate_bps: 512_000,
             gop: 10,
+            src_fps: None,
         };
         Self {
             cap,
@@ -156,6 +197,7 @@ impl PipelineConfig {
                 sub,
             ],
             snapshot: Some(MAIN_SIZES[2]),
+            denoise_pools: denoise_pools(),
         }
     }
 }
@@ -231,6 +273,11 @@ struct Graph {
     /// Why the requested main stream was replaced by the stock one at build.
     main_refused: Option<Error>,
     jpeg: Jpeg,
+    /// 3D noise reduction is on: proc output 0 is the compressed reference path and the main encoder
+    /// reads it, so the main stream stays the full sensor frame.
+    denoise: bool,
+    cap_dim: Dim,
+    cap_fps: u32,
 }
 
 /// The snapshot path, opened and bound with the graph and started once the camera streams.
@@ -252,6 +299,7 @@ impl Graph {
         hw: &mut B,
         cfg: &PipelineConfig,
         main: Option<&EncSpec>,
+        denoise: bool,
         keep_going: &mut dyn FnMut() -> bool,
     ) -> Result<bool, Error> {
         // Record each successful acquisition before observing cancellation again.
@@ -264,9 +312,18 @@ impl Graph {
                 $call?
             }};
         }
+        let mut streams = cfg.streams;
+        if let Some(m) = main {
+            streams[0] = *m;
+        }
+        // The reference frame must be the processor's input size and the main encoder cannot scale, so
+        // only a full-size main stream can have it; anything else runs the plain graph.
+        let denoise = denoise && streams[0].dim == cfg.cap.dim;
+        let single = [cfg.cap.pool];
+        let pools: &[MemPool] = if denoise { &cfg.denoise_pools } else { &single };
         step!(hw.common_init());
         self.common = true;
-        step!(hw.common_mem_init(&cfg.cap.pool));
+        step!(hw.common_mem_init(pools));
         self.mem = true;
         step!(hw.videocap_init());
         self.cap_init = true;
@@ -285,17 +342,24 @@ impl Graph {
 
         let pctrl = step!(hw.videoproc_open_ctrl());
         self.proc_ctrl = Some(pctrl);
-        step!(hw.videoproc_set_dev_config(pctrl, cfg.cap.dim));
-        let mut streams = cfg.streams;
-        if let Some(m) = main {
-            streams[0] = *m;
+        if denoise {
+            streams[0].src_fps = Some(cfg.cap.fps);
         }
+        self.denoise = denoise;
+        self.cap_dim = cfg.cap.dim;
+        self.cap_fps = cfg.cap.fps;
+        step!(hw.videoproc_set_dev_config(pctrl, cfg.cap.dim, denoise));
         for i in 0..streams.len() {
             let s = streams[i];
             let p = step!(hw.videoproc_open_out(i as u32));
             self.proc_out.push(p);
             if !keep_going() {
                 return Ok(false);
+            }
+            if i == 0 && denoise {
+                // No fallback to stock here: the stock main stream has another size.
+                step!(hw.videoproc_set_ref_out(p, cfg.cap.dim));
+                continue;
             }
             match hw.videoproc_set_out(p, s.dim, s.fps) {
                 Err(e) if i == 0 && streams[0] != cfg.streams[0] => {
@@ -314,7 +378,7 @@ impl Graph {
                 return Ok(false);
             }
             match hw.videoenc_configure(e, &s, &cfg.envelopes[i]) {
-                Err(err) if i == 0 && streams[0] != cfg.streams[0] => {
+                Err(err) if i == 0 && !denoise && streams[0] != cfg.streams[0] => {
                     self.main_refused = Some(err);
                     streams[0] = cfg.streams[0];
                     step!(hw.videoproc_set_out(self.proc_out[0], streams[0].dim, streams[0].fps));
@@ -339,6 +403,14 @@ impl Graph {
             if let Err(e) = self.build_jpeg(hw, dim) {
                 eprintln!("snapshot: path unavailable: {e}");
             }
+        }
+
+        if denoise {
+            // Last configuration step: the reference path (output 0) is configured and bound to its encoder.
+            step!(hw.videoproc_enable_3dnr(pctrl, self.proc_out[0]));
+            eprintln!(
+                "denoise: 3D noise reduction on, main stream is the compressed reference path"
+            );
         }
 
         // Downstream first, so no frame is produced before its consumer runs.
@@ -399,7 +471,17 @@ impl Graph {
                 code: -22,
             });
         };
-        if self.proc_started.contains(&p) {
+        let (denoise, cap_fps) = (self.denoise, self.cap_fps);
+        if denoise && spec.dim != self.cap_dim {
+            // The reference frame would no longer match the processor input: every output would stall.
+            return Ok(Some(Error {
+                step: Step::VideoencRetune,
+                code: -22,
+            }));
+        }
+        // With 3D noise reduction the main output is the reference path: it keeps running (and keeps its
+        // rate and size), and only the encoder is restarted.
+        if !denoise && self.proc_started.contains(&p) {
             hw.videoproc_stop(p)?;
             self.proc_started.retain(|x| *x != p);
         }
@@ -408,12 +490,23 @@ impl Graph {
             self.enc_started.retain(|x| *x != e);
         }
         let apply = |hw: &mut B, s: &EncSpec| {
-            hw.videoproc_set_out(p, s.dim, s.fps)?;
-            hw.videoenc_retune(e, s)
+            if !denoise {
+                hw.videoproc_set_out(p, s.dim, s.fps)?;
+            }
+            hw.videoenc_retune(
+                e,
+                &EncSpec {
+                    src_fps: denoise.then_some(cap_fps),
+                    ..*s
+                },
+            )
         };
         let refused = match apply(hw, spec) {
             Ok(()) => {
-                self.main = Some(*spec);
+                self.main = Some(EncSpec {
+                    src_fps: denoise.then_some(cap_fps),
+                    ..*spec
+                });
                 None
             }
             Err(refusal) => {
@@ -423,8 +516,10 @@ impl Graph {
         };
         hw.videoenc_start(e)?;
         self.enc_started.push(e);
-        hw.videoproc_start(p)?;
-        self.proc_started.push(p);
+        if !denoise {
+            hw.videoproc_start(p)?;
+            self.proc_started.push(p);
+        }
         Ok(refused)
     }
 
@@ -525,7 +620,7 @@ where
     };
     let mut g = Graph::default();
     let ran = (|| {
-        g.build(hw, cfg, None, &mut || true)?;
+        g.build(hw, cfg, None, false, &mut || true)?;
         let start = hw.now_ms();
         let end = start + u64::from(seconds) * 1000;
         let paths = g.enc.clone();
@@ -572,7 +667,7 @@ where
     };
     let mut g = Graph::default();
     let ran = (|| {
-        if !g.build(hw, cfg, None, keep_going)? {
+        if !g.build(hw, cfg, None, false, keep_going)? {
             return Ok(());
         }
         let paths = g.enc.clone();
@@ -684,7 +779,14 @@ where
     let initial = tuner.initial();
     let ran = (|| {
         let main = initial.main.map(|m| m.spec());
-        if !g.build(hw, cfg, main.as_ref(), keep_going)? || !keep_going() {
+        if !g.build(
+            hw,
+            cfg,
+            main.as_ref(),
+            initial.denoise == Some(true),
+            keep_going,
+        )? || !keep_going()
+        {
             return Ok(());
         }
         if let Some(applied) = g.main {
@@ -746,6 +848,8 @@ where
             }
         };
         let mut snapshot_until: Option<u64> = None;
+        // A graph with 3D noise reduction is on trial until both streams have delivered for a while.
+        let mut trial = g.denoise.then_some(start);
         while keep_going() {
             if let Some(e) = jpeg {
                 match hw.videoenc_recv(&[e], 0) {
@@ -803,6 +907,18 @@ where
                     });
                 } else if now.saturating_sub(since) > PROBATION_MS {
                     probation = None;
+                }
+            }
+            if let Some(since) = trial {
+                let now = hw.now_ms();
+                if last
+                    .iter()
+                    .any(|t| now.saturating_sub(*t) > STALL_REVERT_MS)
+                {
+                    trial = Some(now);
+                } else if now.saturating_sub(since) >= TRIAL_PROVEN_MS {
+                    tuner.denoise_proven();
+                    trial = None;
                 }
             }
             if let Some(request) = tuner.next() {

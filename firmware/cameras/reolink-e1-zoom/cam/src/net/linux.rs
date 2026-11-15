@@ -392,6 +392,13 @@ impl Host for LinuxHost {
         run(c)
     }
 
+    fn disable_wifi_power_save(&mut self) -> io::Result<()> {
+        // The stock `iw` (statically linked against libnl) is what `device` and `netserver` run.
+        let mut c = Command::new(self.path("/sbin/iw"));
+        c.args([net::WLAN, "set", "power_save", "off"]);
+        run(c)
+    }
+
     fn carrier(&self, name: &str) -> bool {
         fs::read_to_string(self.path(&format!("/sys/class/net/{name}/carrier")))
             .is_ok_and(|c| c.trim() == "1")
@@ -399,6 +406,12 @@ impl Host for LinuxHost {
 
     fn ipv4(&self, name: &str) -> Option<Ipv4Addr> {
         ipv4_of(name)
+    }
+
+    fn clear_address(&mut self, name: &str) -> io::Result<()> {
+        let mut c = Command::new(self.path("/sbin/ifconfig"));
+        c.args([name, "0.0.0.0"]);
+        run(c)
     }
 
     fn alive(&mut self, p: Proc) -> io::Result<bool> {
@@ -575,6 +588,32 @@ mod tests {
         };
         assert_eq!(ipv4_of(lo), Some(Ipv4Addr::LOCALHOST));
         assert_eq!(ipv4_of("no-such-iface"), None);
+    }
+
+    #[test]
+    fn power_save_is_turned_off_with_the_vendors_iw_command() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = scratch("power-save");
+        fs::create_dir_all(d.join("sbin")).unwrap();
+        let iw = d.join("sbin/iw");
+        let log = d.join("iw.log");
+        fs::write(
+            &iw,
+            format!("#!/bin/sh\necho \"$@\" >> {}\n", log.display()),
+        )
+        .unwrap();
+        fs::set_permissions(&iw, fs::Permissions::from_mode(0o755)).unwrap();
+        let mut host = LinuxHost::new("/x.conf", &Identity::default());
+        host.root = d.clone();
+
+        host.disable_wifi_power_save().unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&log).unwrap(),
+            "wlan0 set power_save off\n"
+        );
+        fs::write(&iw, "#!/bin/sh\nexit 1\n").unwrap();
+        assert!(host.disable_wifi_power_save().is_err());
     }
 
     #[test]

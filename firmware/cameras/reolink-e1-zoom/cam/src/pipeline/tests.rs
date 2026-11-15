@@ -108,7 +108,8 @@ fn main_is_the_full_4_3_frame_and_sub_keeps_the_vendor_settings() {
             dim: dim(2592, 1944),
             bitrate_bps: MAIN_MAX_BITRATE,
             fps: 15,
-            gop: 15
+            gop: 15,
+            src_fps: None
         }
     );
     // The diagnostic dump builds no snapshot path.
@@ -464,6 +465,8 @@ struct Script {
     /// Polls from which a snapshot is wanted, one each, and what each got.
     snapshot_at: Vec<usize>,
     snapshots: Vec<Result<Vec<u8>, String>>,
+    /// How often the graph reported its 3D noise reduction trial as proven.
+    proven: u32,
 }
 
 impl Script {
@@ -475,6 +478,7 @@ impl Script {
             reports: Vec::new(),
             snapshot_at: Vec::new(),
             snapshots: Vec::new(),
+            proven: 0,
         }
     }
 
@@ -504,6 +508,9 @@ impl Tuner for Script {
     fn snapshot_done(&mut self, result: Result<Vec<u8>, String>) {
         self.snapshot_at.remove(0);
         self.snapshots.push(result);
+    }
+    fn denoise_proven(&mut self) {
+        self.proven += 1;
     }
 }
 
@@ -582,6 +589,7 @@ fn audio_tuning_is_applied_between_frames_on_the_media_thread() {
         MediaTuning {
             audio: Some(want),
             main: None,
+            ..Default::default()
         },
     )]);
     run_tuned(&mut hw, &mut tuner, 40).unwrap();
@@ -624,6 +632,7 @@ fn a_refused_audio_tuning_keeps_the_previous_one() {
         MediaTuning {
             audio: Some(quiet()),
             main: None,
+            ..Default::default()
         },
     )]);
     run_tuned(&mut hw, &mut tuner, 10).unwrap();
@@ -655,6 +664,7 @@ fn a_speaker_volume_change_touches_only_the_speaker() {
                 ..Tuning::stock()
             }),
             main: None,
+            ..Default::default()
         },
     )]);
     run_tuned(&mut hw, &mut tuner, 10).unwrap();
@@ -682,6 +692,7 @@ fn a_main_retune_restarts_only_the_main_path_and_opens_with_a_key_frame() {
         MediaTuning {
             audio: None,
             main: Some(small()),
+            ..Default::default()
         },
     )]);
     let frames = run_tuned(&mut hw, &mut tuner, 400).unwrap();
@@ -744,6 +755,7 @@ fn a_refused_main_retune_restores_the_previous_stream() {
         MediaTuning {
             audio: None,
             main: Some(small()),
+            ..Default::default()
         },
     )]);
     run_tuned(&mut hw, &mut tuner, 20).expect("a refusal is not a media error");
@@ -764,6 +776,7 @@ fn a_main_path_left_stopped_is_a_media_error_with_exact_cleanup() {
         MediaTuning {
             audio: None,
             main: Some(small()),
+            ..Default::default()
         },
     )]);
     let err = run_tuned(&mut hw, &mut tuner, 20).unwrap_err();
@@ -812,6 +825,7 @@ fn an_unchanged_main_request_does_nothing() {
         MediaTuning {
             audio: None,
             main: Some(stock),
+            ..Default::default()
         },
     )]);
     run_tuned(&mut hw, &mut tuner, 10).unwrap();
@@ -828,6 +842,7 @@ fn a_capture_that_cannot_restart_at_all_is_a_media_error_without_a_second_stop()
         MediaTuning {
             audio: Some(quiet()),
             main: None,
+            ..Default::default()
         },
     )]);
     let err = run_tuned(&mut hw, &mut tuner, 10).unwrap_err();
@@ -856,6 +871,7 @@ fn a_main_change_that_starves_the_sub_stream_is_reverted_before_the_watchdog_bud
         MediaTuning {
             audio: None,
             main: Some(fast_main()),
+            ..Default::default()
         },
     )]);
     let frames = run_tuned(&mut hw, &mut tuner, 1500).unwrap();
@@ -901,6 +917,7 @@ fn a_sustainable_main_change_survives_probation() {
                 fps: 15,
                 ..fast_main()
             }),
+            ..Default::default()
         },
     )]);
     run_tuned(&mut hw, &mut tuner, 2500).unwrap();
@@ -971,4 +988,166 @@ fn a_failing_jpeg_encoder_turns_snapshots_off_and_video_runs_on() {
     let frames = run_tuned(&mut hw, &mut tuner, 40).expect("video is not a snapshot's casualty");
     assert!(frames.iter().any(|f| f.stream == 0) && frames.iter().any(|f| f.stream == 1));
     assert!(matches!(tuner.snapshots.as_slice(), [Err(_)]));
+}
+
+fn full_main(fps: u32) -> MainStream {
+    MainStream { fps, ..fast_main() }
+}
+
+/// A tuner that builds the graph with 3D noise reduction and the given main stream.
+fn denoising(main: MainStream) -> Script {
+    let mut tuner = Script::new(vec![]);
+    tuner.initial.main = Some(main);
+    tuner.initial.denoise = Some(true);
+    tuner
+}
+
+#[test]
+fn denoise_makes_the_main_output_the_compressed_reference_that_the_main_encoder_reads() {
+    let mut hw = Fake::default();
+    let mut tuner = denoising(full_main(15));
+    let frames = run_tuned(&mut hw, &mut tuner, 60).expect("runs");
+    assert!(hw.denoise_allowed);
+    // Per-output pools, smallest first: one pool of identical blocks would leave none for the sub stream.
+    assert_eq!(hw.pools, PipelineConfig::e1_zoom().denoise_pools);
+    assert!(hw.pools.windows(2).all(|w| w[0].blk_size < w[1].blk_size));
+    // Output 0 is the whole sensor frame, the reference, and no plain output 0 is configured.
+    assert_eq!(hw.ref_out, Some((0, hdal::Dim { w: 2592, h: 1944 })));
+    assert_eq!(hw.denoise_ref, Some(0));
+    assert!(
+        hw.proc_out.iter().all(|(out, _, _)| *out != 0),
+        "{:?}",
+        hw.proc_out
+    );
+    // The main encoder takes the 30 fps compressed frames at its 15 fps; the sub stream is plain.
+    let (_, main) = hw.enc_specs.iter().find(|(i, _)| *i == 0).unwrap();
+    assert_eq!((main.dim.w, main.fps, main.src_fps), (2592, 15, Some(30)));
+    let (_, sub) = hw.enc_specs.iter().find(|(i, _)| *i == 1).unwrap();
+    assert_eq!(sub.src_fps, None);
+    // Order: the reference is switched on after everything is configured and bound, before anything starts.
+    let calls: Vec<&str> = hw
+        .calls
+        .iter()
+        .copied()
+        .filter(|c| *c != "videoenc_recv")
+        .collect();
+    let at = |name: &str| calls.iter().position(|c| *c == name).unwrap();
+    assert!(at("videoproc_set_ref_out") < at("videoenc_configure"));
+    assert!(at("bind_proc_enc") < at("videoproc_enable_3dnr"));
+    assert!(at("videoproc_enable_3dnr") < at("videoenc_start"));
+    assert!(frames.iter().any(|f| f.stream == 0) && frames.iter().any(|f| f.stream == 1));
+}
+
+#[test]
+fn denoise_needs_the_full_size_main_stream_and_otherwise_the_graph_is_plain() {
+    let mut hw = Fake::default();
+    let mut tuner = denoising(MainStream {
+        dim: hdal::Dim { w: 1920, h: 1440 },
+        ..full_main(15)
+    });
+    run_tuned(&mut hw, &mut tuner, 20).expect("runs");
+    assert!(!hw.denoise_allowed);
+    assert_eq!(hw.pools, [PipelineConfig::e1_zoom().cap.pool]);
+    assert_eq!(hw.ref_out, None);
+    assert_eq!(hw.denoise_ref, None);
+    assert!(hw.enc_specs.iter().all(|(_, s)| s.src_fps.is_none()));
+    assert_eq!(count(&hw, "videoproc_set_ref_out"), 0);
+}
+
+#[test]
+fn a_setting_that_is_off_builds_the_plain_graph() {
+    let mut hw = Fake::default();
+    let mut tuner = Script::new(vec![]);
+    tuner.initial.main = Some(full_main(15));
+    run_tuned(&mut hw, &mut tuner, 20).expect("runs");
+    assert!(!hw.denoise_allowed);
+    assert_eq!(hw.ref_out, None);
+}
+
+#[test]
+fn a_resolution_change_is_refused_with_denoise_and_nothing_stops() {
+    let mut hw = Fake::default();
+    let mut tuner = denoising(full_main(15));
+    tuner.requests = vec![(
+        20,
+        MediaTuning {
+            main: Some(small()),
+            ..Default::default()
+        },
+    )];
+    let frames = run_tuned(&mut hw, &mut tuner, 120).expect("runs");
+    assert!(
+        tuner.reports.iter().any(|r| matches!(
+            r,
+            Tuned::Main { applied, refused: Some(_), .. } if applied.dim.w == 2592
+        )),
+        "{:?}",
+        tuner.reports
+    );
+    // Refused before any hardware call: no retune, no extra stop (teardown stops two outputs and the JPEG).
+    assert_eq!(count(&hw, "videoenc_retune"), 0);
+    assert_eq!(count(&hw, "videoproc_stop"), 3);
+    assert!(frames.iter().filter(|f| f.stream == 0).count() > 10);
+}
+
+#[test]
+fn a_frame_rate_change_with_denoise_restarts_only_the_encoder() {
+    let mut hw = Fake::default();
+    let mut tuner = denoising(full_main(15));
+    tuner.requests = vec![(
+        20,
+        MediaTuning {
+            main: Some(full_main(10)),
+            ..Default::default()
+        },
+    )];
+    run_tuned(&mut hw, &mut tuner, 120).expect("runs");
+    let (_, main) = hw.enc_specs.iter().rfind(|(i, _)| *i == 0).unwrap();
+    assert_eq!((main.fps, main.src_fps), (10, Some(30)));
+    // The reference output keeps running: only teardown stops the two outputs and the JPEG output.
+    assert_eq!(count(&hw, "videoproc_stop"), 3);
+    assert_eq!(count(&hw, "videoenc_retune"), 1);
+    assert!(tuner.reports.iter().any(|r| matches!(
+        r,
+        Tuned::Main { applied, refused: None, .. } if applied.fps == 10
+    )));
+}
+
+#[test]
+fn a_refused_reference_configuration_fails_the_start_it_never_stalls_video() {
+    for step in [
+        Step::VideoprocSetRefOut,
+        Step::VideoprocEnable3dnr,
+        Step::VideoprocSetDevConfig,
+    ] {
+        let mut hw = Fake::failing(step, -22);
+        let mut tuner = denoising(full_main(15));
+        let err = run_tuned(&mut hw, &mut tuner, 20).expect_err("start fails");
+        assert_eq!(err.primary.step, step);
+        // The graph was torn down in full.
+        assert_eq!(count(&hw, "common_uninit"), 1, "{step:?}");
+    }
+}
+
+#[test]
+fn a_trial_is_proven_after_three_minutes_of_both_streams() {
+    let mut hw = Fake::default();
+    let mut tuner = denoising(full_main(15));
+    // Each loop turn takes at least 10 ms of the fake's clock.
+    run_tuned(&mut hw, &mut tuner, 18_500).expect("runs");
+    assert_eq!(tuner.proven, 1);
+    // A graph without 3D noise reduction has no trial.
+    let mut hw = Fake::default();
+    let mut tuner = Script::new(vec![]);
+    run_tuned(&mut hw, &mut tuner, 18_500).expect("runs");
+    assert_eq!(tuner.proven, 0);
+}
+
+#[test]
+fn a_silent_stream_keeps_the_trial_from_being_proven() {
+    let mut hw = Fake::default();
+    hw.starve_sub_above_fps = Some(10);
+    let mut tuner = denoising(full_main(15));
+    run_tuned(&mut hw, &mut tuner, 18_500).expect("runs");
+    assert_eq!(tuner.proven, 0);
 }

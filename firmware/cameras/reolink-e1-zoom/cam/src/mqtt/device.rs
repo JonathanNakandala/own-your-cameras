@@ -482,6 +482,8 @@ impl<B: Bus, I: Isp, H: Hw, O: Platform> Device<B, I, H, O> {
                 self.af.retune(s.autofocus());
                 Ok(())
             }
+            // Read once when the graph is built; the stored value is what the next start uses.
+            Group::Startup => Ok(()),
         };
         if let Err(e) = &applied
             && let Some(old) = previous

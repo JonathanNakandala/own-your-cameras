@@ -9,6 +9,12 @@ use super::Row;
 /// The read-only character device of the `sp` partition.
 pub const SP_DEVICE: &str = "/dev/mtd7ro";
 
+/// The lens variants whose factory behaviour is understood. The stock `device` treats variants 1 and 2 alike:
+/// `Na_af_adapt_lens_focus_range` (0xa4658) sends both to the same return with the default windows, and the AF
+/// parameter loader (0xa4e0c) takes `variant - 1 < 2` for the same parameter set. Variant 2 was seen on a unit
+/// whose table starts `2000000,500dd`. Every other variant stays refused until its handling is read.
+pub const SUPPORTED_LENS: [u32; 2] = [1, 2];
+
 /// One calibrated point: at `zoom` steps the image is sharp at `focus` steps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Point {
@@ -94,7 +100,7 @@ impl ZfTable {
         &self,
         allowance: impl Fn(usize, u32) -> (u32, u32),
     ) -> Result<Vec<Row>, Error> {
-        if self.lens != 1
+        if !SUPPORTED_LENS.contains(&self.lens)
             || self.points.len() < 2
             || self.points.len() >= 50
             || self.backlash > 255
@@ -194,6 +200,47 @@ mod tests {
                 focus: 1022
             }
         );
+    }
+
+    /// Another unit's `sp` element, lens variant 2 and backlash 5 (its body code replaced).
+    const SP_VARIANT_2: &[u8] = b"\xffCSPS<?xml version=\"1.0\"?>\n<StaticParameter>\n<BodyCode>000-00-0000-0000-0</BodyCode>\n\
+<ZFTable>2000000,500dd,20,de,40,11f,60,15b,80,190,a0,1c4,c0,1ee,e0,21a,100,242,120,269,140,28c,160,2ae,180,2ce,\
+1a0,2eb,1c0,305,1e0,321,200,339,220,351,240,363,260,377,280,387,2a0,396,2c0,3a2,2e0,3ae,300,3b9,320,3c5,340,3ce,\
+360,3d6,380,3de,3a0,3e4,3c0,3ea,3e0,3ef,400,3f3</ZFTable>\n</StaticParameter>CEPS\x00\x00";
+
+    #[test]
+    fn lens_variant_2_gets_the_same_factory_windows_as_variant_1() {
+        let t = ZfTable::parse(SP_VARIANT_2).unwrap();
+        assert_eq!((t.lens, t.backlash), (2, 5));
+        assert_eq!(t.points.len(), 33);
+        let rows = t.factory_rows().unwrap();
+        assert_eq!(rows.len(), 33);
+        // sharp 221 at zoom 0: 221 - 144 ..= 221 + 100; every other row is sharp +- 64
+        assert_eq!(
+            (rows[0].zoom, rows[0].focus_min, rows[0].focus_max),
+            (0, 77, 321)
+        );
+        assert_eq!(
+            (rows[1].zoom, rows[1].focus_min, rows[1].focus_max),
+            (32, 158, 286)
+        );
+        // the same table with the variant changed to 1 yields exactly the same rows
+        let mut one = t.clone();
+        one.lens = 1;
+        assert_eq!(one.factory_rows().unwrap(), rows);
+    }
+
+    #[test]
+    fn only_the_understood_lens_variants_are_accepted() {
+        for lens in 0..4 {
+            let mut t = ZfTable::parse(SP).unwrap();
+            t.lens = lens;
+            assert_eq!(
+                t.factory_rows().is_ok(),
+                SUPPORTED_LENS.contains(&lens),
+                "lens variant {lens}"
+            );
+        }
     }
 
     #[test]

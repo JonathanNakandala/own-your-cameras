@@ -38,7 +38,7 @@ A RAM session leaves nothing behind. Never run the production `cam serve --attem
 
 ```
 cam self-test | probe-videocap | dump [--seconds N] [--out DIR]
-cam serve --attempt TOKEN | cam serve --diagnostic [--port N] [--auth FILE | --no-auth] [--seconds N] [--config FILE]
+cam serve --attempt TOKEN | cam serve --diagnostic [--port N] [--auth FILE | --no-auth] [--seconds N] [--config FILE] [--retune SECONDS:WxH@FPS@KBPS]...
 cam preflight
 cam health-watch --attempt TOKEN --pid PID [--dir DIR]
 cam ptz [--dev PATH] [--cfg PATH] home | move <pan> <tilt> | stop | preset <n>
@@ -49,6 +49,10 @@ cam led on | off
 cam wdt
 cam net [--check | --seed-vendor]
 ```
+
+`--retune 60:2592x1944@10@4096` makes a diagnostic run ask for that main stream 60 s after it starts (repeatable),
+a way to try live changes on a camera without a broker. The diagnostic run reads `/mnt/tmp/cam-settings.toml`, so a
+RAM-only experiment sets `isp_3dnr = true` and the main size there; its trial marker is `/mnt/tmp/cam-3dnr.trial`.
 
 `cam serve --attempt` is the production daemon and is only ever started by `cam-launch`. `cam serve --diagnostic`
 is the same pipeline without the watchdog handoff, network or health file; its config is optional and its
