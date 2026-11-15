@@ -1032,6 +1032,14 @@ impl Sys {
     }
 }
 
+/// What the vendor stack runs its H.264 encoders with (`/proc/hdal/venc/info` on stock firmware 4417 [V]):
+/// High profile at level 5.1 (the 2592×1944 main stream is over level 4.1's macroblock rate), quantisers
+/// capped at 45 so a busy or noisy picture is never starved down to 51, and a static time of 4.
+const H264_HIGH_PROFILE: h::_HD_VIDEOENC_PROFILE = 100;
+const H264_LEVEL_5_1: h::_HD_VIDEOENC_LEVEL = 51;
+const STOCK_MAX_QP: u8 = 45;
+const STOCK_STATIC_TIME: u32 = 4;
+
 /// Input, codec and CBR rate control of one encoder path: everything but the path config, so a
 /// running path's mapped bitstream ring stays valid.
 fn encoder_params(path: PathId, spec: &EncSpec, step: Step) -> Result<(), Error> {
@@ -1059,8 +1067,8 @@ fn encoder_params(path: PathId, spec: &EncSpec, step: Step) -> Result<(), Error>
     unsafe {
         let c = &mut out.__bindgen_anon_1.h26x;
         c.gop_num = spec.gop;
-        c.profile = h::HD_H264E_MAIN_PROFILE;
-        c.level_idc = h::HD_H264E_LEVEL_4_1;
+        c.profile = H264_HIGH_PROFILE;
+        c.level_idc = H264_LEVEL_5_1;
         c.svc_layer = h::HD_SVC_DISABLE;
         c.entropy_mode = h::HD_H264E_CABAC_CODING;
     }
@@ -1085,11 +1093,12 @@ fn encoder_params(path: PathId, spec: &EncSpec, step: Step) -> Result<(), Error>
         c.frame_rate_base = spec.fps;
         c.frame_rate_incr = 1;
         c.init_i_qp = 26;
-        c.max_i_qp = 51;
+        c.max_i_qp = STOCK_MAX_QP;
         c.min_i_qp = 10;
         c.init_p_qp = 26;
-        c.max_p_qp = 51;
+        c.max_p_qp = STOCK_MAX_QP;
         c.min_p_qp = 10;
+        c.static_time = STOCK_STATIC_TIME;
     }
     // SAFETY: `rc` is a `HD_H26XENC_RATE_CONTROL`, the struct this param id takes.
     check(
