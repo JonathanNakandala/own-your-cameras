@@ -53,6 +53,8 @@ pub struct Sys {
     t0: std::time::Instant,
     cap_fps: u32,
     maps: Vec<EncMap>,
+    /// The codec each configured encoder path runs, for the frames it returns.
+    codecs: Vec<(PathId, crate::enc::Codec)>,
 }
 
 impl Sys {
@@ -69,6 +71,7 @@ impl Sys {
             t0: std::time::Instant::now(),
             cap_fps: 30,
             maps: Vec::new(),
+            codecs: Vec::new(),
         }
     }
 
@@ -856,12 +859,16 @@ impl EncBackend for Sys {
             }),
         )?;
 
-        encoder_params(path, spec, step)
+        encoder_params(path, spec, step)?;
+        self.note_codec(path, spec.codec);
+        Ok(())
     }
 
     fn videoenc_retune(&mut self, path: PathId, spec: &EncSpec) -> Result<(), Error> {
         self.forward(Step::VideoencRetune)?;
-        encoder_params(path, spec, Step::VideoencRetune)
+        encoder_params(path, spec, Step::VideoencRetune)?;
+        self.note_codec(path, spec.codec);
+        Ok(())
     }
 
     fn videoenc_configure_jpeg(
@@ -1083,11 +1090,17 @@ impl EncBackend for Sys {
             self.terminal |= rel.is_err();
             let data = finish(copied, rel, "videoenc_release_out_buf")?;
             let key = bs.frame_type == h::HD_FRAME_TYPE_IDR || bs.frame_type == h::HD_FRAME_TYPE_I;
+            let codec = self
+                .codecs
+                .iter()
+                .find(|(path, _)| path == p)
+                .map_or_else(Default::default, |(_, codec)| *codec);
             out.push(EncFrame {
                 stream,
                 data,
                 key,
                 pts_us: bs.timestamp,
+                codec,
             });
         }
         Ok(out)
@@ -1099,6 +1112,13 @@ impl EncBackend for Sys {
 }
 
 impl Sys {
+    fn note_codec(&mut self, path: PathId, codec: crate::enc::Codec) {
+        match self.codecs.iter_mut().find(|(p, _)| *p == path) {
+            Some(entry) => entry.1 = codec,
+            None => self.codecs.push((path, codec)),
+        }
+    }
+
     /// The mapping of `path`'s bitstream buffer, made on first use.
     fn map_for(&mut self, path: PathId) -> Result<&EncMap, Error> {
         let step = Step::VideoencRecv;
@@ -1150,6 +1170,12 @@ impl Sys {
 /// capped at 45 so a busy or noisy picture is never starved down to 51, and a static time of 4.
 const H264_HIGH_PROFILE: h::_HD_VIDEOENC_PROFILE = 100;
 const H264_LEVEL_5_1: h::_HD_VIDEOENC_LEVEL = 51;
+/// H.265 as the encoder takes it [V]: `codec_type` 2, Main profile 1, level 153 (30 times 5.1) and entropy mode 2
+/// (H.264's CABAC value 1 is refused: "when H265, entropy_mode(1) is not support").
+const CODEC_TYPE_H265: h::_HD_VIDEO_CODEC = 2;
+const H265_MAIN_PROFILE: h::_HD_VIDEOENC_PROFILE = 1;
+const H265_LEVEL_5_1: h::_HD_VIDEOENC_LEVEL = 153;
+const H265_ENTROPY_MODE: h::_HD_VIDEOENC_CODING = 2;
 const STOCK_MAX_QP: u8 = 45;
 const STOCK_STATIC_TIME: u32 = 4;
 
@@ -1202,15 +1228,28 @@ fn encoder_params(path: PathId, spec: &EncSpec, step: Step) -> Result<(), Error>
     )?;
 
     let mut out = h::HD_VIDEOENC_OUT::default();
-    out.codec_type = h::HD_CODEC_TYPE_H264;
+    let h265 = spec.codec == crate::enc::Codec::H265;
+    out.codec_type = if h265 {
+        CODEC_TYPE_H265
+    } else {
+        h::HD_CODEC_TYPE_H264
+    };
     // SAFETY: the anonymous union is plain data; we write the h26x member of a zeroed value.
     unsafe {
         let c = &mut out.__bindgen_anon_1.h26x;
         c.gop_num = spec.gop;
-        c.profile = H264_HIGH_PROFILE;
-        c.level_idc = H264_LEVEL_5_1;
+        c.profile = if h265 {
+            H265_MAIN_PROFILE
+        } else {
+            H264_HIGH_PROFILE
+        };
+        c.level_idc = if h265 { H265_LEVEL_5_1 } else { H264_LEVEL_5_1 };
         c.svc_layer = h::HD_SVC_DISABLE;
-        c.entropy_mode = h::HD_H264E_CABAC_CODING;
+        c.entropy_mode = if h265 {
+            H265_ENTROPY_MODE
+        } else {
+            h::HD_H264E_CABAC_CODING
+        };
     }
     // SAFETY: `out` is the 44-byte `HD_VIDEOENC_OUT` of HDAL 2.00 (abi/ table).
     check(

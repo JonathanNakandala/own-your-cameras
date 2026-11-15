@@ -41,9 +41,10 @@ this table identical to the code).
 | `af_watch_drop` | Autofocus watchdog drop | Lens | number | 20…90 % | 60 | live |
 | `af_move_drop` | Autofocus move drop | Lens | number | 50…99 % | 80 | live |
 | `af_climb_drop` | Autofocus climb drop | Lens | number | 1…20 % | 2 | live |
-| `main_bitrate` | Main bitrate | Main stream | number | 256…8192 kbps | 1024 | main path restart (≤ 2 s) |
-| `main_resolution` | Main resolution | Main stream | select | 2592x1944, 1920x1440, 1280x960 | 1920x1440 | main path restart (≤ 2 s) |
-| `main_fps` | Main frame rate | Main stream | number | 5…30 fps | 15 | main path restart (≤ 2 s) |
+| `main_bitrate` | Main bitrate | Main stream | number | 256…8192 kbps | 6144 | main path restart (≤ 2 s) |
+| `main_resolution` | Main resolution | Main stream | select | 2592x1944, 1920x1440, 1280x960 | 2592x1944 | main path restart (≤ 2 s) |
+| `main_fps` | Main frame rate | Main stream | number | 5…30 fps | 30 | main path restart (≤ 2 s) |
+| `main_codec` | Main codec | Main stream | select | H.264, H.265 | H.265 | main path restart (≤ 2 s) |
 | `main_gdr` | Main gradual refresh | Main stream | switch | ON/OFF | ON | main path restart (≤ 2 s) |
 | `main_slice_split` | Main slice split | Main stream | switch | ON/OFF | ON | main path restart (≤ 2 s) |
 | `isp_3dnr` | 3D noise reduction | Picture | switch | ON/OFF | ON | after reboot |
@@ -58,6 +59,37 @@ this table identical to the code).
 
 Cross-field rules: `ir_to_night` > `ir_to_day`; `ptz_start_speed` ≤ `ptz_speed`. A change that breaks
 them is rejected; a file that breaks them loads both fields' defaults.
+
+## Main codec and first-run size (`main_codec`)
+
+`main_codec` is `H.265` by default and live (the main encoder restarts, a few milliseconds); `H.264` is the other
+choice. The first-run main stream is the full sensor frame, 2592x1944 at 30 fps and 6144 kbit/s, which is also what
+lets 3D noise reduction run. Only the main stream has the choice: the sub stream stays H.264.
+
+- **H.265** is the same picture at about half the bitrate: on frames from this camera it scored at 0.5 Mbit/s what
+  H.264 scored at 1 Mbit/s, and at 1 Mbit/s nearly what H.264 scored at 2 [V]. It runs with 3D noise reduction,
+  gradual refresh and slice split at 15 and 30 fps, and the CPU load is the same [V]. The encoder takes Main
+  profile at level 5.1 and writes the same full-range colour flags as H.264.
+- **The defaults go together:** at 30 fps each frame gets half the bits it gets at 15, which is why the first-run
+  bitrate is the 6144 kbit/s it is. 30 fps at full size works with 3D noise reduction on, the default. With it off
+  the plain graph gives all outputs one pool of four sensor-size buffers, and at 30 fps the sub stream is starved
+  (1 frame in 10 s [V]); keep `main_fps` at 15 there, or leave 3D noise reduction on.
+- **Settings saved by an older firmware keep their values.** A camera whose file already says `main_fps = 15` or
+  `main_bitrate = 4096` keeps them; only `main_codec`, which was not in the file, takes the new default. Change those
+  two over MQTT (or delete the lines) to move to the new first-run values.
+- **Slice and refresh rows:** H.265 counts rows in coding tree units of 64 lines against H.264's 16-line macroblock
+  rows. The daemon converts, so slices are the same height either way (8 H.264 rows are 2 H.265 rows) and gradual
+  refresh covers the picture in the same time. The row unit of gradual refresh is assumed to follow slice split's;
+  only slice split was measured [V].
+- **Changing the codec disconnects the main stream's viewers.** Their session description (the codec and its
+  parameter sets) no longer fits, so the RTSP server ends their video and they reconnect to get the new one [V].
+  The sub stream, audio and the other paths are not touched.
+
+What a client sees: RTSP carries H.265 as RFC 7798 with the parameter sets in the session description. Media2 reports
+the encoder as `H265` for Profile T clients. Media1 has no H.265 in its schema; cameras that stream it still put the
+value `H265` there, and so does this one, so a Media1 client that only accepts `H264` (Home Assistant's ONVIF
+integration filters on exactly that) does not list the main profile: use H.264 for the main stream there. See
+[shared/onvif.md](../../../../docs/shared/onvif.md#video-codec).
 
 ## 3D noise reduction (`isp_3dnr`)
 
@@ -134,10 +166,13 @@ decodes them in hardware:
   the vendor stack never sends, a player assumes 16 to 235 and clips what lies outside: 8 to 20 % of the picture
   in frames from this camera, mostly shadows [V]. Not a setting; a player that ignores the flag shows what it
   showed before.
+- **H.265:** the S24 Ultra's decoder handles it in hardware, and Android lists H.265 Main among the supported
+  decoders ([formats](https://developer.android.com/media/platform/supported-formats)). Other phones and players vary.
+  `main_codec` goes back to H.264 for anything that cannot play it.
 - **Profile and level stay at the vendor's High profile, level 5.1.** Android guarantees only Main profile at level
   3.1, but current phones decode High profile at 5.1 and above in hardware (a Galaxy S24 Ultra, for one), and High
   profile's CABAC and 8x8 transform give a better picture at the same bitrate. The level is kept at 5.1 even for
-  smaller sizes, as the vendor stack does.
+  smaller sizes, as the vendor stack does. (H.264 only: H.265 runs Main profile at 5.1.)
 
 Sources: [Android supported media formats](https://developer.android.com/media/platform/supported-formats),
 [Android 16 Compatibility Definition, 5.3.4 H.264](https://source.android.com/docs/compatibility/16/android-16-cdd).

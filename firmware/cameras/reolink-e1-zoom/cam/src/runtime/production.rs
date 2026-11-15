@@ -610,7 +610,13 @@ where
                 });
                 pipeline_health.frame(frame.stream);
                 counters.frame(frame.stream, frame.data.len());
-                hubs.publish(frame.stream, frame.key, frame.pts_us, frame.data);
+                hubs.publish_as(
+                    frame.stream,
+                    crate::annexb::transport_codec(frame.codec),
+                    frame.key,
+                    frame.pts_us,
+                    frame.data,
+                );
             },
             &mut |frame| {
                 microphone.push(frame.pts_us, &frame.samples);

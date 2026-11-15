@@ -199,6 +199,7 @@ mod tests {
         a.mic_volume = 10;
         h.request_audio(a);
         let m = MainStream {
+            codec: hdal::enc::Codec::H264,
             dim: hdal::Dim { w: 1280, h: 960 },
             bitrate_bps: 512_000,
             fps: 10,

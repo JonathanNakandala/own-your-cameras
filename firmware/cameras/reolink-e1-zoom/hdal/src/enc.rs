@@ -27,17 +27,45 @@ impl Gdr {
     /// One refresh cycle per `fps` frames (a second, like the key-frame interval it replaces): the rows of a
     /// `dim`-high picture (16-line macroblock rows) spread evenly over the cycle.
     pub fn per_second(dim: crate::Dim, fps: u32) -> Self {
+        Self::per_second_of(Codec::H264, dim, fps)
+    }
+
+    /// Like [`Gdr::per_second`] in `codec`'s row unit ([`Codec::row_px`]).
+    pub fn per_second_of(codec: Codec, dim: crate::Dim, fps: u32) -> Self {
         let period = fps.max(1);
         Self {
             period,
-            rows: dim.h.div_ceil(16).div_ceil(period).max(1),
+            rows: dim.h.div_ceil(codec.row_px()).div_ceil(period).max(1),
         }
     }
 }
 
-/// One H.264 Main-profile CBR stream.
+/// The video codec of an encoder path.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Codec {
+    /// High profile, level 5.1, CABAC (what the vendor stack runs).
+    #[default]
+    H264,
+    /// Main profile, level 5.1 (`libhdal`'s `H265` entries [D]).
+    H265,
+}
+
+impl Codec {
+    /// Height of one "row" of the encoder's slice and gradual-refresh parameters, in picture lines: the 16-line
+    /// macroblock of H.264, the 64-line coding tree unit of H.265. Slice split is measured to count H.265 rows
+    /// that way (8 rows made 4 slices of a 1944-line picture [V]); gradual refresh is assumed to.
+    pub const fn row_px(self) -> u32 {
+        match self {
+            Self::H264 => 16,
+            Self::H265 => 64,
+        }
+    }
+}
+
+/// One CBR stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EncSpec {
+    pub codec: Codec,
     pub dim: Dim,
     pub fps: u32,
     pub bitrate_bps: u32,
@@ -62,6 +90,8 @@ pub struct EncFrame {
     pub data: Vec<u8>,
     pub key: bool,
     pub pts_us: u64,
+    /// The codec the path was configured with when this frame came out.
+    pub codec: Codec,
 }
 
 pub trait EncBackend {

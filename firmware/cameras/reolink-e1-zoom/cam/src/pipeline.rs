@@ -4,7 +4,7 @@
 use std::io::Write;
 
 use hdal::audio::Tuning;
-use hdal::enc::{EncBackend, EncFrame, EncSpec};
+use hdal::enc::{Codec, EncBackend, EncFrame, EncSpec};
 use hdal::{Backend, Dim, Error, MemPool, PathId, ProbeConfig, Step};
 
 use crate::annexb::{AnnexB, Stats};
@@ -39,6 +39,9 @@ pub struct PipelineConfig {
 /// key frame per second).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MainStream {
+    /// H.264 or H.265. The encoder takes either at any size, rate and bitrate here, with 3D noise reduction,
+    /// gradual refresh and slices; H.265 needs about half the bitrate for the same picture [V].
+    pub codec: Codec,
     pub dim: Dim,
     pub bitrate_bps: u32,
     pub fps: u32,
@@ -50,7 +53,8 @@ pub struct MainStream {
 }
 
 /// Macroblock rows per slice with slice split on: 16 slices a frame at 2592x1944, 12 at 1920x1440, 8 at 1280x960.
-/// The size measured on the camera ([`MainStream::slices`]).
+/// The size measured on the camera ([`MainStream::slices`]). H.265 counts coding tree unit rows of 64 lines instead
+/// of 16, so it gets a quarter of the rows for the same slice height (see [`MainStream::spec`]).
 pub const SLICE_ROWS: u32 = 8;
 
 /// With gradual decoder refresh the encoder still makes a full key frame this often (seconds): the encoder takes no
@@ -71,6 +75,7 @@ impl MainStream {
 
     pub fn spec(&self) -> EncSpec {
         EncSpec {
+            codec: self.codec,
             dim: self.dim,
             fps: self.fps,
             bitrate_bps: self.bitrate_bps,
@@ -78,13 +83,16 @@ impl MainStream {
             src_fps: None,
             gdr: self
                 .gdr
-                .then(|| hdal::enc::Gdr::per_second(self.dim, self.fps)),
-            slice_rows: self.slices.then_some(SLICE_ROWS),
+                .then(|| hdal::enc::Gdr::per_second_of(self.codec, self.dim, self.fps)),
+            slice_rows: self
+                .slices
+                .then(|| (SLICE_ROWS * Codec::H264.row_px()).div_ceil(self.codec.row_px())),
         }
     }
 
     pub fn of(spec: &EncSpec) -> Self {
         Self {
+            codec: spec.codec,
             dim: spec.dim,
             bitrate_bps: spec.bitrate_bps,
             fps: spec.fps,
@@ -207,6 +215,7 @@ impl PipelineConfig {
             blk_cnt: 4,
         };
         let main = EncSpec {
+            codec: Codec::H264,
             dim: MAIN_SIZES[1],
             fps: 15,
             bitrate_bps: 1_024_000,
@@ -216,6 +225,7 @@ impl PipelineConfig {
             slice_rows: None,
         };
         let sub = EncSpec {
+            codec: Codec::H264,
             dim: Dim { w: 640, h: 480 },
             fps: 10,
             bitrate_bps: 512_000,

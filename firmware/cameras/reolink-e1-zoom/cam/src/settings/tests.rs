@@ -40,8 +40,9 @@ fn absent_file_gives_the_first_run_defaults_alex_chose() {
     assert_eq!(a.aec.noise_level, -60);
     let m = s.settings().main_stream();
     assert_eq!(
-        (m.dim.w, m.dim.h, m.bitrate_bps, m.fps),
-        (1920, 1440, 1_024_000, 15)
+        (m.codec, m.dim.w, m.dim.h, m.bitrate_bps, m.fps),
+        (hdal::enc::Codec::H265, 2592, 1944, 6_144_000, 30),
+        "H.265 at the full sensor size and 30 fps"
     );
     assert_eq!(s.settings().ir_mode(), "auto");
     assert!(s.settings().led());
@@ -226,7 +227,8 @@ fn states_render_every_setting_for_mqtt() {
     let states: BTreeMap<_, _> = s.settings().states().collect();
     assert_eq!(states.len(), specs().len());
     assert_eq!(states["aec"], "OFF");
-    assert_eq!(states["main_resolution"], "1920x1440");
+    assert_eq!(states["main_resolution"], "2592x1944");
+    assert_eq!(states["main_codec"], "H.265");
     assert_eq!(states["mic_volume"], "100");
 }
 
@@ -372,9 +374,14 @@ fn files_written_before_the_shared_store_load_and_are_rewritten_byte_for_byte() 
             .unwrap_or_default()
             .lines()
             .filter(|l| {
-                !["isp_3dnr = ", "main_gdr = ", "main_slice_split = "]
-                    .iter()
-                    .any(|k| l.starts_with(k))
+                ![
+                    "isp_3dnr = ",
+                    "main_codec = ",
+                    "main_gdr = ",
+                    "main_slice_split = ",
+                ]
+                .iter()
+                .any(|k| l.starts_with(k))
             })
             .map(|l| format!("{l}\n"))
             .collect();
@@ -443,16 +450,18 @@ fn three_d_noise_reduction_is_on_by_default_but_only_acts_with_the_full_size_mai
         std::fs::create_dir_all(&dir).unwrap();
         crate::denoise::Trial::new(dir.join("cam-3dnr.trial"))
     };
-    // The first-run main stream is 1920x1440: the default setting runs the plain graph and writes no marker.
-    let first_run = scratch("first-run");
+    // The first-run main stream is the full sensor frame: the default starts the guarded trial.
     let full = |s: &Store<FakeDisk>| s.settings().main_stream().dim == MAIN_SIZES[0];
+    assert!(full(&s));
+    // A smaller main stream runs the plain graph and writes no marker.
+    s.set("main_resolution", "1920x1440", secs(0)).unwrap();
     assert!(!full(&s));
+    let first_run = scratch("first-run");
     assert_eq!(
         first_run.decide(s.settings().denoise(), full(&s)),
         crate::denoise::Decision::Plain
     );
     assert!(!first_run.path().exists());
-    // With the full-size main stream the default starts the guarded trial.
     s.set("main_resolution", "2592x1944", secs(0)).unwrap();
     assert!(full(&s));
     let trial = scratch("full-size");

@@ -269,7 +269,8 @@ fn valid_packs_are_owned_in_descriptor_order_with_original_metadata() {
             stream: 0,
             data: vec![3, 4, 1, 2],
             key: true,
-            pts_us: 12345
+            pts_us: 12345,
+            codec: Default::default(),
         }]
     );
     sys.videoenc_close(PathId(1)).unwrap();
@@ -383,6 +384,7 @@ fn mapped_encoder_cannot_be_reconfigured_until_its_mapping_is_closed() {
     let path = sys.videoenc_open(0).unwrap();
     sys.videoenc_recv(&[path], 0).unwrap();
     let spec = EncSpec {
+        codec: Default::default(),
         dim: Dim { w: 640, h: 480 },
         fps: 10,
         bitrate_bps: 512_000,

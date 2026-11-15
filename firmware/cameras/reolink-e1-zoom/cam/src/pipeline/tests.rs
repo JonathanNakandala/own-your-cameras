@@ -105,6 +105,7 @@ fn main_is_the_full_4_3_frame_and_sub_keeps_the_vendor_settings() {
     assert_eq!(
         hw.envelopes[0].1,
         EncSpec {
+            codec: Default::default(),
             dim: dim(2592, 1944),
             bitrate_bps: MAIN_MAX_BITRATE,
             fps: 15,
@@ -174,6 +175,7 @@ fn frames_before_the_first_key_frame_are_dropped_and_sps_pps_are_repeated_if_mis
     let mut out = Vec::new();
     let mut w = AnnexB::new(&mut out);
     let p = |data: &[u8]| EncFrame {
+        codec: Default::default(),
         stream: 0,
         data: data.to_vec(),
         key: false,
@@ -691,6 +693,7 @@ fn a_speaker_volume_change_touches_only_the_speaker() {
 
 fn small() -> MainStream {
     MainStream {
+        codec: hdal::enc::Codec::H264,
         dim: hdal::Dim { w: 1280, h: 960 },
         bitrate_bps: 512_000,
         fps: 10,
@@ -815,6 +818,7 @@ fn a_persisted_main_stream_the_driver_refuses_falls_back_to_stock_at_build() {
     let mut hw = Fake::default().failing_nth(Step::VideoencConfigure, 1, -22);
     let mut tuner = Script::new(vec![]);
     tuner.initial.main = Some(MainStream {
+        codec: hdal::enc::Codec::H264,
         dim: hdal::Dim { w: 2592, h: 1944 },
         bitrate_bps: 8_000_000,
         fps: 30,
@@ -873,6 +877,7 @@ fn a_capture_that_cannot_restart_at_all_is_a_media_error_without_a_second_stop()
 
 fn fast_main() -> MainStream {
     MainStream {
+        codec: hdal::enc::Codec::H264,
         dim: hdal::Dim { w: 2592, h: 1944 },
         bitrate_bps: 4_096_000,
         fps: 30,
@@ -1173,6 +1178,7 @@ fn a_silent_stream_keeps_the_trial_from_being_proven() {
 
 fn gradual(fps: u32) -> MainStream {
     MainStream {
+        codec: hdal::enc::Codec::H264,
         dim: hdal::Dim { w: 1920, h: 1440 },
         bitrate_bps: 1_024_000,
         fps,
@@ -1399,5 +1405,88 @@ fn slice_split_and_gradual_refresh_and_3d_noise_reduction_combine() {
     assert_eq!(
         (main.src_fps, main.gdr.is_some(), main.slice_rows),
         (Some(30), true, Some(SLICE_ROWS))
+    );
+}
+
+fn h265(m: MainStream) -> MainStream {
+    MainStream {
+        codec: hdal::enc::Codec::H265,
+        ..m
+    }
+}
+
+#[test]
+fn h265_counts_slice_and_refresh_rows_in_64_line_units() {
+    // H.265 rows are coding tree units of 64 lines, a quarter of the 16-line macroblock rows of H.264: the same
+    // slice height is 2 rows instead of 8 (16 slices at 2592x1944 either way), and the 30 refresh steps of a
+    // 1944-line picture need 2 rows a frame instead of 5.
+    let full = MainStream {
+        gdr: true,
+        slices: true,
+        ..full_main(30)
+    };
+    let a = full.spec();
+    let b = h265(full).spec();
+    assert_eq!((a.codec, a.slice_rows), (hdal::enc::Codec::H264, Some(8)));
+    assert_eq!((b.codec, b.slice_rows), (hdal::enc::Codec::H265, Some(2)));
+    assert_eq!(a.gdr.map(|g| g.rows), Some(5)); // ceil(ceil(1944 / 16) / 30)
+    assert_eq!(b.gdr.map(|g| g.rows), Some(2)); // ceil(ceil(1944 / 64) / 30)
+    assert_eq!(MainStream::of(&b), h265(full));
+}
+
+#[test]
+fn the_codec_switches_live_both_ways_by_restarting_only_the_main_path() {
+    for (from, to) in [
+        (hdal::enc::Codec::H264, hdal::enc::Codec::H265),
+        (hdal::enc::Codec::H265, hdal::enc::Codec::H264),
+    ] {
+        let start = MainStream {
+            codec: from,
+            gdr: false,
+            ..gradual(15)
+        };
+        let mut hw = Fake::default();
+        let mut tuner = Script::new(vec![(
+            20,
+            MediaTuning {
+                main: Some(MainStream { codec: to, ..start }),
+                ..Default::default()
+            },
+        )]);
+        tuner.initial.main = Some(start);
+        run_tuned(&mut hw, &mut tuner, 100).expect("runs");
+        let (_, main) = hw.enc_specs.iter().rfind(|(i, _)| *i == 0).unwrap();
+        assert_eq!(main.codec, to, "{from:?} -> {to:?}");
+        let (_, sub) = hw.enc_specs.iter().rfind(|(i, _)| *i == 1).unwrap();
+        assert_eq!(
+            sub.codec,
+            hdal::enc::Codec::H264,
+            "the sub stream stays H.264"
+        );
+        assert_eq!(count(&hw, "videoenc_retune"), 1);
+        assert!(tuner.reports.iter().any(
+            |r| matches!(r, Tuned::Main { applied, refused: None, .. } if applied.codec == to)
+        ));
+    }
+}
+
+#[test]
+fn h265_combines_with_3d_noise_reduction_gradual_refresh_and_slices() {
+    let mut hw = Fake::default();
+    let mut tuner = denoising(h265(MainStream {
+        gdr: true,
+        slices: true,
+        ..full_main(30)
+    }));
+    run_tuned(&mut hw, &mut tuner, 30).expect("runs");
+    let (_, main) = hw.enc_specs.iter().find(|(i, _)| *i == 0).unwrap();
+    assert_eq!(
+        (
+            main.codec,
+            main.src_fps,
+            main.gdr.is_some(),
+            main.slice_rows
+        ),
+        (hdal::enc::Codec::H265, Some(30), true, Some(2))
     );
 }

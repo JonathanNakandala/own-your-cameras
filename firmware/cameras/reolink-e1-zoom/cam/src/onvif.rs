@@ -8,7 +8,7 @@ use crate::pipeline::{MainStream, PipelineConfig};
 use camera_onvif::{
     Absolute, DeviceIdentity, H264Profile, ImagingError, ImagingOptions, ImagingPort,
     ImagingSettings, IrCutFilter, MediaProfile, OnvifCamera, Pose, Preset, PtzError, PtzFeatures,
-    PtzPort, Relative, RelayError, SnapshotError, Velocity, VideoEncoding,
+    PtzPort, Relative, RelayError, SnapshotError, Velocity, VideoCodec, VideoEncoding,
 };
 use camera_transport::motion_control::{self, PresetName};
 use std::sync::Arc;
@@ -34,14 +34,21 @@ impl E1Onvif {
 
 fn encoding(m: MainStream) -> VideoEncoding {
     VideoEncoding {
-        codec: Default::default(),
+        codec: match m.codec {
+            hdal::enc::Codec::H264 => VideoCodec::H264,
+            hdal::enc::Codec::H265 => VideoCodec::H265,
+        },
         width: m.dim.w,
         height: m.dim.h,
         fps: m.fps,
         bitrate_kbps: m.bitrate_bps / 1000,
         // One key frame per second (`MainStream::spec`).
         gop: m.gop(),
-        profile: H264Profile::Main,
+        // What the encoder runs (`encoder_params`): High for H.264, and the Main profile for H.265.
+        profile: match m.codec {
+            hdal::enc::Codec::H264 => H264Profile::High,
+            hdal::enc::Codec::H265 => H264Profile::Main,
+        },
     }
 }
 

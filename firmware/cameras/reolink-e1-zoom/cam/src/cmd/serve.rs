@@ -7,7 +7,7 @@ use super::{CliError, OnHdal, Ownership, on_hdal};
 use crate::ownership::Resource;
 use crate::runtime::valid_attempt;
 
-pub const USAGE: &str = "usage: cam serve --attempt TOKEN | cam serve --diagnostic [--port N] [--auth FILE | --no-auth] [--seconds N] [--config FILE] [--retune SECONDS:WxH@FPS@KBPS[@gdr][@slices]]...";
+pub const USAGE: &str = "usage: cam serve --attempt TOKEN | cam serve --diagnostic [--port N] [--auth FILE | --no-auth] [--seconds N] [--config FILE] [--retune SECONDS:WxH@FPS@KBPS[@gdr][@slices][@h265]]...";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnostic {
@@ -27,17 +27,23 @@ pub fn parse_retune(text: &str) -> Option<(u64, crate::pipeline::MainStream)> {
     let mut it = rest.split('@');
     let (dim, fps, kbps) = (it.next()?, it.next()?, it.next()?);
     let (w, h) = dim.split_once('x')?;
-    let (mut gdr, mut slices) = (false, false);
+    let (mut gdr, mut slices, mut h265) = (false, false, false);
     for flag in it {
         match flag {
             "gdr" if !gdr => gdr = true,
             "slices" if !slices => slices = true,
+            "h265" if !h265 => h265 = true,
             _ => return None,
         }
     }
     Some((
         at.parse().ok()?,
         crate::pipeline::MainStream {
+            codec: if h265 {
+                hdal::enc::Codec::H265
+            } else {
+                hdal::enc::Codec::H264
+            },
             dim: hdal::Dim {
                 w: w.parse().ok()?,
                 h: h.parse().ok()?,
@@ -407,7 +413,13 @@ pub fn diagnostic_with<
         &mut |f| {
             health.frame(f.stream);
             counters.frame(f.stream, f.data.len());
-            hubs.publish(f.stream, f.key, f.pts_us, f.data);
+            hubs.publish_as(
+                f.stream,
+                crate::annexb::transport_codec(f.codec),
+                f.key,
+                f.pts_us,
+                f.data,
+            );
         },
         &mut |f| {
             microphone.push(f.pts_us, &f.samples);
