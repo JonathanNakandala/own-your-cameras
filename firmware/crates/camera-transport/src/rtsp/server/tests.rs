@@ -12,6 +12,25 @@ fn idr(n: usize) -> Vec<u8> {
     v
 }
 
+#[test]
+fn udp_pacing_spreads_a_frame_over_three_quarters_of_its_interval() {
+    // 15 fps: a 66.7 ms step gives 25 slices of 2 ms; a 120-packet key frame would be 5 per slice, held
+    // up to the minimum of 6 (20 slices, 38 ms); a 19-packet P frame leaves in 4 slices.
+    assert_eq!(pace(120, Some(66_667)), 6);
+    assert_eq!(pace(19, Some(66_667)), 6);
+    // 30 fps: 12 slices, so 10 packets per slice.
+    assert_eq!(pace(120, Some(33_333)), 10);
+    // 5 fps: 75 slices; a 300-packet frame goes 6 per slice.
+    assert_eq!(pace(300, Some(200_000)), 6);
+    // First frame, a skipped stretch or a clock jump: the 40 ms default (15 slices).
+    assert_eq!(pace(120, None), 8);
+    assert_eq!(pace(120, Some(1_000_000)), 8);
+    assert_eq!(pace(120, Some(0)), 8);
+    // Nothing is ever split into empty slices.
+    assert_eq!(pace(0, Some(66_667)), 6);
+    assert_eq!(pace(1, Some(66_667)), 6);
+}
+
 struct Fixture {
     addr: SocketAddr,
     hub: Arc<Hub>,

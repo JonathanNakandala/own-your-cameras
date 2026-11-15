@@ -50,6 +50,37 @@ budget ([../architecture.md](../architecture.md#threads-and-the-watchdog)).
 All child stdout and stderr go to `/dev/null`: zero bytes of child logs in RAM or tmpfs, no drain threads. The
 supervisor's own events (spawn and load failures, exits, timeouts) are logged, at most 64 lines per boot.
 
+## The picture smears in a band every few seconds (UDP viewers)
+
+Reported from tinyCam on a phone, RTSP over UDP, main stream at 2592×1944, 15 fps, 4096 kbit/s: a region
+turns into wrong macroblocks and snaps clean about a second later. That is the signature of lost RTP packets
+(the damaged slice heals at the next key frame). What a unit showing it measured [V]:
+
+- Over Wi-Fi to a laptop, four minutes with three viewers at once (main over TCP, main over UDP, sub over TCP)
+  and two further minutes of single viewers: not one packet lost, not one decoder concealment, in either
+  transport. The bytes the camera sends are sound, and so is the encoder: key frames about 155 KiB, P frames a
+  steady 25 KiB, no encoder drops or errors in `/proc/hdal/venc/info`.
+- The same UDP session timed per packet: every key frame arrived as about 120 packets (160 KiB) inside 20 ms, a
+  60–70 Mbit/s spike; P frames as 19 packets in 2 ms. A phone's UDP socket buffer, or a slower Wi-Fi hop to it,
+  can lose the tail of such a spike where a laptop on 5 GHz does not. The stock server (live555) bursts
+  fragments the same way, so the stock's steadiness on the same phone comes from somewhere else, most likely
+  smaller key frames (its codec, bitrate and GOP differ).
+
+The sender therefore paces UDP (`camera_transport::rtsp::server`, every camera): a frame's packets leave in
+2 ms slices spread over three quarters of the frame interval, at least six packets per slice. At 15 fps a
+120-packet key frame takes about 40 ms (a 35 Mbit/s peak instead of 70), a P frame 6 ms; TCP is unchanged,
+its flow control already paces. The effect on the phone is not yet verified [I].
+
+To tell this apart from anything else in a minute: switch the client to TCP. If the smear is gone, it is UDP
+loss on the way to that client, and the paced build is the camera-side remedy. If it stays over TCP, record
+the stream and count what the decoder conceals; errors there would mean damaged bytes, which no unit has
+shown so far:
+
+```sh
+ffmpeg -rtsp_transport tcp -i rtsp://USER:PASS@CAMERA/main -t 60 -c copy tcp.mkv
+ffmpeg -v warning -i tcp.mkv -f null - 2>&1 | grep -c -i 'conceal\|error'
+```
+
 ## `cam-wifi.conf`
 
 `/mnt/para/cam-wifi.conf` must be a regular file owned by root, mode 0600, no symlink or hard link, at most
