@@ -176,7 +176,7 @@ fn probe_command_fails_when_only_cleanup_failed() {
 /// Usage errors the binary reports before taking any ownership lease: exit code and first stderr line.
 #[test]
 fn usage_matrix_before_any_lease() {
-    let serve = "usage: cam serve --attempt TOKEN | cam serve --diagnostic [--port N] [--auth FILE | --no-auth] [--seconds N] [--config FILE] [--retune SECONDS:WxH@FPS@KBPS]...";
+    let serve = "usage: cam serve --attempt TOKEN | cam serve --diagnostic [--port N] [--auth FILE | --no-auth] [--seconds N] [--config FILE] [--retune SECONDS:WxH@FPS@KBPS[@gdr]]...";
     let top = "usage: cam self-test | probe-videocap | dump | serve | preflight | health-watch | ptz ... | zoom ... | focus ... | ir ... | led ... | wdt | net";
     for (args, stderr) in [
         (&[][..], top),

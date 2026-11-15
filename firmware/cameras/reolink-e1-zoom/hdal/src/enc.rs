@@ -14,6 +14,27 @@ pub const MAX_RINGS_BYTES: usize = 20 * 1024 * 1024;
 /// Largest JPEG a snapshot encoder is sized for.
 pub const MAX_JPEG_BYTES: u32 = 1024 * 1024;
 
+/// Gradual decoder refresh: instead of a full key frame every GOP, `rows` macroblock rows of every frame are
+/// intra coded, so the whole picture is refreshed once every `period` frames and a viewer that lost data
+/// recovers within one cycle. The encoder's own limits: `rows` is 1 to the number of macroblock rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Gdr {
+    pub period: u32,
+    pub rows: u32,
+}
+
+impl Gdr {
+    /// One refresh cycle per `fps` frames (a second, like the key-frame interval it replaces): the rows of a
+    /// `dim`-high picture (16-line macroblock rows) spread evenly over the cycle.
+    pub fn per_second(dim: crate::Dim, fps: u32) -> Self {
+        let period = fps.max(1);
+        Self {
+            period,
+            rows: dim.h.div_ceil(16).div_ceil(period).max(1),
+        }
+    }
+}
+
 /// One H.264 Main-profile CBR stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EncSpec {
@@ -26,6 +47,8 @@ pub struct EncSpec {
     /// reduction reference path, arriving at `rate` fps, of which the encoder takes `fps` (its input frame-rate
     /// control). `None`: plain YUV420 from a processor output that already runs at `fps`.
     pub src_fps: Option<u32>,
+    /// Gradual decoder refresh instead of periodic key frames; `None` keeps the key frame every `gop` frames.
+    pub gdr: Option<Gdr>,
 }
 
 /// One access unit as the encoder returned it: Annex B, packs concatenated.

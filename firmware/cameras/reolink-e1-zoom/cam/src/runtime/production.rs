@@ -319,6 +319,7 @@ pub fn start<B>(
     );
     owner.arm_denoise(crate::denoise::Trial::new(paths.denoise_trial()));
     let media_tuning = Arc::clone(&owner.media);
+    hubs.main.on_subscribe_wants_key(media_tuning.key_request());
     let counters = Arc::new(crate::telemetry::StreamCounters::default());
     let telemetry = telemetry_task(Arc::clone(&counters), Arc::clone(&media_tuning));
     start_time(&ready.mqtt);

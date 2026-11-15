@@ -14,7 +14,7 @@ the network, read its streams and snapshot, and drive it without a camera-specif
 | Imaging: brightness, saturation, contrast, sharpness, IR-cut filter, focus mode | yes | — | — |
 | PTZ presets: list, go to, create, delete | up to 32 | up to 16 | — |
 | Events: digital inputs | — | — | `call_button`, `door` |
-| Relay outputs (LEDs) | 2 | — | — |
+| Relay outputs (LEDs, gradual refresh) | 3 | — | — |
 | Audio output (talkback) | yes | yes | yes |
 
 ## Streams
@@ -115,15 +115,17 @@ also asks for HTTPS, H.265 and motion events, which are not offered.
 
 ## Relay outputs
 
-ONVIF models any switched output as a relay, so the E1 Zoom's LEDs are two relay outputs
-(`GetRelayOutputs`, `SetRelayOutputState`; Device IO adds `GetRelayOutputOptions` and `SetRelayOutputSettings`):
+ONVIF models any switched output as a relay, so the E1 Zoom's two LEDs and the main stream's gradual refresh are
+relay outputs (`GetRelayOutputs`, `SetRelayOutputState`; Device IO adds `GetRelayOutputOptions` and
+`SetRelayOutputSettings`). Each drives an on/off setting, exactly as the MQTT switch of that setting does:
 
 | Token | Setting | Active means |
 |---|---|---|
 | `status_led` | `led` | the status LED is on |
 | `ir_leds` | `ir_leds_at_night` | night mode may light the IR LEDs; inactive leaves the night picture dark |
+| `gradual_refresh` | `main_gdr` | the main stream uses gradual decoder refresh instead of a key frame every second ([settings](../../firmware/cameras/reolink-e1-zoom/docs/settings.md#gradual-refresh-main_gdr)); the main profile's `GovLength` follows (8 s of frames) |
 
-Both are bistable and idle open (inactive). `SetRelayOutputSettings` accepts exactly that and refuses a
+All are bistable and idle open (inactive). `SetRelayOutputSettings` accepts exactly that and refuses a
 monostable mode or a closed idle state with `ter:ModeError`; an unknown token is `ter:RelayToken`. The state
 is not reported back (ONVIF has no read call for it, and no relay event is sent); the MQTT entities show it.
 

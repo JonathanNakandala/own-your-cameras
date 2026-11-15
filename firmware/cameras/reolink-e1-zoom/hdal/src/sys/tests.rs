@@ -388,6 +388,7 @@ fn mapped_encoder_cannot_be_reconfigured_until_its_mapping_is_closed() {
         bitrate_bps: 512_000,
         gop: 10,
         src_fps: None,
+        gdr: None,
     };
     let before = DRIVER.with_borrow(|d| d.calls.len());
     assert!(sys.videoenc_configure(path, &spec, &spec).is_err());

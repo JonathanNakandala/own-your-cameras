@@ -39,7 +39,7 @@ fn encoding(m: MainStream) -> VideoEncoding {
         fps: m.fps,
         bitrate_kbps: m.bitrate_bps / 1000,
         // One key frame per second (`MainStream::spec`).
-        gop: m.fps,
+        gop: m.gop(),
         profile: H264Profile::Main,
     }
 }
@@ -66,8 +66,13 @@ const AUX_IR_LAMP: [(&str, &str); 3] = [
 ];
 
 /// The relay outputs and the switch setting each one drives.
-const RELAY_TOKENS: [&str; 2] = ["status_led", "ir_leds"];
-const RELAYS: [(&str, &str); 2] = [("status_led", "led"), ("ir_leds", "ir_leds_at_night")];
+const RELAY_TOKENS: [&str; 3] = ["status_led", "ir_leds", "gradual_refresh"];
+const RELAYS: [(&str, &str); 3] = [
+    ("status_led", "led"),
+    ("ir_leds", "ir_leds_at_night"),
+    // Active: the main stream refreshes gradually instead of with a key frame every second.
+    ("gradual_refresh", "main_gdr"),
+];
 
 /// How much of the log `GetSystemLog` returns: the log is capped at 256 KiB and a SOAP reply should not be.
 const LOG_TAIL: usize = 32 * 1024;

@@ -21,6 +21,8 @@ struct State {
     reports: u64,
     /// The marker of the 3D noise reduction trial this start runs, until it is proven.
     trial: Option<crate::denoise::Trial>,
+    /// Raised by the main hub when a viewer subscribes (see `Hub::on_subscribe_wants_key`).
+    key_wanted: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[derive(Debug, Default)]
@@ -72,6 +74,11 @@ impl Handoff {
     /// What homing by ear listens to.
     pub fn ears(self: &std::sync::Arc<Self>) -> Ears {
         Ears(std::sync::Arc::clone(self))
+    }
+
+    /// The flag the main stream's hub raises for every new viewer; the media loop answers it with a key frame.
+    pub fn key_request(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        std::sync::Arc::clone(&self.state().key_wanted)
     }
 
     /// This start builds the graph with 3D noise reduction; `trial` is cleared once it proves healthy.
@@ -139,6 +146,12 @@ impl Tuner for &Handoff {
         }
     }
 
+    fn key_frame_wanted(&mut self) -> bool {
+        self.state()
+            .key_wanted
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+    }
+
     fn next(&mut self) -> Option<MediaTuning> {
         let mut s = self.state();
         let p = std::mem::take(&mut s.pending);
@@ -189,6 +202,7 @@ mod tests {
             dim: hdal::Dim { w: 1280, h: 960 },
             bitrate_bps: 512_000,
             fps: 10,
+            gdr: false,
         };
         h.request_main(m);
         assert_eq!(

@@ -42,16 +42,37 @@ pub struct MainStream {
     pub dim: Dim,
     pub bitrate_bps: u32,
     pub fps: u32,
+    /// Gradual decoder refresh instead of a key frame every second: no key-frame spike on the network. New
+    /// viewers get their key frame on request, and one more comes every [`GDR_GOP_SECONDS`].
+    pub gdr: bool,
 }
 
+/// With gradual decoder refresh the encoder still makes a full key frame this often (seconds): the encoder takes no
+/// interval of 0 (`HD_RESULT -2` [V]), and recorders that cut at key frames need some.
+pub const GDR_GOP_SECONDS: u32 = 8;
+/// Key frames asked for on behalf of joining viewers are at least this far apart.
+const KEY_REQUEST_GAP_MS: u64 = 1000;
+
 impl MainStream {
+    /// Frames between the encoder's own key frames.
+    pub fn gop(&self) -> u32 {
+        if self.gdr {
+            self.fps * GDR_GOP_SECONDS
+        } else {
+            self.fps
+        }
+    }
+
     pub fn spec(&self) -> EncSpec {
         EncSpec {
             dim: self.dim,
             fps: self.fps,
             bitrate_bps: self.bitrate_bps,
-            gop: self.fps,
+            gop: self.gop(),
             src_fps: None,
+            gdr: self
+                .gdr
+                .then(|| hdal::enc::Gdr::per_second(self.dim, self.fps)),
         }
     }
 
@@ -60,6 +81,7 @@ impl MainStream {
             dim: spec.dim,
             bitrate_bps: spec.bitrate_bps,
             fps: spec.fps,
+            gdr: spec.gdr.is_some(),
         }
     }
 }
@@ -106,6 +128,11 @@ pub trait Tuner {
     fn snapshot_done(&mut self, _result: Result<Vec<u8>, String>) {}
     /// A graph built with 3D noise reduction delivered both streams for [`TRIAL_PROVEN_MS`]: the trial is over.
     fn denoise_proven(&mut self) {}
+    /// A viewer joined the main stream and waits for a key frame. Read (and cleared) only while the main stream
+    /// uses gradual decoder refresh, whose key frames are rare.
+    fn key_frame_wanted(&mut self) -> bool {
+        false
+    }
 }
 
 /// JPEG quality of snapshots (1–100).
@@ -177,6 +204,7 @@ impl PipelineConfig {
             bitrate_bps: 1_024_000,
             gop: 15,
             src_fps: None,
+            gdr: None,
         };
         let sub = EncSpec {
             dim: Dim { w: 640, h: 480 },
@@ -184,6 +212,7 @@ impl PipelineConfig {
             bitrate_bps: 512_000,
             gop: 10,
             src_fps: None,
+            gdr: None,
         };
         Self {
             cap,
@@ -453,6 +482,21 @@ impl Graph {
         hw.videoenc_start(e)?;
         hw.videoproc_start(p)?;
         Ok(e)
+    }
+
+    /// Makes the main encoder open a new GOP with a key frame, for a viewer that joins a stream whose key frames are
+    /// rare. Stopping and starting the encoder does it (the first frame after a start is an IDR, and the GOP counts
+    /// from there), as every live main-stream change already shows; the encoder's `REQUEST_IFRAME` parameter is
+    /// accepted and ignored [V].
+    fn force_main_key<B: Backend + EncBackend>(&mut self, hw: &mut B) -> Result<(), Error> {
+        let Some(&e) = self.enc.first() else {
+            return Ok(());
+        };
+        if self.enc_started.contains(&e) {
+            hw.videoenc_stop(e)?;
+            hw.videoenc_start(e)?;
+        }
+        Ok(())
     }
 
     /// Restarts the main path alone with `spec` (videoproc output size/rate and encoder parameters),
@@ -850,6 +894,7 @@ where
         let mut snapshot_until: Option<u64> = None;
         // A graph with 3D noise reduction is on trial until both streams have delivered for a while.
         let mut trial = g.denoise.then_some(start);
+        let mut last_key_request: Option<u64> = None;
         while keep_going() {
             if let Some(e) = jpeg {
                 match hw.videoenc_recv(&[e], 0) {
@@ -920,6 +965,14 @@ where
                     tuner.denoise_proven();
                     trial = None;
                 }
+            }
+            if g.main.is_some_and(|m| m.gdr.is_some())
+                && last_key_request
+                    .is_none_or(|at| hw.now_ms().saturating_sub(at) >= KEY_REQUEST_GAP_MS)
+                && tuner.key_frame_wanted()
+            {
+                last_key_request = Some(hw.now_ms());
+                g.force_main_key(hw)?;
             }
             if let Some(request) = tuner.next() {
                 if let Some(want) = request.audio {

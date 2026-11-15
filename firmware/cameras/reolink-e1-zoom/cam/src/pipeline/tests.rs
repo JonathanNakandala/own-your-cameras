@@ -109,7 +109,8 @@ fn main_is_the_full_4_3_frame_and_sub_keeps_the_vendor_settings() {
             bitrate_bps: MAIN_MAX_BITRATE,
             fps: 15,
             gop: 15,
-            src_fps: None
+            src_fps: None,
+            gdr: None
         }
     );
     // The diagnostic dump builds no snapshot path.
@@ -467,6 +468,9 @@ struct Script {
     snapshots: Vec<Result<Vec<u8>, String>>,
     /// How often the graph reported its 3D noise reduction trial as proven.
     proven: u32,
+    /// Polls at which a viewer joins (the hub raises its key-frame flag), and the flag itself.
+    viewer_joins_at: Vec<usize>,
+    key_flag: bool,
 }
 
 impl Script {
@@ -479,6 +483,8 @@ impl Script {
             snapshot_at: Vec::new(),
             snapshots: Vec::new(),
             proven: 0,
+            viewer_joins_at: Vec::new(),
+            key_flag: false,
         }
     }
 
@@ -496,6 +502,9 @@ impl Tuner for Script {
     }
     fn next(&mut self) -> Option<MediaTuning> {
         self.polls += 1;
+        if self.viewer_joins_at.contains(&self.polls) {
+            self.key_flag = true;
+        }
         let i = self.requests.iter().position(|(at, _)| *at == self.polls)?;
         Some(self.requests.remove(i).1)
     }
@@ -511,6 +520,9 @@ impl Tuner for Script {
     }
     fn denoise_proven(&mut self) {
         self.proven += 1;
+    }
+    fn key_frame_wanted(&mut self) -> bool {
+        std::mem::take(&mut self.key_flag)
     }
 }
 
@@ -681,6 +693,7 @@ fn small() -> MainStream {
         dim: hdal::Dim { w: 1280, h: 960 },
         bitrate_bps: 512_000,
         fps: 10,
+        gdr: false,
     }
 }
 
@@ -803,6 +816,7 @@ fn a_persisted_main_stream_the_driver_refuses_falls_back_to_stock_at_build() {
         dim: hdal::Dim { w: 2592, h: 1944 },
         bitrate_bps: 8_000_000,
         fps: 30,
+        gdr: false,
     });
     run_tuned(&mut hw, &mut tuner, 5).expect("boot never fails on a setting");
     let stock = PipelineConfig::e1_zoom().streams[0];
@@ -859,6 +873,7 @@ fn fast_main() -> MainStream {
         dim: hdal::Dim { w: 2592, h: 1944 },
         bitrate_bps: 4_096_000,
         fps: 30,
+        gdr: false,
     }
 }
 
@@ -1150,4 +1165,169 @@ fn a_silent_stream_keeps_the_trial_from_being_proven() {
     let mut tuner = denoising(full_main(15));
     run_tuned(&mut hw, &mut tuner, 18_500).expect("runs");
     assert_eq!(tuner.proven, 0);
+}
+
+fn gradual(fps: u32) -> MainStream {
+    MainStream {
+        dim: hdal::Dim { w: 1920, h: 1440 },
+        bitrate_bps: 1_024_000,
+        fps,
+        gdr: true,
+    }
+}
+
+#[test]
+fn gradual_refresh_asks_the_encoder_for_rows_per_frame_and_a_long_key_frame_interval() {
+    let mut hw = Fake::default();
+    let mut tuner = Script::new(vec![]);
+    tuner.initial.main = Some(gradual(15));
+    run_tuned(&mut hw, &mut tuner, 20).expect("runs");
+    let (_, main) = hw.enc_specs.iter().find(|(i, _)| *i == 0).unwrap();
+    // 1440 lines are 90 macroblock rows, refreshed over 15 frames: 6 rows a frame.
+    assert_eq!(
+        main.gdr,
+        Some(hdal::enc::Gdr {
+            period: 15,
+            rows: 6
+        })
+    );
+    assert_eq!(main.gop, 15 * GDR_GOP_SECONDS);
+    // The sub stream keeps its key frame every second.
+    let (_, sub) = hw.enc_specs.iter().find(|(i, _)| *i == 1).unwrap();
+    assert_eq!((sub.gdr, sub.gop), (None, 10));
+    assert!(
+        tuner
+            .reports
+            .iter()
+            .any(|r| matches!(r, Tuned::Main { applied, .. } if applied.gdr))
+    );
+}
+
+#[test]
+fn the_rows_per_frame_cover_the_picture_within_one_cycle() {
+    for (h, fps) in [
+        (1944u32, 15u32),
+        (1440, 15),
+        (960, 10),
+        (1944, 30),
+        (1440, 5),
+    ] {
+        let g = hdal::enc::Gdr::per_second(hdal::Dim { w: 4 * h / 3, h }, fps);
+        assert_eq!(g.period, fps);
+        assert!(
+            g.rows >= 1 && g.rows * g.period >= h.div_ceil(16),
+            "{h} lines at {fps} fps: {g:?}"
+        );
+        assert!(
+            (g.rows - 1) * g.period < h.div_ceil(16),
+            "no more rows than needed: {g:?}"
+        );
+    }
+}
+
+/// `(starts, stops)` of encoders in a run of the scripted tuner.
+fn encoder_cycles(main: Option<MainStream>, joins: &[usize], polls: usize) -> (usize, usize) {
+    let mut hw = Fake::default();
+    let mut tuner = Script::new(vec![]);
+    tuner.initial.main = main;
+    tuner.viewer_joins_at = joins.to_vec();
+    run_tuned(&mut hw, &mut tuner, polls).expect("runs");
+    (count(&hw, "videoenc_start"), count(&hw, "videoenc_stop"))
+}
+
+#[test]
+fn a_joining_viewer_gets_a_key_frame_by_a_restart_of_the_main_encoder_with_gradual_refresh() {
+    let (starts, stops) = encoder_cycles(Some(gradual(15)), &[], 80);
+    assert_eq!(
+        encoder_cycles(Some(gradual(15)), &[30], 80),
+        (starts + 1, stops + 1),
+        "one stop and one start more"
+    );
+}
+
+#[test]
+fn key_frame_requests_are_rate_limited_and_not_lost() {
+    let (starts, stops) = encoder_cycles(Some(gradual(15)), &[], 400);
+    // Three viewers within a few loop turns: the first is served at once, the others share one later restart.
+    assert_eq!(
+        encoder_cycles(Some(gradual(15)), &[30, 31, 32], 400),
+        (starts + 2, stops + 2)
+    );
+}
+
+#[test]
+fn without_gradual_refresh_a_joining_viewer_changes_nothing() {
+    let plain = encoder_cycles(
+        Some(MainStream {
+            gdr: false,
+            ..gradual(15)
+        }),
+        &[],
+        80,
+    );
+    assert_eq!(
+        encoder_cycles(
+            Some(MainStream {
+                gdr: false,
+                ..gradual(15)
+            }),
+            &[30],
+            80
+        ),
+        plain
+    );
+}
+
+#[test]
+fn gradual_refresh_switches_live_by_restarting_only_the_main_path() {
+    let mut hw = Fake::default();
+    let mut tuner = Script::new(vec![(
+        20,
+        MediaTuning {
+            main: Some(gradual(15)),
+            ..Default::default()
+        },
+    )]);
+    tuner.initial.main = Some(MainStream {
+        gdr: false,
+        ..gradual(15)
+    });
+    run_tuned(&mut hw, &mut tuner, 100).expect("runs");
+    let (_, main) = hw.enc_specs.iter().rfind(|(i, _)| *i == 0).unwrap();
+    assert_eq!((main.gdr.is_some(), main.gop), (true, 120));
+    assert_eq!(count(&hw, "videoenc_retune"), 1);
+    assert!(
+        tuner
+            .reports
+            .iter()
+            .any(|r| matches!(r, Tuned::Main { applied, refused: None, .. } if applied.gdr))
+    );
+    // And back: the encoder is told it is off, not left on.
+    let mut hw = Fake::default();
+    let mut tuner = Script::new(vec![(
+        20,
+        MediaTuning {
+            main: Some(MainStream {
+                gdr: false,
+                ..gradual(15)
+            }),
+            ..Default::default()
+        },
+    )]);
+    tuner.initial.main = Some(gradual(15));
+    run_tuned(&mut hw, &mut tuner, 100).expect("runs");
+    let (_, main) = hw.enc_specs.iter().rfind(|(i, _)| *i == 0).unwrap();
+    assert_eq!((main.gdr, main.gop), (None, 15));
+}
+
+#[test]
+fn gradual_refresh_works_with_3d_noise_reduction_too() {
+    let mut hw = Fake::default();
+    let mut tuner = denoising(MainStream {
+        gdr: true,
+        ..full_main(15)
+    });
+    run_tuned(&mut hw, &mut tuner, 30).expect("runs");
+    let (_, main) = hw.enc_specs.iter().find(|(i, _)| *i == 0).unwrap();
+    assert_eq!((main.src_fps, main.gdr.is_some()), (Some(30), true));
 }

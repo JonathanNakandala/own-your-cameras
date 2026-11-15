@@ -398,6 +398,7 @@ const BASE: &[Setting] = &[
         Some("fps"),
         15,
     ),
+    switch("main_gdr", "Main gradual refresh", Group::MainStream, false),
     switch("isp_3dnr", "3D noise reduction", Group::Startup, true),
 ];
 
@@ -604,6 +605,7 @@ impl Settings {
             dim: MAIN_SIZES[self.choice("main_resolution")],
             bitrate_bps: self.int("main_bitrate") as u32 * 1000,
             fps: self.int("main_fps") as u32,
+            gdr: self.on("main_gdr"),
         }
     }
 
@@ -645,6 +647,7 @@ impl Settings {
             if let Ok(fps) = i32::try_from(m.fps) {
                 s.set_shown("main_fps", fps);
             }
+            s.set_shown("main_gdr", i32::from(m.gdr));
         }
         s
     }
@@ -867,7 +870,7 @@ impl<D: Disk> Store<D> {
     /// setting, so a value the encoders cannot sustain is not persisted.
     pub fn adopt_main(&mut self, m: &MainStream, now: Duration) {
         let shown = self.settings.with_applied(None, Some(m));
-        for key in ["main_resolution", "main_bitrate", "main_fps"] {
+        for key in ["main_resolution", "main_bitrate", "main_fps", "main_gdr"] {
             if let (Some(spec), Some(v)) = (spec(key), shown.get(key)) {
                 let _ = self.put(spec, v, now);
             }

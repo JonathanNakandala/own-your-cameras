@@ -44,6 +44,7 @@ this table identical to the code).
 | `main_bitrate` | Main bitrate | Main stream | number | 256…8192 kbps | 1024 | main path restart (≤ 2 s) |
 | `main_resolution` | Main resolution | Main stream | select | 2592x1944, 1920x1440, 1280x960 | 1920x1440 | main path restart (≤ 2 s) |
 | `main_fps` | Main frame rate | Main stream | number | 5…30 fps | 15 | main path restart (≤ 2 s) |
+| `main_gdr` | Main gradual refresh | Main stream | switch | ON/OFF | OFF | main path restart (≤ 2 s) |
 | `isp_3dnr` | 3D noise reduction | Picture | switch | ON/OFF | ON | after reboot |
 | `isp_brightness` | Brightness | Picture | number | 0…200 | stock `0_isp.cfg` `brightness` (else 100) | live, with readback |
 | `isp_contrast` | Contrast | Picture | number | 0…200 | stock `0_isp.cfg` `contrast` (else 100) | live, with readback |
@@ -72,6 +73,27 @@ Safety: a start with the setting on writes the marker `/mnt/para/cam-3dnr.trial`
 deletes it once both streams delivered for 180 s. A start that finds the marker runs the plain graph and logs why,
 because the last attempt never proved healthy. To try again: turn `isp_3dnr` off, reboot (the marker is removed),
 turn it on, reboot. A marker that cannot be written also means no 3D noise reduction.
+
+## Gradual refresh (`main_gdr`)
+
+Off by default; live (the main encoder restarts, 4 to 15 ms). With it on, the main stream no longer sends a full key
+frame every second. The encoder's gradual decoder refresh instead re-codes a band of rows of every frame without
+reference to earlier frames, so the whole picture is refreshed once a second (9 rows a frame at 2592x1944 and 15 fps)
+and a viewer that lost a packet is clean again within a second, as before. A full key frame still comes every
+8 s (the encoder takes no interval of 0) and whenever a viewer joins: the encoder ignores its own "key frame now"
+request, so the daemon briefly restarts it (the first frame after a start is a key frame), at most once a second.
+The ONVIF relay output `gradual_refresh` switches the same setting.
+
+Measured on a camera at 2592x1944, 15 fps, 4096 kbit/s with 3D noise reduction [V]:
+
+- key frames: one per second off; one per 8 s plus one per joining viewer on;
+- each remaining key frame is larger (about 340 KB against 205 KB: the constant bitrate controller spends what the
+  missing ones saved), so the burst per key frame is not smaller, there are just 8 times fewer of them;
+- viewers joining with a 2 s timeout got video at once; a viewer already watching lost at most one frame (0.13 s
+  gap) to each join; no decoder errors over TCP or UDP, no lost UDP packets in 35 s either way.
+
+Worth trying when a client shows a broken band at every key frame over a weak link. Recorders that cut files at key
+frames (Frigate segments, go2rtc HLS) get them every 8 s instead of every second.
 
 ## Persistence
 

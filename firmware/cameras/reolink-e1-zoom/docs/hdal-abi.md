@@ -83,6 +83,10 @@ From the library's disassembly (SHA-256 in the HDAL link manifest):
   then validate both extents. Null or all-ones is never passed to `mem_free`, and an impossible success with
   invalid outputs is an error.
 
+Encoder parameters from the same table [D]: `OUT_SLICE_SPLIT` 10, `OUT_ENC_GDR` 11
+(`HD_H26XENC_GDR { enable, period, number }`, `number` being macroblock rows a frame), `OUT_REQUEST_IFRAME` 15. The
+last is accepted and **ignored** by this encoder: requests half a second off the GOP grid made no key frame, while
+stopping and starting the encoder does [V]. A GOP of 0 makes `videoenc_recv` fail with -2 [V].
 `hd_common_mem_init` takes up to 128 pools; `cam` gives the plain graph one pool and the graph with 3D noise
 reduction four sized per output ([hardware/isp-iq.md](hardware/isp-iq.md#memory)). `HD_VIDEOPROC_PARAM_FUNC_CONFIG` is
 parameter 24 and `HD_VIDEOENC_PARAM_FUNC_CONFIG` 26 (their name tables in `libhdal`, [D]).

@@ -536,6 +536,9 @@ const PROC_PARAM_FUNC_CONFIG: h::_HD_VIDEOPROC_PARAM_ID = 24;
 /// stock's main encoder (`func 00000002` in `venc/info` [V]).
 const ENC_PARAM_FUNC_CONFIG: h::_HD_VIDEOENC_PARAM_ID = 26;
 const ENC_IN_FUNC_NVX2: u32 = 2;
+/// `HD_VIDEOENC_PARAM_OUT_ENC_GDR` (id 11 in `libhdal`'s encoder parameter table [D]); the struct is
+/// `HD_H26XENC_GDR { enable, period, number }`.
+const ENC_PARAM_OUT_GDR: h::_HD_VIDEOENC_PARAM_ID = 11;
 const ENC_IN: [u32; 3] = [
     h::HD_VIDEOENC_0_IN_0 as u32,
     h::HD_VIDEOENC_0_IN_1 as u32,
@@ -1205,6 +1208,26 @@ fn encoder_params(path: PathId, spec: &EncSpec, step: Step) -> Result<(), Error>
             )
         }),
     )?;
+
+    // Gradual decoder refresh. Written when asked for, and on a retune so that turning it off takes effect.
+    if spec.gdr.is_some() || step == Step::VideoencRetune {
+        let mut gdr = h::HD_H26XENC_GDR {
+            enable: spec.gdr.is_some().into(),
+            period: spec.gdr.map_or(1, |g| g.period),
+            number: spec.gdr.map_or(1, |g| g.rows),
+        };
+        // SAFETY: `gdr` is a `HD_H26XENC_GDR`, the 12-byte struct this param id takes.
+        check(
+            step,
+            ioctl_capture::result(|| unsafe {
+                h::hd_videoenc_set(
+                    path.0 as _,
+                    ENC_PARAM_OUT_GDR,
+                    (&mut gdr as *mut h::HD_H26XENC_GDR).cast(),
+                )
+            }),
+        )?;
+    }
 
     let mut rc = h::HD_H26XENC_RATE_CONTROL::default();
     rc.rc_mode = h::HD_RC_MODE_CBR;

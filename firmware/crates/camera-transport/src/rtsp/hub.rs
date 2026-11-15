@@ -91,6 +91,8 @@ pub struct Hub {
     inner: Mutex<Inner>,
     params_ready: Condvar,
     retained: Arc<AtomicUsize>,
+    /// Raised whenever a viewer subscribes, for an encoder that makes key frames only on request.
+    key_wanted: std::sync::OnceLock<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 /// The hub dropped its end: no more frames will come.
@@ -262,6 +264,12 @@ impl Hub {
         })
     }
 
+    /// `flag` is raised every time a viewer subscribes, so whoever owns the encoder can make the key frame it
+    /// waits for (a stream with gradual decoder refresh has few). Set once; a second call is ignored.
+    pub fn on_subscribe_wants_key(&self, flag: Arc<std::sync::atomic::AtomicBool>) {
+        let _ = self.key_wanted.set(flag);
+    }
+
     /// A viewer that starts at the next key frame.
     pub fn subscribe(&self) -> Viewer {
         let (tx, rx) = sync_channel(self.limits.queue);
@@ -273,6 +281,9 @@ impl Hub {
             need_key: true,
             viewer: Arc::downgrade(&alive),
         });
+        if let Some(flag) = self.key_wanted.get() {
+            flag.store(true, Ordering::Release);
+        }
         Viewer { rx, _alive: alive }
     }
 
@@ -446,6 +457,22 @@ mod tests {
         hub.publish(true, 1, vec![0, 0, 0, 1, 0x65, 7]);
         let f = v.next(T).unwrap().unwrap();
         assert_eq!(nal_types(&f.data), [7, 8, 5]);
+    }
+
+    #[test]
+    fn a_subscribing_viewer_raises_the_key_request_flag() {
+        let hub = Hub::new();
+        let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let _early = hub.subscribe();
+        hub.on_subscribe_wants_key(Arc::clone(&flag));
+        assert!(
+            !flag.load(Ordering::Acquire),
+            "set only by later subscribers"
+        );
+        let _v = hub.subscribe();
+        assert!(flag.swap(false, Ordering::AcqRel));
+        let _w = hub.subscribe();
+        assert!(flag.load(Ordering::Acquire));
     }
 
     #[test]

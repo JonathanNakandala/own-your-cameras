@@ -7,7 +7,7 @@ use super::{CliError, OnHdal, Ownership, on_hdal};
 use crate::ownership::Resource;
 use crate::runtime::valid_attempt;
 
-pub const USAGE: &str = "usage: cam serve --attempt TOKEN | cam serve --diagnostic [--port N] [--auth FILE | --no-auth] [--seconds N] [--config FILE] [--retune SECONDS:WxH@FPS@KBPS]...";
+pub const USAGE: &str = "usage: cam serve --attempt TOKEN | cam serve --diagnostic [--port N] [--auth FILE | --no-auth] [--seconds N] [--config FILE] [--retune SECONDS:WxH@FPS@KBPS[@gdr]]...";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnostic {
@@ -27,6 +27,11 @@ pub fn parse_retune(text: &str) -> Option<(u64, crate::pipeline::MainStream)> {
     let mut it = rest.split('@');
     let (dim, fps, kbps) = (it.next()?, it.next()?, it.next()?);
     let (w, h) = dim.split_once('x')?;
+    let gdr = match it.next() {
+        None => false,
+        Some("gdr") => true,
+        Some(_) => return None,
+    };
     if it.next().is_some() {
         return None;
     }
@@ -39,6 +44,7 @@ pub fn parse_retune(text: &str) -> Option<(u64, crate::pipeline::MainStream)> {
             },
             fps: fps.parse().ok()?,
             bitrate_bps: kbps.parse::<u32>().ok()?.checked_mul(1000)?,
+            gdr,
         },
     ))
 }
@@ -316,6 +322,7 @@ pub fn diagnostic_with<
             }
         });
     }
+    hubs.main.on_subscribe_wants_key(media_tuning.key_request());
     // The same time keeping, motion queue and ONVIF as production (ONVIF needs credentials and a config).
     let motion = Arc::new(crate::mqtt::Motion::default());
     let _onvif = match (&mqtt_config, &onvif_creds) {
