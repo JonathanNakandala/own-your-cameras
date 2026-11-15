@@ -314,6 +314,9 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 /// Everything the SDP of one H.264 video track needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VideoSdp {
+    pub codec: crate::annexb::Codec,
+    /// H.265 only.
+    pub vps: Option<Vec<u8>>,
     pub sps: Vec<u8>,
     pub pps: Vec<u8>,
 }
@@ -338,6 +341,18 @@ fn b64(data: &[u8]) -> String {
 
 /// SDP for DESCRIBE. `base` is the request URI (control URL base).
 pub fn sdp(v: &VideoSdp, base: &str) -> String {
+    if v.codec == crate::annexb::Codec::H265 {
+        // RFC 7798: the parameter sets travel in `sprop-*`, so a player can start before the first key frame.
+        return format!(
+            "v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\ns=cam\r\nc=IN IP4 0.0.0.0\r\nt=0 0\r\na=control:{base}\r\n\
+             m=video 0 RTP/AVP 96\r\na=rtpmap:96 H265/90000\r\n\
+             a=fmtp:96 sprop-vps={};sprop-sps={};sprop-pps={}\r\n\
+             a=control:trackID=0\r\na=recvonly\r\n",
+            b64(v.vps.as_deref().unwrap_or_default()),
+            b64(&v.sps),
+            b64(&v.pps)
+        );
+    }
     let profile = if v.sps.len() >= 4 {
         format!("{:02x}{:02x}{:02x}", v.sps[1], v.sps[2], v.sps[3])
     } else {
@@ -501,6 +516,8 @@ mod tests {
         assert_eq!(b64(b"M"), "TQ==");
         let s = sdp(
             &VideoSdp {
+                codec: crate::annexb::Codec::H264,
+                vps: None,
                 sps: vec![0x67, 0x4d, 0x00, 0x1f, 1],
                 pps: vec![0x68, 0xee],
             },
@@ -508,6 +525,18 @@ mod tests {
         );
         assert!(s.contains("profile-level-id=4d001f"));
         assert!(s.contains("sprop-parameter-sets=Z00AHwE=,aO4="));
+        let h = sdp(
+            &VideoSdp {
+                codec: crate::annexb::Codec::H265,
+                vps: Some(vec![0x40, 1, 2]),
+                sps: vec![0x42, 1, 3],
+                pps: vec![0x44, 1],
+            },
+            "rtsp://h/x",
+        );
+        assert!(h.contains("a=rtpmap:96 H265/90000"));
+        assert!(h.contains("sprop-vps=QAEC;sprop-sps=QgED;sprop-pps=RAE="));
+        assert!(!h.contains("H264"));
         assert!(s.contains("m=video 0 RTP/AVP 96"));
     }
 

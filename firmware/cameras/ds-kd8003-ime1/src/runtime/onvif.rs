@@ -28,6 +28,7 @@ pub struct DoorOnvif {
 /// What `gm_stream_get` reports: w, h, fps, kbps, gop, mode, profile (0 baseline, 1 main, 2 high).
 fn encoding(v: [u32; 7]) -> VideoEncoding {
     VideoEncoding {
+        codec: Default::default(),
         width: v[0],
         height: v[1],
         fps: v[2],

@@ -264,6 +264,13 @@ fn nal(kind: u8, len: usize) -> Vec<u8> {
     v
 }
 
+/// An H.265 NAL unit: its two-byte header carries the type in bits 1 to 6 of the first byte.
+fn nal265(kind: u8, len: usize) -> Vec<u8> {
+    let mut v = vec![0, 0, 0, 1, kind << 1, 1];
+    v.resize(6 + len, 0xAA);
+    v
+}
+
 impl EncBackend for Fake {
     fn videoproc_init(&mut self) -> Result<(), Error> {
         self.enter(Step::VideoprocInit)
@@ -409,6 +416,7 @@ impl EncBackend for Fake {
                         data: vec![0xff, 0xd8, 0xff, 0xe0, 0, 0, 0xff, 0xd9],
                         key: true,
                         pts_us: self.clock_ms * 1000,
+                        codec: Default::default(),
                     });
                 }
                 continue;
@@ -436,19 +444,30 @@ impl EncBackend for Fake {
             let period = u64::from(1000 / spec.fps);
             self.next_due_ms[idx] += period;
             self.frames_made[idx] += 1;
+            let codec = spec.codec;
             let mut data = Vec::new();
-            if key {
-                data.extend(nal(0x67, 8));
-                data.extend(nal(0x68, 4));
-                data.extend(nal(0x65, 100));
-            } else {
-                data.extend(nal(0x41, 40));
+            match (codec, key) {
+                (crate::enc::Codec::H264, true) => {
+                    data.extend(nal(0x67, 8));
+                    data.extend(nal(0x68, 4));
+                    data.extend(nal(0x65, 100));
+                }
+                (crate::enc::Codec::H264, false) => data.extend(nal(0x41, 40)),
+                // VPS, SPS and PPS (types 32 to 34), then an IDR (19) or a trailing picture (1).
+                (crate::enc::Codec::H265, true) => {
+                    data.extend(nal265(32, 6));
+                    data.extend(nal265(33, 8));
+                    data.extend(nal265(34, 4));
+                    data.extend(nal265(19, 100));
+                }
+                (crate::enc::Codec::H265, false) => data.extend(nal265(1, 40)),
             }
             out.push(EncFrame {
                 stream: i,
                 data,
                 key,
                 pts_us: self.clock_ms * 1000,
+                codec,
             });
         }
         Ok(out)

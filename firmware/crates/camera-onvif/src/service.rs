@@ -688,9 +688,10 @@ fn audio_source_config(element: &str, uses: usize) -> String {
 fn video_encoder_config(p: &MediaProfile, element: &str) -> String {
     let v = &p.video;
     format!(
-        "<{element} token=\"{}\">{}<tt:UseCount>1</tt:UseCount><tt:Encoding>H264</tt:Encoding>{}<tt:Quality>5</tt:Quality>{}{}{}<tt:SessionTimeout>PT60S</tt:SessionTimeout></{element}>",
+        "<{element} token=\"{}\">{}<tt:UseCount>1</tt:UseCount><tt:Encoding>{}</tt:Encoding>{}<tt:Quality>5</tt:Quality>{}{}{}<tt:SessionTimeout>PT60S</tt:SessionTimeout></{element}>",
         video_encoder_token(p),
         text("tt:Name", video_encoder_token(p)),
+        v.codec.onvif(),
         el(
             "tt:Resolution",
             format!(
@@ -893,7 +894,9 @@ fn same_video(config: &Element, p: &MediaProfile) -> Option<bool> {
         ),
         (number(config, &["H264", "GovLength"])?, v.gop),
     ];
-    let encoding = config.text_of("Encoding").is_none_or(|e| e == "H264");
+    let encoding = config
+        .text_of("Encoding")
+        .is_none_or(|e| e == v.codec.onvif());
     let profile = config
         .child("H264")
         .and_then(|h| h.text_of("H264Profile"))

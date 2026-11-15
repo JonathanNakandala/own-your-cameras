@@ -67,6 +67,16 @@ const PACE_MIN_PACKETS: usize = 6;
 /// The frame interval assumed for the first frame, or when the timestamp step is implausible.
 const PACE_DEFAULT_INTERVAL_US: u64 = 40_000;
 
+/// How long to wait before the next slice that was due at `due`, and the due time to carry on from. A slice that
+/// is already late (the thread was descheduled, the CPU is busy) goes out at once and the schedule restarts from
+/// `now`: catching up would send the rest of the frame as one burst, the very thing pacing is there to avoid.
+fn slice_wait(due: Instant, now: Instant) -> (Duration, Instant) {
+    match due.checked_duration_since(now) {
+        Some(wait) => (wait, due),
+        None => (Duration::ZERO, now),
+    }
+}
+
 /// Packets per [`PACE_SLICE`] for an access unit of `packets` RTP packets that follows the previous one by
 /// `interval_us`: the unit is spread over three quarters of its interval, never fewer than
 /// [`PACE_MIN_PACKETS`] per slice. A step outside 5–200 ms (a skipped stretch, a clock jump) is not an
@@ -199,17 +209,35 @@ pub fn serve_with_limits(
                 if workers.len() >= limits.connections {
                     continue; // dropped: too many viewers for a 64 MB camera
                 }
-                super::socket_limits::apply(&sock, 32 * 1024, 16 * 1024)?;
-                sock.set_nonblocking(false)?;
-                let socket = sock.try_clone()?;
-                let cfg = Arc::clone(&cfg);
-                let thread = limits.thread().spawn(move || {
-                    let _ = connection(sock, peer, &cfg, limits);
-                })?;
-                workers.push(ConnectionWorker {
-                    socket,
-                    thread: Some(thread),
-                });
+                // One connection that cannot be set up (a client that reset right away, no thread to spare) is
+                // dropped; it must not end the server for everyone else.
+                let started = (|| -> io::Result<ConnectionWorker> {
+                    super::socket_limits::apply(&sock, 32 * 1024, 16 * 1024)?;
+                    sock.set_nonblocking(false)?;
+                    let socket = sock.try_clone()?;
+                    let cfg = Arc::clone(&cfg);
+                    let thread = limits.thread().spawn(move || {
+                        let _ = connection(sock, peer, &cfg, limits);
+                    })?;
+                    Ok(ConnectionWorker {
+                        socket,
+                        thread: Some(thread),
+                    })
+                })();
+                match started {
+                    Ok(worker) => workers.push(worker),
+                    Err(e) => eprintln!("rtsp: dropped a connection from {peer}: {e}"),
+                }
+            }
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::ConnectionAborted
+                        | io::ErrorKind::ConnectionReset
+                        | io::ErrorKind::Interrupted
+                ) =>
+            {
+                // A client gave up between the handshake and `accept`.
             }
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                 std::thread::sleep(Duration::from_millis(50));
@@ -298,7 +326,18 @@ fn sender(
         let frame = match viewer.next(Duration::from_millis(200)) {
             Ok(Some(f)) => f,
             Ok(None) => continue,
-            Err(_) => return,
+            Err(_) => {
+                // The hub let go of this viewer: its codec changed, so the session description the client holds
+                // no longer fits. End the connection, as a failed write does, so the client reconnects at once
+                // instead of waiting on a stream that will never send again.
+                eprintln!("rtsp: a video stream ended, the client has to reconnect");
+                stop.store(true, Ordering::Relaxed);
+                let _ = w
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .shutdown(Shutdown::Both);
+                return;
+            }
         };
         let ts = timestamp(frame.pts_us);
         let packets = pk.packets(&frame.data, ts);
@@ -338,7 +377,7 @@ fn sender(
                 res
             }
             Sink::Udp { sock, to } => {
-                let started = Instant::now();
+                let mut due = Instant::now();
                 let mut res = Ok(());
                 'slices: for (i, slice) in
                     packets.chunks(pace(packets.len(), interval_us)).enumerate()
@@ -347,11 +386,11 @@ fn sender(
                         if stop.load(Ordering::Relaxed) {
                             return;
                         }
-                        let due = started + PACE_SLICE * i as u32;
-                        if let Some(wait) = due.checked_duration_since(Instant::now()) {
-                            std::thread::sleep(wait);
-                        }
+                        let wait;
+                        (wait, due) = slice_wait(due, Instant::now());
+                        std::thread::sleep(wait);
                     }
+                    due += PACE_SLICE;
                     for p in slice {
                         if stop.load(Ordering::Relaxed) {
                             return;
@@ -368,7 +407,9 @@ fn sender(
                 res
             }
         };
-        if res.is_err() {
+        if let Err(error) = &res {
+            // A viewer that suddenly gets nothing otherwise leaves no trace at all.
+            eprintln!("rtsp: a video sender stopped: {error}");
             stop.store(true, Ordering::Relaxed);
             // Wake the control reader too: otherwise a failed sender can retain the
             // connection and its exclusive speaker lease until the idle timeout.
@@ -866,7 +907,7 @@ fn handle(
                 match &setup.media {
                     Media::Video(hub) => {
                         let viewer = hub.subscribe();
-                        let pk = Packetizer::new(ssrc, 0, MAX_PAYLOAD);
+                        let pk = Packetizer::new(ssrc, 0, MAX_PAYLOAD).codec(hub.codec());
                         match limits
                             .thread()
                             .spawn(move || sender(viewer, sink, w, pk, st, go_rx))

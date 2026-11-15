@@ -19,6 +19,7 @@ use crate::ptz::{self, Profile};
 use camera_transport::settings::{self as shared, TomlCodec, Values};
 pub use camera_transport::settings::{Kind, Problem, Rejected, SAVE_WITHIN, Spec};
 use hdal::audio::{Aec, Anr, Tuning};
+use hdal::enc::Codec;
 
 /// Where the daemon keeps the settings.
 pub const PATH: &str = "/mnt/para/cam-settings.toml";
@@ -165,6 +166,9 @@ const fn select(
 
 pub const IR_MODES: &[&str] = &["auto", "day", "night"];
 pub const MAIN_RESOLUTIONS: &[&str] = &["2592x1944", "1920x1440", "1280x960"];
+/// The main stream's codecs, in the order of [`MAIN_CODEC_VALUES`].
+pub const MAIN_CODECS: &[&str] = &["H.264", "H.265"];
+const MAIN_CODEC_VALUES: [Codec; 2] = [Codec::H264, Codec::H265];
 /// The speeds the AN41908 driver distinguishes (`crate::zoom::ZOOM_SPEEDS`); full range 24 s at 20,
 /// 5.5 s at 80 (measured, `docs/hardware/zoom-focus.md`).
 pub const ZOOM_SPEED_OPTIONS: &[&str] = &["20", "40", "60", "80", "100"];
@@ -381,14 +385,14 @@ const BASE: &[Setting] = &[
         Group::MainStream,
         (256, MAIN_MAX_BITRATE as i32 / 1000),
         Some("kbps"),
-        1024,
+        6144,
     ),
     select(
         "main_resolution",
         "Main resolution",
         Group::MainStream,
         MAIN_RESOLUTIONS,
-        1,
+        0,
     ),
     number(
         "main_fps",
@@ -396,9 +400,23 @@ const BASE: &[Setting] = &[
         Group::MainStream,
         MAIN_FPS,
         Some("fps"),
-        15,
+        30,
     ),
-    switch("isp_3dnr", "3D noise reduction", Group::Startup, false),
+    select(
+        "main_codec",
+        "Main codec",
+        Group::MainStream,
+        MAIN_CODECS,
+        1,
+    ),
+    switch("main_gdr", "Main gradual refresh", Group::MainStream, true),
+    switch(
+        "main_slice_split",
+        "Main slice split",
+        Group::MainStream,
+        true,
+    ),
+    switch("isp_3dnr", "3D noise reduction", Group::Startup, true),
 ];
 
 static SETTINGS: LazyLock<Vec<Setting>> = LazyLock::new(|| {
@@ -601,9 +619,12 @@ impl Settings {
 
     pub fn main_stream(&self) -> MainStream {
         MainStream {
+            codec: MAIN_CODEC_VALUES[self.choice("main_codec")],
             dim: MAIN_SIZES[self.choice("main_resolution")],
             bitrate_bps: self.int("main_bitrate") as u32 * 1000,
             fps: self.int("main_fps") as u32,
+            gdr: self.on("main_gdr"),
+            slices: self.on("main_slice_split"),
         }
     }
 
@@ -645,6 +666,11 @@ impl Settings {
             if let Ok(fps) = i32::try_from(m.fps) {
                 s.set_shown("main_fps", fps);
             }
+            if let Some(i) = MAIN_CODEC_VALUES.iter().position(|c| *c == m.codec) {
+                s.set_shown("main_codec", i as i32);
+            }
+            s.set_shown("main_gdr", i32::from(m.gdr));
+            s.set_shown("main_slice_split", i32::from(m.slices));
         }
         s
     }
@@ -867,7 +893,14 @@ impl<D: Disk> Store<D> {
     /// setting, so a value the encoders cannot sustain is not persisted.
     pub fn adopt_main(&mut self, m: &MainStream, now: Duration) {
         let shown = self.settings.with_applied(None, Some(m));
-        for key in ["main_resolution", "main_bitrate", "main_fps"] {
+        for key in [
+            "main_resolution",
+            "main_bitrate",
+            "main_fps",
+            "main_codec",
+            "main_gdr",
+            "main_slice_split",
+        ] {
             if let (Some(spec), Some(v)) = (spec(key), shown.get(key)) {
                 let _ = self.put(spec, v, now);
             }

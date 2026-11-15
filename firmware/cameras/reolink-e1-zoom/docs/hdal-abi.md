@@ -83,6 +83,17 @@ From the library's disassembly (SHA-256 in the HDAL link manifest):
   then validate both extents. Null or all-ones is never passed to `mem_free`, and an impossible success with
   invalid outputs is an error.
 
+H.265 is `codec_type` 2 with profile 1 (Main), `level_idc` 153 (30 times 5.1) and `entropy_mode` 2 [V]; H.264's
+CABAC value 1 is refused (`HD_VIDEOENC_CODING: when H265, entropy_mode(1) is not support`, `HD_RESULT -34`). The
+path config keeps `codec_type` H.264 for both, which the encoder accepted at 2592x1944 with either [V]. Slice split's
+`slice_row_num` counts 64-line coding tree units in H.265 (8 rows made 4 slices of 1944 lines [V]).
+
+Encoder parameters from the same table [D]: `OUT_VUI` 6 (`HD_H26XENC_VUI`; `cam` sets it on every H.264 path and
+the flags reach the SPS [V], although `venc/info` lists no rows for it), `OUT_SLICE_SPLIT` 10 (`HD_H26XENC_SLICE_SPLIT { enable, slice_row_num }`,
+rows per slice; it works as documented [V]), `OUT_ENC_GDR` 11
+(`HD_H26XENC_GDR { enable, period, number }`, `number` being macroblock rows a frame), `OUT_REQUEST_IFRAME` 15. The
+last is accepted and **ignored** by this encoder: requests half a second off the GOP grid made no key frame, while
+stopping and starting the encoder does [V]. A GOP of 0 makes `videoenc_recv` fail with -2 [V].
 `hd_common_mem_init` takes up to 128 pools; `cam` gives the plain graph one pool and the graph with 3D noise
 reduction four sized per output ([hardware/isp-iq.md](hardware/isp-iq.md#memory)). `HD_VIDEOPROC_PARAM_FUNC_CONFIG` is
 parameter 24 and `HD_VIDEOENC_PARAM_FUNC_CONFIG` 26 (their name tables in `libhdal`, [D]).

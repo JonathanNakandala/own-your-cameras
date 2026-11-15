@@ -319,6 +319,7 @@ pub fn start<B>(
     );
     owner.arm_denoise(crate::denoise::Trial::new(paths.denoise_trial()));
     let media_tuning = Arc::clone(&owner.media);
+    hubs.main.on_subscribe_wants_key(media_tuning.key_request());
     let counters = Arc::new(crate::telemetry::StreamCounters::default());
     let telemetry = telemetry_task(Arc::clone(&counters), Arc::clone(&media_tuning));
     start_time(&ready.mqtt);
@@ -609,7 +610,13 @@ where
                 });
                 pipeline_health.frame(frame.stream);
                 counters.frame(frame.stream, frame.data.len());
-                hubs.publish(frame.stream, frame.key, frame.pts_us, frame.data);
+                hubs.publish_as(
+                    frame.stream,
+                    crate::annexb::transport_codec(frame.codec),
+                    frame.key,
+                    frame.pts_us,
+                    frame.data,
+                );
             },
             &mut |frame| {
                 microphone.push(frame.pts_us, &frame.samples);

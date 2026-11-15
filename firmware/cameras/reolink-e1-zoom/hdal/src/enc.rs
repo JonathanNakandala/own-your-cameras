@@ -14,9 +14,58 @@ pub const MAX_RINGS_BYTES: usize = 20 * 1024 * 1024;
 /// Largest JPEG a snapshot encoder is sized for.
 pub const MAX_JPEG_BYTES: u32 = 1024 * 1024;
 
-/// One H.264 Main-profile CBR stream.
+/// Gradual decoder refresh: instead of a full key frame every GOP, `rows` macroblock rows of every frame are
+/// intra coded, so the whole picture is refreshed once every `period` frames and a viewer that lost data
+/// recovers within one cycle. The encoder's own limits: `rows` is 1 to the number of macroblock rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Gdr {
+    pub period: u32,
+    pub rows: u32,
+}
+
+impl Gdr {
+    /// One refresh cycle per `fps` frames (a second, like the key-frame interval it replaces): the rows of a
+    /// `dim`-high picture (16-line macroblock rows) spread evenly over the cycle.
+    pub fn per_second(dim: crate::Dim, fps: u32) -> Self {
+        Self::per_second_of(Codec::H264, dim, fps)
+    }
+
+    /// Like [`Gdr::per_second`] in `codec`'s row unit ([`Codec::row_px`]).
+    pub fn per_second_of(codec: Codec, dim: crate::Dim, fps: u32) -> Self {
+        let period = fps.max(1);
+        Self {
+            period,
+            rows: dim.h.div_ceil(codec.row_px()).div_ceil(period).max(1),
+        }
+    }
+}
+
+/// The video codec of an encoder path.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Codec {
+    /// High profile, level 5.1, CABAC (what the vendor stack runs).
+    #[default]
+    H264,
+    /// Main profile, level 5.1 (`libhdal`'s `H265` entries [D]).
+    H265,
+}
+
+impl Codec {
+    /// Height of one "row" of the encoder's slice and gradual-refresh parameters, in picture lines: the 16-line
+    /// macroblock of H.264, the 64-line coding tree unit of H.265. Slice split is measured to count H.265 rows
+    /// that way (8 rows made 4 slices of a 1944-line picture [V]); gradual refresh is assumed to.
+    pub const fn row_px(self) -> u32 {
+        match self {
+            Self::H264 => 16,
+            Self::H265 => 64,
+        }
+    }
+}
+
+/// One CBR stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EncSpec {
+    pub codec: Codec,
     pub dim: Dim,
     pub fps: u32,
     pub bitrate_bps: u32,
@@ -26,6 +75,11 @@ pub struct EncSpec {
     /// reduction reference path, arriving at `rate` fps, of which the encoder takes `fps` (its input frame-rate
     /// control). `None`: plain YUV420 from a processor output that already runs at `fps`.
     pub src_fps: Option<u32>,
+    /// Gradual decoder refresh instead of periodic key frames; `None` keeps the key frame every `gop` frames.
+    pub gdr: Option<Gdr>,
+    /// Each frame cut into independently decodable slices of this many macroblock rows; `None` is one slice per
+    /// frame. A lost packet then damages its slice only, not the rest of the frame.
+    pub slice_rows: Option<u32>,
 }
 
 /// One access unit as the encoder returned it: Annex B, packs concatenated.
@@ -36,6 +90,8 @@ pub struct EncFrame {
     pub data: Vec<u8>,
     pub key: bool,
     pub pts_us: u64,
+    /// The codec the path was configured with when this frame came out.
+    pub codec: Codec,
 }
 
 pub trait EncBackend {

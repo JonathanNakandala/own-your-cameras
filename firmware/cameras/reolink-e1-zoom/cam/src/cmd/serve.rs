@@ -7,7 +7,7 @@ use super::{CliError, OnHdal, Ownership, on_hdal};
 use crate::ownership::Resource;
 use crate::runtime::valid_attempt;
 
-pub const USAGE: &str = "usage: cam serve --attempt TOKEN | cam serve --diagnostic [--port N] [--auth FILE | --no-auth] [--seconds N] [--config FILE] [--retune SECONDS:WxH@FPS@KBPS]...";
+pub const USAGE: &str = "usage: cam serve --attempt TOKEN | cam serve --diagnostic [--port N] [--auth FILE | --no-auth] [--seconds N] [--config FILE] [--retune SECONDS:WxH@FPS@KBPS[@gdr][@slices][@h265]]...";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnostic {
@@ -27,18 +27,31 @@ pub fn parse_retune(text: &str) -> Option<(u64, crate::pipeline::MainStream)> {
     let mut it = rest.split('@');
     let (dim, fps, kbps) = (it.next()?, it.next()?, it.next()?);
     let (w, h) = dim.split_once('x')?;
-    if it.next().is_some() {
-        return None;
+    let (mut gdr, mut slices, mut h265) = (false, false, false);
+    for flag in it {
+        match flag {
+            "gdr" if !gdr => gdr = true,
+            "slices" if !slices => slices = true,
+            "h265" if !h265 => h265 = true,
+            _ => return None,
+        }
     }
     Some((
         at.parse().ok()?,
         crate::pipeline::MainStream {
+            codec: if h265 {
+                hdal::enc::Codec::H265
+            } else {
+                hdal::enc::Codec::H264
+            },
             dim: hdal::Dim {
                 w: w.parse().ok()?,
                 h: h.parse().ok()?,
             },
             fps: fps.parse().ok()?,
             bitrate_bps: kbps.parse::<u32>().ok()?.checked_mul(1000)?,
+            gdr,
+            slices,
         },
     ))
 }
@@ -49,6 +62,16 @@ mod retune_tests {
 
     #[test]
     fn a_retune_is_seconds_size_rate_and_bitrate() {
+        let (_, m) = parse_retune("60:2592x1944@10@4096@gdr@slices").unwrap();
+        assert!(m.gdr && m.slices);
+        let (_, m) = parse_retune("60:2592x1944@10@4096@slices").unwrap();
+        assert!(!m.gdr && m.slices);
+        for bad in [
+            "60:2592x1944@10@4096@slices@slices",
+            "60:2592x1944@10@4096@gdr@x",
+        ] {
+            assert_eq!(parse_retune(bad), None, "{bad}");
+        }
         let (at, m) = parse_retune("60:2592x1944@10@4096").unwrap();
         assert_eq!(
             (at, m.dim.w, m.dim.h, m.fps, m.bitrate_bps),
@@ -316,6 +339,7 @@ pub fn diagnostic_with<
             }
         });
     }
+    hubs.main.on_subscribe_wants_key(media_tuning.key_request());
     // The same time keeping, motion queue and ONVIF as production (ONVIF needs credentials and a config).
     let motion = Arc::new(crate::mqtt::Motion::default());
     let _onvif = match (&mqtt_config, &onvif_creds) {
@@ -389,7 +413,13 @@ pub fn diagnostic_with<
         &mut |f| {
             health.frame(f.stream);
             counters.frame(f.stream, f.data.len());
-            hubs.publish(f.stream, f.key, f.pts_us, f.data);
+            hubs.publish_as(
+                f.stream,
+                crate::annexb::transport_codec(f.codec),
+                f.key,
+                f.pts_us,
+                f.data,
+            );
         },
         &mut |f| {
             microphone.push(f.pts_us, &f.samples);

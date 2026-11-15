@@ -8,6 +8,14 @@ use camera_transport::annexb::nal_ranges;
 #[cfg(test)]
 pub use camera_transport::annexb::{nal_slices, nal_types};
 
+/// The transport's name for an encoder path's codec.
+pub fn transport_codec(codec: hdal::enc::Codec) -> camera_transport::annexb::Codec {
+    match codec {
+        hdal::enc::Codec::H264 => camera_transport::annexb::Codec::H264,
+        hdal::enc::Codec::H265 => camera_transport::annexb::Codec::H265,
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Stats {
     pub frames: u64,

@@ -1888,3 +1888,60 @@ fn media2_is_read_only_and_a_fixed_profile_keeps_its_configurations() {
         .contains(&"ter:NoProfile")
     );
 }
+
+#[test]
+fn an_h265_profile_is_reported_as_h265_in_both_media_services_and_the_h264_one_stays() {
+    let mut cam = FakeCamera::new(true, &[]);
+    cam.main_codec = crate::camera::VideoCodec::H265;
+    let encoding = |ns: &str, token: &str| {
+        let r = call(&cam, ns, "GetVideoEncoderConfigurations", "");
+        r.children
+            .iter()
+            .filter(|c| c.name == "Configurations" && c.attr("token") == Some(token))
+            .find_map(|c| c.text_of("Encoding").map(str::to_owned))
+    };
+    for ns in [TRT, TR2] {
+        assert_eq!(encoding(ns, "main_video").as_deref(), Some("H265"), "{ns}");
+        assert_eq!(encoding(ns, "sub_video").as_deref(), Some("H264"), "{ns}");
+    }
+    // A client that sets what is already so still succeeds; one that wants the other codec does not.
+    call(
+        &cam,
+        TR2,
+        "SetVideoEncoderConfiguration",
+        r#"<Configuration token="main_video"><tt:Encoding>H265</tt:Encoding></Configuration>"#,
+    );
+    assert!(
+        fault(
+            &cam,
+            TR2,
+            "SetVideoEncoderConfiguration",
+            r#"<Configuration token="main_video"><tt:Encoding>H264</tt:Encoding></Configuration>"#,
+        )
+        .subcodes
+        .contains(&"ter:ConfigModify")
+    );
+    // One Options per codec in use, and the instances per codec.
+    let options = call(&cam, TR2, "GetVideoEncoderConfigurationOptions", "");
+    let codecs: Vec<_> = options
+        .children
+        .iter()
+        .filter(|c| c.name == "Options")
+        .filter_map(|c| c.text_of("Encoding"))
+        .collect();
+    assert_eq!(codecs, ["H265", "H264"]);
+    let instances = call(
+        &cam,
+        TR2,
+        "GetVideoEncoderInstances",
+        "<ConfigurationToken>video_source_config</ConfigurationToken>",
+    );
+    let info = path(&instances, &["Info"]);
+    let listed: Vec<_> = info
+        .children
+        .iter()
+        .filter(|c| c.name == "Codec")
+        .filter_map(|c| c.text_of("Encoding"))
+        .collect();
+    assert_eq!(listed, ["H265", "H264"]);
+}

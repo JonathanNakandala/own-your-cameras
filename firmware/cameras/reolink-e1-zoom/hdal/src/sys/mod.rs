@@ -53,6 +53,8 @@ pub struct Sys {
     t0: std::time::Instant,
     cap_fps: u32,
     maps: Vec<EncMap>,
+    /// The codec each configured encoder path runs, for the frames it returns.
+    codecs: Vec<(PathId, crate::enc::Codec)>,
 }
 
 impl Sys {
@@ -69,6 +71,7 @@ impl Sys {
             t0: std::time::Instant::now(),
             cap_fps: 30,
             maps: Vec::new(),
+            codecs: Vec::new(),
         }
     }
 
@@ -536,6 +539,24 @@ const PROC_PARAM_FUNC_CONFIG: h::_HD_VIDEOPROC_PARAM_ID = 24;
 /// stock's main encoder (`func 00000002` in `venc/info` [V]).
 const ENC_PARAM_FUNC_CONFIG: h::_HD_VIDEOENC_PARAM_ID = 26;
 const ENC_IN_FUNC_NVX2: u32 = 2;
+/// `HD_VIDEOENC_PARAM_OUT_ENC_GDR` (id 11 in `libhdal`'s encoder parameter table [D]); the struct is
+/// `HD_H26XENC_GDR { enable, period, number }`.
+const ENC_PARAM_OUT_GDR: h::_HD_VIDEOENC_PARAM_ID = 11;
+/// `HD_VIDEOENC_PARAM_OUT_SLICE_SPLIT` (id 10 [D]); the struct is `HD_H26XENC_SLICE_SPLIT { enable, slice_row_num }`.
+const ENC_PARAM_OUT_SLICE_SPLIT: h::_HD_VIDEOENC_PARAM_ID = 10;
+/// `HD_VIDEOENC_PARAM_OUT_VUI` (id 6: the name follows `OUT_ENC_PARAM`, 5, in `libhdal`'s encoder parameter name
+/// table, before `OUT_DEBLOCK` and `OUT_RATE_CONTROL`, 8 [D]); the struct is `HD_H26XENC_VUI`.
+const ENC_PARAM_OUT_VUI: h::_HD_VIDEOENC_PARAM_ID = 6;
+/// What the H.264 streams' VUI says about the picture. The video processor writes luma over the whole 0 to 255
+/// range (8 % of a typical frame below 16 or above 235 [V]), as the JPEG encoder it also feeds expects
+/// (`yuv_trans 0` in `venc/info` [V]); without the full-range flag a player assumes 16 to 235 and clips shadows
+/// and highlights. Colours are signalled as BT.709 primaries and transfer with BT.601 (JPEG's) matrix
+/// coefficients; the vendor stack sends no VUI at all [V].
+const VUI_FULL_RANGE: u8 = 1;
+const VUI_PRIMARIES_BT709: u8 = 1;
+const VUI_TRANSFER_BT709: u8 = 1;
+const VUI_MATRIX_BT601: u8 = 6;
+const VUI_FORMAT_UNSPECIFIED: u8 = 5;
 const ENC_IN: [u32; 3] = [
     h::HD_VIDEOENC_0_IN_0 as u32,
     h::HD_VIDEOENC_0_IN_1 as u32,
@@ -838,12 +859,16 @@ impl EncBackend for Sys {
             }),
         )?;
 
-        encoder_params(path, spec, step)
+        encoder_params(path, spec, step)?;
+        self.note_codec(path, spec.codec);
+        Ok(())
     }
 
     fn videoenc_retune(&mut self, path: PathId, spec: &EncSpec) -> Result<(), Error> {
         self.forward(Step::VideoencRetune)?;
-        encoder_params(path, spec, Step::VideoencRetune)
+        encoder_params(path, spec, Step::VideoencRetune)?;
+        self.note_codec(path, spec.codec);
+        Ok(())
     }
 
     fn videoenc_configure_jpeg(
@@ -1065,11 +1090,17 @@ impl EncBackend for Sys {
             self.terminal |= rel.is_err();
             let data = finish(copied, rel, "videoenc_release_out_buf")?;
             let key = bs.frame_type == h::HD_FRAME_TYPE_IDR || bs.frame_type == h::HD_FRAME_TYPE_I;
+            let codec = self
+                .codecs
+                .iter()
+                .find(|(path, _)| path == p)
+                .map_or_else(Default::default, |(_, codec)| *codec);
             out.push(EncFrame {
                 stream,
                 data,
                 key,
                 pts_us: bs.timestamp,
+                codec,
             });
         }
         Ok(out)
@@ -1081,6 +1112,13 @@ impl EncBackend for Sys {
 }
 
 impl Sys {
+    fn note_codec(&mut self, path: PathId, codec: crate::enc::Codec) {
+        match self.codecs.iter_mut().find(|(p, _)| *p == path) {
+            Some(entry) => entry.1 = codec,
+            None => self.codecs.push((path, codec)),
+        }
+    }
+
     /// The mapping of `path`'s bitstream buffer, made on first use.
     fn map_for(&mut self, path: PathId) -> Result<&EncMap, Error> {
         let step = Step::VideoencRecv;
@@ -1132,6 +1170,12 @@ impl Sys {
 /// capped at 45 so a busy or noisy picture is never starved down to 51, and a static time of 4.
 const H264_HIGH_PROFILE: h::_HD_VIDEOENC_PROFILE = 100;
 const H264_LEVEL_5_1: h::_HD_VIDEOENC_LEVEL = 51;
+/// H.265 as the encoder takes it [V]: `codec_type` 2, Main profile 1, level 153 (30 times 5.1) and entropy mode 2
+/// (H.264's CABAC value 1 is refused: "when H265, entropy_mode(1) is not support").
+const CODEC_TYPE_H265: h::_HD_VIDEO_CODEC = 2;
+const H265_MAIN_PROFILE: h::_HD_VIDEOENC_PROFILE = 1;
+const H265_LEVEL_5_1: h::_HD_VIDEOENC_LEVEL = 153;
+const H265_ENTROPY_MODE: h::_HD_VIDEOENC_CODING = 2;
 const STOCK_MAX_QP: u8 = 45;
 const STOCK_STATIC_TIME: u32 = 4;
 
@@ -1184,15 +1228,28 @@ fn encoder_params(path: PathId, spec: &EncSpec, step: Step) -> Result<(), Error>
     )?;
 
     let mut out = h::HD_VIDEOENC_OUT::default();
-    out.codec_type = h::HD_CODEC_TYPE_H264;
+    let h265 = spec.codec == crate::enc::Codec::H265;
+    out.codec_type = if h265 {
+        CODEC_TYPE_H265
+    } else {
+        h::HD_CODEC_TYPE_H264
+    };
     // SAFETY: the anonymous union is plain data; we write the h26x member of a zeroed value.
     unsafe {
         let c = &mut out.__bindgen_anon_1.h26x;
         c.gop_num = spec.gop;
-        c.profile = H264_HIGH_PROFILE;
-        c.level_idc = H264_LEVEL_5_1;
+        c.profile = if h265 {
+            H265_MAIN_PROFILE
+        } else {
+            H264_HIGH_PROFILE
+        };
+        c.level_idc = if h265 { H265_LEVEL_5_1 } else { H264_LEVEL_5_1 };
         c.svc_layer = h::HD_SVC_DISABLE;
-        c.entropy_mode = h::HD_H264E_CABAC_CODING;
+        c.entropy_mode = if h265 {
+            H265_ENTROPY_MODE
+        } else {
+            h::HD_H264E_CABAC_CODING
+        };
     }
     // SAFETY: `out` is the 44-byte `HD_VIDEOENC_OUT` of HDAL 2.00 (abi/ table).
     check(
@@ -1205,6 +1262,69 @@ fn encoder_params(path: PathId, spec: &EncSpec, step: Step) -> Result<(), Error>
             )
         }),
     )?;
+
+    // Colour signalling: full-range luma and chroma, so players do not clip the picture.
+    let mut vui = h::HD_H26XENC_VUI {
+        vui_en: 1,
+        sar_width: 1,
+        sar_height: 1,
+        matrix_coef: VUI_MATRIX_BT601,
+        transfer_characteristics: VUI_TRANSFER_BT709,
+        colour_primaries: VUI_PRIMARIES_BT709,
+        video_format: VUI_FORMAT_UNSPECIFIED,
+        color_range: VUI_FULL_RANGE,
+        timing_present_flag: 0,
+    };
+    // SAFETY: `vui` is a `HD_H26XENC_VUI`, the struct this param id takes.
+    check(
+        step,
+        ioctl_capture::result(|| unsafe {
+            h::hd_videoenc_set(
+                path.0 as _,
+                ENC_PARAM_OUT_VUI,
+                (&mut vui as *mut h::HD_H26XENC_VUI).cast(),
+            )
+        }),
+    )?;
+
+    // Gradual decoder refresh. Written when asked for, and on a retune so that turning it off takes effect.
+    if spec.gdr.is_some() || step == Step::VideoencRetune {
+        let mut gdr = h::HD_H26XENC_GDR {
+            enable: spec.gdr.is_some().into(),
+            period: spec.gdr.map_or(1, |g| g.period),
+            number: spec.gdr.map_or(1, |g| g.rows),
+        };
+        // SAFETY: `gdr` is a `HD_H26XENC_GDR`, the 12-byte struct this param id takes.
+        check(
+            step,
+            ioctl_capture::result(|| unsafe {
+                h::hd_videoenc_set(
+                    path.0 as _,
+                    ENC_PARAM_OUT_GDR,
+                    (&mut gdr as *mut h::HD_H26XENC_GDR).cast(),
+                )
+            }),
+        )?;
+    }
+
+    // Slice split. Written when asked for, and on a retune so that turning it off takes effect.
+    if spec.slice_rows.is_some() || step == Step::VideoencRetune {
+        let mut split = h::HD_H26XENC_SLICE_SPLIT {
+            enable: spec.slice_rows.is_some().into(),
+            slice_row_num: spec.slice_rows.unwrap_or(1),
+        };
+        // SAFETY: `split` is a `HD_H26XENC_SLICE_SPLIT`, the 8-byte struct this param id takes.
+        check(
+            step,
+            ioctl_capture::result(|| unsafe {
+                h::hd_videoenc_set(
+                    path.0 as _,
+                    ENC_PARAM_OUT_SLICE_SPLIT,
+                    (&mut split as *mut h::HD_H26XENC_SLICE_SPLIT).cast(),
+                )
+            }),
+        )?;
+    }
 
     let mut rc = h::HD_H26XENC_RATE_CONTROL::default();
     rc.rc_mode = h::HD_RC_MODE_CBR;

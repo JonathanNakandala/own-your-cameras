@@ -14,7 +14,7 @@ the network, read its streams and snapshot, and drive it without a camera-specif
 | Imaging: brightness, saturation, contrast, sharpness, IR-cut filter, focus mode | yes | — | — |
 | PTZ presets: list, go to, create, delete | up to 32 | up to 16 | — |
 | Events: digital inputs | — | — | `call_button`, `door` |
-| Relay outputs (LEDs) | 2 | — | — |
+| Relay outputs (LEDs, gradual refresh, slice split) | 4 | — | — |
 | Audio output (talkback) | yes | yes | yes |
 
 ## Streams
@@ -111,19 +111,46 @@ profiles cannot be created, deleted or stripped. `GetMetadataConfigurations` and
 list nothing, and OSDs, masks, multicast, video source modes and audio clips are `ActionNotSupported`.
 
 This is the service Profile T clients call, but **the cameras claim only Profile S** in discovery: Profile T
-also asks for HTTPS, H.265 and motion events, which are not offered.
+also asks for motion and tampering events, editable media profiles, a metadata stream, on-screen text and more, which
+are not offered ([plan](../../firmware/cameras/reolink-e1-zoom/docs/plan-30fps-h265-profile-t.md)). HTTPS is optional
+in Profile T, and one of H.264 and H.265 is enough.
+
+## Video codec
+
+A profile's video encoder says its codec in `Encoding`: `H264` on every camera, and `H265` for the Reolink E1 Zoom's
+main stream while its `main_codec` setting is H.265 (the default; the sub stream is always H.264).
+
+| | Media1 | Media2 |
+|---|---|---|
+| `Encoding` of an H.265 stream | `H265`, outside the schema | `H265` |
+| Options | the `H264` element only (the schema has no other) | one `Options` per codec in use, each with its own ranges |
+| `GetVideoEncoderInstances` | — | one `Codec` per codec in use |
+| Changing it over ONVIF | `ter:ConfigModify`, like every encoder setting | the same: the setting is `main_codec` (MQTT) |
+
+Media1's schema only has `JPEG`, `MPEG4` and `H264`, and H.265 reached ONVIF with Media2. Cameras that stream H.265
+still put `H265` in Media1's `Encoding`, because that is the one honest value, and clients cope in different ways:
+Home Assistant's ONVIF integration lists only profiles whose `Encoding` is exactly `H264`, so with an H.265 main
+stream it shows the sub stream only; Media2 clients such as Profile T tools see both. For a Media1-only client that
+needs the main stream, set `main_codec` to `H.264`. The RTSP stream itself needs nothing from ONVIF: its session
+description carries the codec (`H265/90000`, RFC 7798, with `sprop-vps`, `sprop-sps` and `sprop-pps`).
+
+Changing `main_codec` ends the main stream's open RTSP sessions, because their session description is the old
+codec's; clients reconnect.
 
 ## Relay outputs
 
-ONVIF models any switched output as a relay, so the E1 Zoom's LEDs are two relay outputs
-(`GetRelayOutputs`, `SetRelayOutputState`; Device IO adds `GetRelayOutputOptions` and `SetRelayOutputSettings`):
+ONVIF models any switched output as a relay, so the E1 Zoom's two LEDs and the main stream's gradual refresh and
+slice split are relay outputs (`GetRelayOutputs`, `SetRelayOutputState`; Device IO adds `GetRelayOutputOptions` and
+`SetRelayOutputSettings`). Each drives an on/off setting, exactly as the MQTT switch of that setting does:
 
 | Token | Setting | Active means |
 |---|---|---|
 | `status_led` | `led` | the status LED is on |
 | `ir_leds` | `ir_leds_at_night` | night mode may light the IR LEDs; inactive leaves the night picture dark |
+| `gradual_refresh` | `main_gdr` | the main stream uses gradual decoder refresh instead of a key frame every second ([settings](../../firmware/cameras/reolink-e1-zoom/docs/settings.md#gradual-refresh-main_gdr)); the main profile's `GovLength` follows (8 s of frames) |
+| `slice_split` | `main_slice_split` | the main stream's frames are cut into slices, so a lost packet damages one band ([settings](../../firmware/cameras/reolink-e1-zoom/docs/settings.md#slice-split-main_slice_split)) |
 
-Both are bistable and idle open (inactive). `SetRelayOutputSettings` accepts exactly that and refuses a
+All are bistable and idle open (inactive). `SetRelayOutputSettings` accepts exactly that and refuses a
 monostable mode or a closed idle state with `ter:ModeError`; an unknown token is `ter:RelayToken`. The state
 is not reported back (ONVIF has no read call for it, and no relay event is sent); the MQTT entities show it.
 

@@ -17,7 +17,7 @@ use super::{
     no_profile, number, ptz_config, range, response, source_size, text, url, video_encoder_token,
     video_source_config,
 };
-use crate::camera::MediaProfile;
+use crate::camera::{MediaProfile, VideoCodec};
 use crate::soap::{Fault, Request};
 use crate::xml::Element;
 
@@ -51,14 +51,55 @@ pub(super) fn capabilities(ctx: &Context) -> String {
     )
 }
 
+/// `tr2:Options` of the encoders running `codec`: what their profiles use, as ranges and lists.
+fn encoder_options(codec: VideoCodec, scope: &[&MediaProfile]) -> String {
+    let resolutions: String = scope
+        .iter()
+        .map(|p| {
+            el(
+                "tt:ResolutionsAvailable",
+                format!(
+                    "{}{}",
+                    text("tt:Width", p.video.width),
+                    text("tt:Height", p.video.height)
+                ),
+            )
+        })
+        .collect();
+    let values = |f: fn(&MediaProfile) -> u32| {
+        let mut all: Vec<u32> = scope.iter().map(|p| f(p)).collect();
+        all.sort_unstable();
+        all.dedup();
+        all
+    };
+    let list = |v: Vec<u32>| v.iter().map(u32::to_string).collect::<Vec<_>>().join(" ");
+    let kbps = values(|p| p.video.bitrate_kbps);
+    let mut kinds: Vec<&str> = scope.iter().map(|p| p.video.profile.onvif()).collect();
+    kinds.dedup();
+    format!(
+        "<tr2:Options GovLengthRange=\"{}\" FrameRatesSupported=\"{}\" ProfilesSupported=\"{}\" ConstantBitRateSupported=\"false\">{}{}{resolutions}{}</tr2:Options>",
+        list(values(|p| p.video.gop)),
+        list(values(|p| p.video.fps)),
+        kinds.join(" "),
+        text("tt:Encoding", codec.onvif()),
+        range("tt:QualityRange", 0, 10),
+        range(
+            "tt:BitrateRange",
+            kbps.first().copied().unwrap_or(0),
+            kbps.last().copied().unwrap_or(0)
+        ),
+    )
+}
+
 /// `VideoEncoder2Configuration`: the codec, size and rate as elements, `GovLength` and `Profile` as attributes.
 fn video_encoder(p: &MediaProfile, element: &str) -> String {
     let v = &p.video;
     format!(
-        "<{element} token=\"{token}\" GovLength=\"{}\" Profile=\"{}\">{}<tt:UseCount>1</tt:UseCount><tt:Encoding>H264</tt:Encoding>{}{}{}<tt:Quality>5</tt:Quality></{element}>",
+        "<{element} token=\"{token}\" GovLength=\"{}\" Profile=\"{}\">{}<tt:UseCount>1</tt:UseCount><tt:Encoding>{}</tt:Encoding>{}{}{}<tt:Quality>5</tt:Quality></{element}>",
         v.gop,
         v.profile.onvif(),
         text("tt:Name", video_encoder_token(p)),
+        v.codec.onvif(),
         el(
             "tt:Resolution",
             format!(
@@ -186,7 +227,9 @@ fn same_encoder(config: &Element, p: &MediaProfile) -> Option<bool> {
         None => None,
     };
     Some(
-        config.text_of("Encoding").is_none_or(|e| e == "H264")
+        config
+            .text_of("Encoding")
+            .is_none_or(|e| e == v.codec.onvif())
             && config
                 .attr("Profile")
                 .is_none_or(|x| x == v.profile.onvif())
@@ -254,43 +297,25 @@ pub(super) fn handle(req: &Request, ctx: &Context) -> Reply {
             Err(fault) => fault,
         },
         "GetVideoEncoderConfigurationOptions" => match encoder_scope(ctx, req) {
+            // One `Options` per codec in use: the encoders' settings are not changeable over ONVIF, so each
+            // lists what the profiles of that codec run with.
             Ok(scope) => {
-                let resolutions: String = scope
-                    .iter()
-                    .map(|p| {
-                        el(
-                            "tt:ResolutionsAvailable",
-                            format!(
-                                "{}{}",
-                                text("tt:Width", p.video.width),
-                                text("tt:Height", p.video.height)
-                            ),
-                        )
-                    })
-                    .collect();
-                let values = |f: fn(&MediaProfile) -> u32| {
-                    let mut all: Vec<u32> = scope.iter().map(f).collect();
-                    all.sort_unstable();
-                    all.dedup();
-                    all
-                };
-                let list = |v: Vec<u32>| v.iter().map(u32::to_string).collect::<Vec<_>>().join(" ");
-                let kbps = values(|p| p.video.bitrate_kbps);
-                let mut kinds: Vec<&str> = scope.iter().map(|p| p.video.profile.onvif()).collect();
-                kinds.dedup();
-                reply(format!(
-                    "<tr2:Options GovLengthRange=\"{}\" FrameRatesSupported=\"{}\" ProfilesSupported=\"{}\" ConstantBitRateSupported=\"false\">{}{}{resolutions}{}</tr2:Options>",
-                    list(values(|p| p.video.gop)),
-                    list(values(|p| p.video.fps)),
-                    kinds.join(" "),
-                    text("tt:Encoding", "H264"),
-                    range("tt:QualityRange", 0, 10),
-                    range(
-                        "tt:BitrateRange",
-                        kbps.first().copied().unwrap_or(0),
-                        kbps.last().copied().unwrap_or(0)
-                    ),
-                ))
+                let mut codecs: Vec<VideoCodec> = Vec::new();
+                for p in &scope {
+                    if !codecs.contains(&p.video.codec) {
+                        codecs.push(p.video.codec);
+                    }
+                }
+                reply(
+                    codecs
+                        .into_iter()
+                        .map(|codec| {
+                            let of_codec: Vec<&MediaProfile> =
+                                scope.iter().filter(|p| p.video.codec == codec).collect();
+                            encoder_options(codec, &of_codec)
+                        })
+                        .collect(),
+                )
             }
             Err(fault) => fault,
         },
@@ -332,10 +357,29 @@ pub(super) fn handle(req: &Request, ctx: &Context) -> Reply {
             if req.body.text_of("ConfigurationToken") != Some(VIDEO_SOURCE_CONFIG) {
                 return no_config();
             }
+            // Every profile can run on its own encoder; the codecs in use are the ones listed.
+            let profiles = ctx.camera.profiles();
+            let mut codecs: Vec<VideoCodec> = Vec::new();
+            for p in &profiles {
+                if !codecs.contains(&p.video.codec) {
+                    codecs.push(p.video.codec);
+                }
+            }
+            let listed: String = codecs
+                .iter()
+                .map(|c| {
+                    format!(
+                        "<tr2:Codec>{}{}</tr2:Codec>",
+                        text("tr2:Encoding", c.onvif()),
+                        text(
+                            "tr2:Number",
+                            profiles.iter().filter(|p| p.video.codec == *c).count()
+                        )
+                    )
+                })
+                .collect();
             reply(format!(
-                "<tr2:Info><tr2:Codec>{}{}</tr2:Codec>{}</tr2:Info>",
-                text("tr2:Encoding", "H264"),
-                text("tr2:Number", uses),
+                "<tr2:Info>{listed}{}</tr2:Info>",
                 text("tr2:Total", uses)
             ))
         }
