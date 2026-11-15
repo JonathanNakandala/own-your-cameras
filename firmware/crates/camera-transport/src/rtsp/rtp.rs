@@ -1,7 +1,8 @@
-//! H.264 over RTP (RFC 6184): single NAL unit packets and FU-A fragments, packetization-mode 1. Payloads
-//! borrow from the access unit; only the 12-byte RTP header (+ FU bytes) is built per packet.
+//! H.264 over RTP (RFC 6184): single NAL unit packets and FU-A fragments, packetization-mode 1. H.265 over RTP
+//! (RFC 7798): single NAL unit packets and fragmentation units (type 49). Payloads borrow from the access unit;
+//! only the 12-byte RTP header (+ FU bytes) is built per packet.
 
-use crate::annexb::nal_slices;
+use crate::annexb::{Codec, nal_slices};
 
 pub const CLOCK_HZ: u32 = 90_000;
 const PT_H264: u8 = 96;
@@ -9,7 +10,7 @@ const PT_H264: u8 = 96;
 /// One RTP packet: a small header and a payload that points into the access unit.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Packet<'a> {
-    head: [u8; 14],
+    head: [u8; 15],
     head_len: usize,
     pub payload: &'a [u8],
 }
@@ -54,6 +55,7 @@ pub struct Packetizer {
     ssrc: u32,
     seq: u16,
     max_payload: usize,
+    codec: Codec,
 }
 
 impl Packetizer {
@@ -61,8 +63,15 @@ impl Packetizer {
         Self {
             ssrc,
             seq: first_seq,
-            max_payload: max_payload.max(3),
+            max_payload: max_payload.max(4),
+            codec: Codec::H264,
         }
+    }
+
+    /// Packetizes `codec`'s access units (H.264 unless said otherwise).
+    pub fn codec(mut self, codec: Codec) -> Self {
+        self.codec = codec;
+        self
     }
 
     /// Packets of one Annex B access unit; the last one carries the marker bit.
@@ -74,6 +83,26 @@ impl Packetizer {
             let is_last = n == last_nal;
             if nal.len() <= self.max_payload {
                 out.push(self.packet(is_last, ts, &[], nal));
+                continue;
+            }
+            if self.codec == Codec::H265 {
+                // FU: the two NAL header bytes are replaced by a payload header (type 49, the layer and
+                // temporal id kept) and an FU header holding the NAL type.
+                let (hdr, body) = ([(nal[0] & 0x81) | (49 << 1), nal[1]], &nal[2..]);
+                let kind = (nal[0] >> 1) & 0x3f;
+                let chunk = self.max_payload - 3;
+                let count = body.len().div_ceil(chunk);
+                for (i, part) in body.chunks(chunk).enumerate() {
+                    let mut fu = kind;
+                    if i == 0 {
+                        fu |= 0x80;
+                    }
+                    let last = i + 1 == count;
+                    if last {
+                        fu |= 0x40;
+                    }
+                    out.push(self.packet(is_last && last, ts, &[hdr[0], hdr[1], fu], part));
+                }
                 continue;
             }
             // FU-A: the NAL header byte is replaced by FU indicator + FU header.
@@ -97,7 +126,7 @@ impl Packetizer {
     }
 
     fn packet<'a>(&mut self, marker: bool, ts: u32, extra: &[u8], payload: &'a [u8]) -> Packet<'a> {
-        let mut head = [0u8; 14];
+        let mut head = [0u8; 15];
         head[..12].copy_from_slice(&rtp_header(marker, self.seq, ts, self.ssrc));
         head[12..12 + extra.len()].copy_from_slice(extra);
         self.seq = self.seq.wrapping_add(1);
@@ -192,6 +221,55 @@ mod tests {
         // wraparound of the sequence number
         assert_eq!(pk[1].seq(), 0);
         assert_eq!(depacketize(&pk), au);
+    }
+
+    /// Reassembles H.265 packets to Annex B with 4-byte start codes.
+    fn depacketize_h265(pkts: &[Packet]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for p in pkts {
+            let b = p.to_vec();
+            let pl = &b[12..];
+            if (pl[0] >> 1) & 0x3f == 49 {
+                if pl[2] & 0x80 != 0 {
+                    out.extend_from_slice(&[
+                        0,
+                        0,
+                        0,
+                        1,
+                        (pl[0] & 0x81) | ((pl[2] & 0x3f) << 1),
+                        pl[1],
+                    ]);
+                }
+                out.extend_from_slice(&pl[3..]);
+            } else {
+                out.extend_from_slice(&[0, 0, 0, 1]);
+                out.extend_from_slice(pl);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn h265_small_nals_go_single_and_large_ones_are_fragmented_and_reassemble() {
+        let body: Vec<u8> = (0..3000u32).map(|i| (i % 251) as u8 | 0x10).collect();
+        // VPS (32), SPS (33), then an IDR_W_RADL (19) with temporal id 1 (low bits of the second byte).
+        let mut au = vec![0, 0, 0, 1, 32 << 1, 1, 7, 7, 0, 0, 0, 1, 33 << 1, 1, 8];
+        au.extend_from_slice(&[0, 0, 0, 1, 19 << 1, 2]);
+        au.extend_from_slice(&body);
+        let mut p = Packetizer::new(3, 10, 1000).codec(Codec::H265);
+        let pk = p.packets(&au, 0);
+        assert_eq!(pk.len(), 2 + 4); // 3000 / 997 -> 4 fragments
+        assert_eq!(pk[0].payload, &[32 << 1, 1, 7, 7]);
+        let first = pk[2].to_vec();
+        assert_eq!(first[12] >> 1 & 0x3f, 49, "FU payload header type");
+        assert_eq!(first[13], 2, "temporal id kept");
+        assert_eq!(first[14], 0x80 | 19, "start bit and the NAL type");
+        assert_eq!(pk[5].to_vec()[14], 0x40 | 19, "end bit");
+        assert_eq!(pk[3].to_vec()[14], 19);
+        assert!(pk.iter().all(|k| k.len() <= 12 + 1000 + 3));
+        let marks: Vec<bool> = pk.iter().map(|k| k.head()[1] & 0x80 != 0).collect();
+        assert_eq!(marks, [false, false, false, false, false, true]);
+        assert_eq!(depacketize_h265(&pk), au);
     }
 
     #[test]

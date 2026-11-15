@@ -1,5 +1,6 @@
 //! End to end over loopback: a real listener, a hand-written RTSP client, frames from a [`Hub`].
 use super::*;
+use crate::annexb::Codec;
 use crate::rtsp::md5::md5_hex;
 use std::io::{BufRead, BufReader};
 
@@ -928,4 +929,84 @@ fn the_onvif_path_carries_pcmu_both_ways_while_the_camera_paths_keep_opus() {
     assert_eq!(c.call("GET_PARAMETER", &url, &[]).code, 200);
     let pcm = f.talk.next_pcm(std::time::Instant::now()).unwrap();
     assert_eq!(pcm.len(), 320);
+}
+
+fn nal265(kind: u8, len: usize) -> Vec<u8> {
+    let mut v = vec![0, 0, 0, 1, kind << 1, 1];
+    v.resize(6 + len, 0xAA);
+    v
+}
+
+fn idr265(len: usize) -> Vec<u8> {
+    let mut v = Vec::new();
+    for (kind, n) in [(32, 3), (33, 5), (34, 2)] {
+        v.extend(nal265(kind, n));
+    }
+    v.extend(nal265(19, len));
+    v
+}
+
+#[test]
+fn an_h265_stream_is_described_and_packetized_as_h265_and_a_codec_change_ends_the_session() {
+    let f = start(None);
+    f.hub.publish_as(Codec::H265, true, 0, idr265(10));
+    let mut c = Client::connect(f.addr);
+    let d = c.call("DESCRIBE", URL, &[("Accept", "application/sdp")]);
+    assert_eq!(d.code, 200);
+    assert!(d.body.contains("H265/90000"), "{}", d.body);
+    assert!(d.body.contains("sprop-vps="), "{}", d.body);
+    assert!(!d.body.contains("H264"));
+    let s = c.call(
+        "SETUP",
+        &format!("{URL}/trackID=0"),
+        &[("Transport", "RTP/AVP/TCP;unicast;interleaved=0-1")],
+    );
+    assert_eq!(s.code, 200);
+    let session = s
+        .h("Session")
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+    assert_eq!(c.call("PLAY", URL, &[("Session", &session)]).code, 200);
+    f.hub.publish_as(Codec::H265, true, 1_000_000, idr265(3000)); // forces fragmentation units
+    let mut types = Vec::new();
+    loop {
+        let (ch, p) = c.interleaved();
+        assert_eq!(ch, 0);
+        types.push((p[12] >> 1) & 0x3f);
+        if p[1] & 0x80 != 0 {
+            break;
+        }
+    }
+    assert_eq!(&types[..3], &[32, 33, 34], "the parameter sets come first");
+    assert!(
+        types.contains(&49),
+        "the IDR picture is fragmented: {types:?}"
+    );
+    // The encoder switches to H.264: the viewer is disconnected, and its connection ends instead of hanging.
+    f.hub.publish(true, 2_000_000, idr(50));
+    let mut sink = [0u8; 4096];
+    let socket = c.r.get_mut();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let ended = loop {
+        match std::io::Read::read(socket, &mut sink) {
+            Ok(0) => break true,
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => break true,
+            Err(_) => break false,
+        }
+    };
+    assert!(
+        ended,
+        "the connection of a viewer left behind by a codec change must end"
+    );
+    assert_eq!(f.hub.viewers(), 0);
+    // A new viewer gets the new codec.
+    let mut again = Client::connect(f.addr);
+    let d = again.call("DESCRIBE", URL, &[("Accept", "application/sdp")]);
+    assert!(d.body.contains("H264/90000"), "{}", d.body);
 }

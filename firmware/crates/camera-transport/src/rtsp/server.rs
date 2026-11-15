@@ -209,17 +209,35 @@ pub fn serve_with_limits(
                 if workers.len() >= limits.connections {
                     continue; // dropped: too many viewers for a 64 MB camera
                 }
-                super::socket_limits::apply(&sock, 32 * 1024, 16 * 1024)?;
-                sock.set_nonblocking(false)?;
-                let socket = sock.try_clone()?;
-                let cfg = Arc::clone(&cfg);
-                let thread = limits.thread().spawn(move || {
-                    let _ = connection(sock, peer, &cfg, limits);
-                })?;
-                workers.push(ConnectionWorker {
-                    socket,
-                    thread: Some(thread),
-                });
+                // One connection that cannot be set up (a client that reset right away, no thread to spare) is
+                // dropped; it must not end the server for everyone else.
+                let started = (|| -> io::Result<ConnectionWorker> {
+                    super::socket_limits::apply(&sock, 32 * 1024, 16 * 1024)?;
+                    sock.set_nonblocking(false)?;
+                    let socket = sock.try_clone()?;
+                    let cfg = Arc::clone(&cfg);
+                    let thread = limits.thread().spawn(move || {
+                        let _ = connection(sock, peer, &cfg, limits);
+                    })?;
+                    Ok(ConnectionWorker {
+                        socket,
+                        thread: Some(thread),
+                    })
+                })();
+                match started {
+                    Ok(worker) => workers.push(worker),
+                    Err(e) => eprintln!("rtsp: dropped a connection from {peer}: {e}"),
+                }
+            }
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::ConnectionAborted
+                        | io::ErrorKind::ConnectionReset
+                        | io::ErrorKind::Interrupted
+                ) =>
+            {
+                // A client gave up between the handshake and `accept`.
             }
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                 std::thread::sleep(Duration::from_millis(50));
@@ -308,7 +326,18 @@ fn sender(
         let frame = match viewer.next(Duration::from_millis(200)) {
             Ok(Some(f)) => f,
             Ok(None) => continue,
-            Err(_) => return,
+            Err(_) => {
+                // The hub let go of this viewer: its codec changed, so the session description the client holds
+                // no longer fits. End the connection, as a failed write does, so the client reconnects at once
+                // instead of waiting on a stream that will never send again.
+                eprintln!("rtsp: a video stream ended, the client has to reconnect");
+                stop.store(true, Ordering::Relaxed);
+                let _ = w
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .shutdown(Shutdown::Both);
+                return;
+            }
         };
         let ts = timestamp(frame.pts_us);
         let packets = pk.packets(&frame.data, ts);
@@ -878,7 +907,7 @@ fn handle(
                 match &setup.media {
                     Media::Video(hub) => {
                         let viewer = hub.subscribe();
-                        let pk = Packetizer::new(ssrc, 0, MAX_PAYLOAD);
+                        let pk = Packetizer::new(ssrc, 0, MAX_PAYLOAD).codec(hub.codec());
                         match limits
                             .thread()
                             .spawn(move || sender(viewer, sink, w, pk, st, go_rx))
