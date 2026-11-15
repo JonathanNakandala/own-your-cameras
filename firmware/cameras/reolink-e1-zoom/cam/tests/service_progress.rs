@@ -154,6 +154,9 @@ impl Host for FakeNet {
     fn iface_up(&mut self, _: &str) -> io::Result<()> {
         Ok(())
     }
+    fn disable_wifi_power_save(&mut self) -> io::Result<()> {
+        Ok(())
+    }
     fn carrier(&self, _: &str) -> bool {
         false
     }

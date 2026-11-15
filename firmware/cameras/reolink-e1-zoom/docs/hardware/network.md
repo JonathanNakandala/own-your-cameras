@@ -12,11 +12,19 @@ worker, never on the watchdog feeder.
    `ehci-hcd.ko`, `/lib/modules/wifi/firmware_class.ko`, `rfkill.ko`, `wifi_8812ko/cfg80211.ko`, then
    `wifi_8812ko/wlan.ko rtw_channel_plan=0x3A rtw_max_bss_cnt=100`. `0x3A` is the plan `wifi.sh` picks for country
    code `EE`; it is fixed in `cam/src/net/linux.rs`.
-3. Wait up to 10 s for `wlan0`.
-4. `wpa_supplicant -Dnl80211 -iwlan0 -c /mnt/para/cam-wifi.conf`, with `LD_LIBRARY_PATH=/mnt/app` (its `libssl`
+3. Wait up to 10 s for `wlan0`, then `ifconfig wlan0 up`.
+4. `iw wlan0 set power_save off`, right after the interface is up, as the vendor's `device` and `netserver`
+   binaries do (the command string sits next to their `ifconfig %s up`) [D]. Without it the Realtek driver
+   runs its leisure power save (`iw wlan0 get power_save` read `on` on a unit running the daemon [V]): the
+   radio parks between beacons whenever traffic looks light, and each wake-up delays what the camera sends. A
+   sleeping station still transmits once awake, so this costs latency jitter, not uplink packets. The stock
+   `/sbin/iw` is statically linked against libnl and needs no library path. Done once per bring-up of the
+   interface, so again after a dongle power cycle; a failing command is reported and retried at most three
+   times, 2 s apart (`Event::WifiPowerSaveOff`, logged as `net: … WifiPowerSaveOff`).
+5. `wpa_supplicant -Dnl80211 -iwlan0 -c /mnt/para/cam-wifi.conf`, with `LD_LIBRARY_PATH=/mnt/app` (its `libssl`
    lives there).
-5. `udhcpc -f -i wlan0 -x hostname:<camera id> -p /var/run/udhcpc_wlan0.pid`.
-6. While `wlan0` has had no address for 30 s and the Ethernet cable is up, the same `udhcpc` on `eth0`.
+6. `udhcpc -f -i wlan0 -x hostname:<camera id> -p /var/run/udhcpc_wlan0.pid`.
+7. While `wlan0` has had no address for 30 s and the Ethernet cable is up, the same `udhcpc` on `eth0`.
 
 The stock `S25_Net` leaves `eth0` configured as 192.168.0.3/24 at every boot (the vendor stack removes it later; with
 the vendor stack gone nothing would). Its connected route is more specific than the one `wlan0` gets on a /23 (or any
@@ -34,8 +42,8 @@ Recovery: exited children are respawned after 2 s. A failed load or a missing in
 `rmmod wlan`, `rmmod cfg80211`, GPIO 133 low (each attempted even if an earlier one failed), at least 500 ms off
 measured from the successful GPIO write, then the sequence again. Wi-Fi and Ethernet retries keep separate clocks.
 
-Every helper (`insmod`, `rmmod`, `modprobe`, `ifconfig`) gets 2 s, runs in its own process group, and on timeout
-the whole group is killed. Completion is observed with `waitid(WNOWAIT)` so the leader's PID cannot be reused before
+Every helper (`insmod`, `rmmod`, `modprobe`, `ifconfig`, `iw`) gets 2 s, runs in its own process group, and on
+timeout the whole group is killed. Completion is observed with `waitid(WNOWAIT)` so the leader's PID cannot be reused before
 the group is signalled. One tick can run seven helpers in a row, which stays inside the 30 s `Network` progress
 budget ([../architecture.md](../architecture.md#threads-and-the-watchdog)).
 
