@@ -71,7 +71,7 @@ The sender therefore paces UDP (`camera_transport::rtsp::server`, every camera):
 120-packet key frame takes about 40 ms (a 35 Mbit/s peak instead of 70), a P frame 6 ms; TCP is unchanged,
 its flow control already paces. The effect on the phone is not yet verified [I].
 
-Two encoder settings make a loss cheaper when it happens: `main_slice_split` confines the damage of a lost packet to
+Two encoder settings, both on by default, make a loss cheaper when it happens: `main_slice_split` confines the damage of a lost packet to
 one band of the picture (about a tenth of the damage in a moving scene), and `main_gdr` replaces the key frame every
 second with a gradual refresh (see [settings.md](../settings.md#slice-split-main_slice_split)).
 

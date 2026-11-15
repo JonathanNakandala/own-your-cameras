@@ -398,12 +398,12 @@ const BASE: &[Setting] = &[
         Some("fps"),
         15,
     ),
-    switch("main_gdr", "Main gradual refresh", Group::MainStream, false),
+    switch("main_gdr", "Main gradual refresh", Group::MainStream, true),
     switch(
         "main_slice_split",
         "Main slice split",
         Group::MainStream,
-        false,
+        true,
     ),
     switch("isp_3dnr", "3D noise reduction", Group::Startup, true),
 ];

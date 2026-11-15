@@ -44,8 +44,8 @@ this table identical to the code).
 | `main_bitrate` | Main bitrate | Main stream | number | 256…8192 kbps | 1024 | main path restart (≤ 2 s) |
 | `main_resolution` | Main resolution | Main stream | select | 2592x1944, 1920x1440, 1280x960 | 1920x1440 | main path restart (≤ 2 s) |
 | `main_fps` | Main frame rate | Main stream | number | 5…30 fps | 15 | main path restart (≤ 2 s) |
-| `main_gdr` | Main gradual refresh | Main stream | switch | ON/OFF | OFF | main path restart (≤ 2 s) |
-| `main_slice_split` | Main slice split | Main stream | switch | ON/OFF | OFF | main path restart (≤ 2 s) |
+| `main_gdr` | Main gradual refresh | Main stream | switch | ON/OFF | ON | main path restart (≤ 2 s) |
+| `main_slice_split` | Main slice split | Main stream | switch | ON/OFF | ON | main path restart (≤ 2 s) |
 | `isp_3dnr` | 3D noise reduction | Picture | switch | ON/OFF | ON | after reboot |
 | `isp_brightness` | Brightness | Picture | number | 0…200 | stock `0_isp.cfg` `brightness` (else 100) | live, with readback |
 | `isp_contrast` | Contrast | Picture | number | 0…200 | stock `0_isp.cfg` `contrast` (else 100) | live, with readback |
@@ -77,7 +77,7 @@ turn it on, reboot. A marker that cannot be written also means no 3D noise reduc
 
 ## Gradual refresh (`main_gdr`)
 
-Off by default; live (the main encoder restarts, 4 to 15 ms). With it on, the main stream no longer sends a full key
+On by default ([why](#what-a-phone-decodes)); live (the main encoder restarts, 4 to 15 ms). With it on, the main stream no longer sends a full key
 frame every second. The encoder's gradual decoder refresh instead re-codes a band of rows of every frame without
 reference to earlier frames, so the whole picture is refreshed once a second (9 rows a frame at 2592x1944 and 15 fps)
 and a viewer that lost a packet is clean again within a second, as before. A full key frame still comes every
@@ -93,12 +93,13 @@ Measured on a camera at 2592x1944, 15 fps, 4096 kbit/s with 3D noise reduction [
 - viewers joining with a 2 s timeout got video at once; a viewer already watching lost at most one frame (0.13 s
   gap) to each join; no decoder errors over TCP or UDP, no lost UDP packets in 35 s either way.
 
-Worth trying when a client shows a broken band at every key frame over a weak link. Recorders that cut files at key
-frames (Frigate segments, go2rtc HLS) get them every 8 s instead of every second.
+Turn it off for a recorder that cuts files at key frames (Frigate segments, go2rtc HLS): with it on they get one
+every 8 s instead of every second. Turn it off too when many viewers join and leave often, since each join costs the
+viewers already watching up to one frame.
 
 ## Slice split (`main_slice_split`)
 
-Off by default; live (the main encoder restarts, 6 to 13 ms). With it on, every main-stream frame is cut into slices of
+On by default ([why](#what-a-phone-decodes)); live (the main encoder restarts, 6 to 13 ms). With it on, every main-stream frame is cut into slices of
 8 macroblock rows (16 slices at 2592x1944, 12 at 1920x1440, 8 at 1280x960), each one an independently decodable piece
 that travels in its own RTP packets. A lost packet then breaks only its slice; without it the decoder loses everything
 from the hole to the bottom of the frame, until the next key frame (or the next gradual refresh cycle). The ONVIF relay
@@ -117,6 +118,24 @@ before the hole (as ffmpeg-based clients do), while the camera panned:
 In a still scene both are small (about 2 % against nothing visible), because the decoder hides a lost band by copying
 it from the previous frame. The cost is a little bitrate efficiency (prediction does not cross slice borders; not
 measured here) and more, smaller packets: a P frame at 4096 kbit/s left as about 22 packets instead of 19.
+
+## What a phone decodes
+
+The main stream's defaults use only what Android's own decoders must handle, so a phone viewer such as tinyCam
+decodes them in hardware:
+
+- **Slice split:** several slices a frame, sent in order, are part of every H.264 profile. Android requires
+  Baseline and Main profile decoders; only arbitrary slice order (ASO), flexible macroblock order (FMO) and redundant
+  slices are optional, and the encoder uses none of them.
+- **Gradual refresh:** the refresh bands are ordinary intra macroblocks inside P frames, and a joining viewer
+  still starts at a real key frame, so no decoder support beyond plain P frames is needed.
+- **Profile and level stay at the vendor's High profile, level 5.1.** Android guarantees only Main profile at level
+  3.1, but current phones decode High profile at 5.1 and above in hardware (a Galaxy S24 Ultra, for one), and High
+  profile's CABAC and 8x8 transform give a better picture at the same bitrate. The level is kept at 5.1 even for
+  smaller sizes, as the vendor stack does.
+
+Sources: [Android supported media formats](https://developer.android.com/media/platform/supported-formats),
+[Android 16 Compatibility Definition, 5.3.4 H.264](https://source.android.com/docs/compatibility/16/android-16-cdd).
 
 ## Persistence
 
