@@ -19,6 +19,8 @@ struct State {
     restarts: Vec<u64>,
     /// Bumped on every report, so the owner republishes states the moment something was applied.
     reports: u64,
+    /// The marker of the 3D noise reduction trial this start runs, until it is proven.
+    trial: Option<crate::denoise::Trial>,
 }
 
 #[derive(Debug, Default)]
@@ -72,6 +74,13 @@ impl Handoff {
         Ears(std::sync::Arc::clone(self))
     }
 
+    /// This start builds the graph with 3D noise reduction; `trial` is cleared once it proves healthy.
+    pub fn arm_denoise(&self, trial: crate::denoise::Trial) {
+        let mut s = self.state();
+        s.initial.denoise = Some(true);
+        s.trial = Some(trial);
+    }
+
     pub fn request_audio(&self, t: Tuning) {
         self.state().pending.audio = Some(t);
     }
@@ -122,6 +131,12 @@ impl Tuner for &Handoff {
 
     fn initial(&mut self) -> MediaTuning {
         self.state().initial
+    }
+
+    fn denoise_proven(&mut self) {
+        if let Some(trial) = self.state().trial.take() {
+            trial.finish();
+        }
     }
 
     fn next(&mut self) -> Option<MediaTuning> {
@@ -180,7 +195,8 @@ mod tests {
             t.next(),
             Some(MediaTuning {
                 audio: Some(a),
-                main: Some(m)
+                main: Some(m),
+                ..Default::default()
             })
         );
         assert_eq!(t.next(), None);

@@ -81,6 +81,14 @@ ffmpeg -rtsp_transport tcp -i rtsp://USER:PASS@CAMERA/main -t 60 -c copy tcp.mkv
 ffmpeg -v warning -i tcp.mkv -f null - 2>&1 | grep -c -i 'conceal\|error'
 ```
 
+## The picture looks worse than the stock firmware's
+
+At night with the IR lamps the 1:1 frame is heavily grained [V]: without the `isp_3dnr` setting the video processor
+runs with only the autofocus statistics enabled, so no temporal noise reduction smooths the sensor noise before the
+encoder spends its bitrate on it. With the setting on (and the 2592x1944 main stream) the noise measured about 65 %
+lower at the same bitrate: [settings.md](../settings.md#3d-noise-reduction-isp_3dnr) and
+[isp-iq.md](isp-iq.md#3d-noise-reduction-in-the-video-processor-isp_3dnr).
+
 ## `cam-wifi.conf`
 
 `/mnt/para/cam-wifi.conf` must be a regular file owned by root, mode 0600, no symlink or hard link, at most

@@ -211,7 +211,7 @@ impl Backend for Sys {
         Ok(())
     }
 
-    fn common_mem_init(&mut self, pool: &MemPool) -> Result<(), Error> {
+    fn common_mem_init(&mut self, pools: &[MemPool]) -> Result<(), Error> {
         self.forward(Step::CommonMemInit)?;
         if self.initialized[0] {
             return Err(Error {
@@ -221,10 +221,18 @@ impl Backend for Sys {
         }
         self.no_buffers(Step::CommonMemInit)?;
         let mut cfg = h::HD_COMMON_MEM_INIT_CONFIG::default();
-        cfg.pool_info[0].ddr_id = h::DDR_ID0;
-        cfg.pool_info[0].type_ = h::HD_COMMON_MEM_COMMON_POOL;
-        cfg.pool_info[0].blk_size = pool.blk_size;
-        cfg.pool_info[0].blk_cnt = pool.blk_cnt;
+        if pools.is_empty() || pools.len() > cfg.pool_info.len() {
+            return Err(Error {
+                step: Step::CommonMemInit,
+                code: h::HD_ERR_INV,
+            });
+        }
+        for (info, pool) in cfg.pool_info.iter_mut().zip(pools) {
+            info.ddr_id = h::DDR_ID0;
+            info.type_ = h::HD_COMMON_MEM_COMMON_POOL;
+            info.blk_size = pool.blk_size;
+            info.blk_cnt = pool.blk_cnt;
+        }
         // SAFETY: `cfg` is a valid, initialised config that outlives the call.
         check(
             Step::CommonMemInit,
@@ -509,6 +517,25 @@ const PROC_OUT: [u32; 3] = [
     h::HD_VIDEOPROC_0_OUT_1 as u32,
     h::HD_VIDEOPROC_0_OUT_2 as u32,
 ];
+
+/// `HD_VIDEOPROC_CTRL.func` bits the vendor stack runs with besides autofocus: `03830000` in
+/// `/proc/hdal/vprc/info` of stock firmware 4417 [V]. `libhdal` turns each into a kernel flow flag
+/// (`hd_videoproc_set`, PARAM_CTRL, 0x396e0 [D]): `0x10000` is 3D noise reduction (flow flag 8, and the only
+/// bit that reads `ref_path_3dnr`), `0x20000` flow flag 1, `0x800000` flow flag 0x80, `0x1000000` flow flag
+/// 0x200. The three others are enabled as stock does; what they switch is not named by any string.
+const FUNC_3DNR: u32 = 0x0001_0000;
+const FUNC_STOCK_COMPANIONS: u32 = 0x0002_0000 | 0x0080_0000 | 0x0100_0000;
+/// `HD_VIDEO_PXLFMT_YUV420_NVX2`, the compressed format of the reference path (libhdal's `NVX2` entry [D]).
+const PXLFMT_NVX2: u32 = 0x610c_2420;
+/// `out_func` of the stock stack's reference path (`func/src 00000800:0` in `vprc/info` [V]). It is set with
+/// `HD_VIDEOPROC_PARAM_FUNC_CONFIG` (id 24 in `libhdal`'s parameter table [D]), not in `HD_VIDEOPROC_OUT.func`:
+/// without it the driver logs `3dnr ref path enable = 0, buffer = 0, drop frame` and every output stalls [V].
+const REF_OUT_FUNC: u32 = 0x0000_0800;
+const PROC_PARAM_FUNC_CONFIG: h::_HD_VIDEOPROC_PARAM_ID = 24;
+/// `HD_VIDEOENC_PARAM_FUNC_CONFIG` (id 26 in `libhdal`'s encoder parameter table [D]) and the `in_func` of
+/// stock's main encoder (`func 00000002` in `venc/info` [V]).
+const ENC_PARAM_FUNC_CONFIG: h::_HD_VIDEOENC_PARAM_ID = 26;
+const ENC_IN_FUNC_NVX2: u32 = 2;
 const ENC_IN: [u32; 3] = [
     h::HD_VIDEOENC_0_IN_0 as u32,
     h::HD_VIDEOENC_0_IN_1 as u32,
@@ -521,7 +548,7 @@ const ENC_OUT: [u32; 3] = [
 ];
 const NO_ID: u32 = 0xffff_ffff;
 
-fn slot(table: &[u32; 3], i: u32, step: Step) -> Result<u32, Error> {
+fn slot<const N: usize>(table: &[u32; N], i: u32, step: Step) -> Result<u32, Error> {
     table
         .get(i as usize)
         .copied()
@@ -559,13 +586,21 @@ impl EncBackend for Sys {
         Ok(PathId(path as u32))
     }
 
-    fn videoproc_set_dev_config(&mut self, ctrl: PathId, cap_dim: Dim) -> Result<(), Error> {
+    fn videoproc_set_dev_config(
+        &mut self,
+        ctrl: PathId,
+        cap_dim: Dim,
+        denoise: bool,
+    ) -> Result<(), Error> {
         self.forward(Step::VideoprocSetDevConfig)?;
         let mut cfg = h::HD_VIDEOPROC_DEV_CONFIG::default();
         cfg.pipe = h::HD_VIDEOPROC_PIPE_RAWALL;
         cfg.isp_id = 0;
         // the CTRL func below is capped by this maximum
         cfg.ctrl_max.func = h::HD_VIDEOPROC_FUNC_AF;
+        if denoise {
+            cfg.ctrl_max.func |= FUNC_3DNR | FUNC_STOCK_COMPANIONS;
+        }
         cfg.in_max.dim.w = cap_dim.w;
         cfg.in_max.dim.h = cap_dim.h;
         cfg.in_max.pxlfmt = h::HD_VIDEO_PXLFMT_RAW10;
@@ -633,6 +668,66 @@ impl EncBackend for Sys {
                     path.0 as _,
                     h::HD_VIDEOPROC_PARAM_OUT,
                     (&mut cfg as *mut h::HD_VIDEOPROC_OUT).cast(),
+                )
+            }),
+        )
+    }
+
+    fn videoproc_set_ref_out(&mut self, path: PathId, dim: Dim) -> Result<(), Error> {
+        self.forward(Step::VideoprocSetRefOut)?;
+        let mut cfg = h::HD_VIDEOPROC_OUT::default();
+        cfg.dim.w = dim.w;
+        cfg.dim.h = dim.h;
+        cfg.pxlfmt = PXLFMT_NVX2;
+        cfg.dir = h::HD_VIDEO_DIR_NONE;
+        cfg.frc = frc_ratio(self.cap_fps, self.cap_fps);
+        cfg.depth = 1;
+        cfg.rect.w = dim.w;
+        cfg.rect.h = dim.h;
+        cfg.bg.w = dim.w;
+        cfg.bg.h = dim.h;
+        // SAFETY: `cfg` is a `HD_VIDEOPROC_OUT`, the struct this param id takes.
+        check(
+            Step::VideoprocSetRefOut,
+            ioctl_capture::result(|| unsafe {
+                h::hd_videoproc_set(
+                    path.0 as _,
+                    h::HD_VIDEOPROC_PARAM_OUT,
+                    (&mut cfg as *mut h::HD_VIDEOPROC_OUT).cast(),
+                )
+            }),
+        )?;
+        let mut func = h::_HD_VIDEOPROC_FUNC_CONFIG {
+            out_func: REF_OUT_FUNC,
+            ..Default::default()
+        };
+        // SAFETY: `func` is a `HD_VIDEOPROC_FUNC_CONFIG`, the 16-byte struct this param id takes.
+        check(
+            Step::VideoprocSetRefOut,
+            ioctl_capture::result(|| unsafe {
+                h::hd_videoproc_set(
+                    path.0 as _,
+                    PROC_PARAM_FUNC_CONFIG,
+                    (&mut func as *mut h::_HD_VIDEOPROC_FUNC_CONFIG).cast(),
+                )
+            }),
+        )
+    }
+
+    fn videoproc_enable_3dnr(&mut self, ctrl: PathId, ref_out: PathId) -> Result<(), Error> {
+        self.forward(Step::VideoprocEnable3dnr)?;
+        let mut ctl = h::HD_VIDEOPROC_CTRL {
+            func: h::HD_VIDEOPROC_FUNC_AF | FUNC_3DNR | FUNC_STOCK_COMPANIONS,
+            ref_path_3dnr: ref_out.0 as _,
+        };
+        // SAFETY: `ctl` is a `HD_VIDEOPROC_CTRL`, the struct this param id takes.
+        check(
+            Step::VideoprocEnable3dnr,
+            ioctl_capture::result(|| unsafe {
+                h::hd_videoproc_set(
+                    ctrl.0 as _,
+                    h::HD_VIDEOPROC_PARAM_CTRL,
+                    (&mut ctl as *mut h::HD_VIDEOPROC_CTRL).cast(),
                 )
             }),
         )
@@ -1043,12 +1138,39 @@ const STOCK_STATIC_TIME: u32 = 4;
 /// Input, codec and CBR rate control of one encoder path: everything but the path config, so a
 /// running path's mapped bitstream ring stays valid.
 fn encoder_params(path: PathId, spec: &EncSpec, step: Step) -> Result<(), Error> {
+    if spec.src_fps.is_some() {
+        // Stock's main encoder: `in_func 2` on the compressed input (`vprc`/`venc` info, [V]); `libhdal`
+        // validates it at start ("only (0x%08x) supported" [D]).
+        let mut func = h::_HD_VIDEOENC_FUNC_CONFIG {
+            in_func: ENC_IN_FUNC_NVX2,
+            ..Default::default()
+        };
+        // SAFETY: `func` is a `HD_VIDEOENC_FUNC_CONFIG`, the 8-byte struct this param id takes.
+        check(
+            step,
+            ioctl_capture::result(|| unsafe {
+                h::hd_videoenc_set(
+                    path.0 as _,
+                    ENC_PARAM_FUNC_CONFIG,
+                    (&mut func as *mut h::_HD_VIDEOENC_FUNC_CONFIG).cast(),
+                )
+            }),
+        )?;
+    }
     let mut inp = h::HD_VIDEOENC_IN::default();
     inp.dim.w = spec.dim.w;
     inp.dim.h = spec.dim.h;
-    inp.pxl_fmt = h::HD_VIDEO_PXLFMT_YUV420;
+    inp.pxl_fmt = if spec.src_fps.is_some() {
+        PXLFMT_NVX2
+    } else {
+        h::HD_VIDEO_PXLFMT_YUV420
+    };
     inp.dir = h::HD_VIDEO_DIR_NONE;
-    inp.frc = frc_ratio(1, 1);
+    // The encoder's own frame-rate control drops the frames the stream does not take.
+    inp.frc = match spec.src_fps {
+        Some(rate) => frc_ratio(spec.fps, rate),
+        None => frc_ratio(1, 1),
+    };
     // SAFETY: `inp` is a `HD_VIDEOENC_IN`, the struct this param id takes.
     check(
         step,

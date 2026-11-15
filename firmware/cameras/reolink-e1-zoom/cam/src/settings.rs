@@ -45,6 +45,8 @@ pub enum Group {
     Lens,
     /// Autofocus triggers and watchdog (`crate::zoom::af`).
     Autofocus,
+    /// Read once when the media graph is built: takes effect at the next start.
+    Startup,
 }
 
 /// Where a setting shows in Home Assistant: its section device, linked to the camera device. Derived from the
@@ -72,7 +74,7 @@ impl Section {
     pub fn of(group: Group) -> Option<Self> {
         match group {
             Group::Audio => Some(Self::Audio),
-            Group::Orientation | Group::Picture => Some(Self::Picture),
+            Group::Orientation | Group::Picture | Group::Startup => Some(Self::Picture),
             Group::MainStream => Some(Self::MainStream),
             Group::Ir => Some(Self::NightVision),
             Group::Led => None,
@@ -396,6 +398,7 @@ const BASE: &[Setting] = &[
         Some("fps"),
         15,
     ),
+    switch("isp_3dnr", "3D noise reduction", Group::Startup, false),
 ];
 
 static SETTINGS: LazyLock<Vec<Setting>> = LazyLock::new(|| {
@@ -590,6 +593,12 @@ impl Settings {
         crate::orientation::Orientation::new(self.on("mirror"), self.on("flip"))
     }
 
+    /// Whether the next start builds the graph with the video processor's 3D noise reduction (which also needs
+    /// the full-size main stream and a clean trial history, `crate::denoise`).
+    pub fn denoise(&self) -> bool {
+        self.on("isp_3dnr")
+    }
+
     pub fn main_stream(&self) -> MainStream {
         MainStream {
             dim: MAIN_SIZES[self.choice("main_resolution")],
@@ -697,6 +706,7 @@ pub fn markdown_table() -> String {
             Group::Motion => "next move",
             Group::Lens => "next zoom move",
             Group::Autofocus => "live",
+            Group::Startup => "after reboot",
         };
         let section = s.section().map_or("camera", Section::name);
         out.push_str(&format!(
@@ -946,6 +956,7 @@ impl Owner {
             crate::pipeline::MediaTuning {
                 audio: Some(s.audio()),
                 main: Some(s.main_stream()),
+                denoise: None,
             },
         ));
         Self {
@@ -953,6 +964,18 @@ impl Owner {
             media,
             focus_map,
             presets,
+        }
+    }
+}
+
+impl Owner {
+    /// Decides whether this start runs 3D noise reduction (the setting, the main size and the trial marker, see
+    /// [`crate::denoise`]) and tells the media hand-off. Call once, before the media thread starts.
+    pub fn arm_denoise(&self, trial: crate::denoise::Trial) {
+        let s = self.store.settings();
+        let full = s.main_stream().dim == MAIN_SIZES[0];
+        if trial.decide(s.denoise(), full) == crate::denoise::Decision::Trial {
+            self.media.arm_denoise(trial);
         }
     }
 }

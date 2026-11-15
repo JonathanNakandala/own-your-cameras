@@ -101,6 +101,9 @@ The OS05A10 runs at its full 2592×1944, 30 fps, over MIPI into `hd_videocap` (w
 | main | `main` | 1920×1440, 15 fps, 1024 kbit/s, 1 s GOP | 2592×1944, 1920×1440 or 1280×960; 5–30 fps; 256–8192 kbit/s |
 | sub | `sub` | 640×480, 10 fps, 512 kbit/s, 1 s GOP | fixed |
 
+With `isp_3dnr` on and a 2592x1944 main stream the main output is instead the compressed reference of the video
+processor's 3D noise reduction, which the main encoder reads directly
+([hardware/isp-iq.md](hardware/isp-iq.md#3d-noise-reduction-in-the-video-processor-isp_3dnr)).
 The main stream's parameters are settings ([settings.md](settings.md)); a change restarts only the main path, and a
 change that starves either stream is rolled back after 2 s. Audio capture pulls raw 48 kHz mono PCM from the
 capture unit and encodes it to Opus in software (libopus), and the speaker output takes 48 kHz signed 16-bit samples

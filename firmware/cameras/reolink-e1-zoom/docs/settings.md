@@ -44,6 +44,7 @@ this table identical to the code).
 | `main_bitrate` | Main bitrate | Main stream | number | 256…8192 kbps | 1024 | main path restart (≤ 2 s) |
 | `main_resolution` | Main resolution | Main stream | select | 2592x1944, 1920x1440, 1280x960 | 1920x1440 | main path restart (≤ 2 s) |
 | `main_fps` | Main frame rate | Main stream | number | 5…30 fps | 15 | main path restart (≤ 2 s) |
+| `isp_3dnr` | 3D noise reduction | Picture | switch | ON/OFF | OFF | after reboot |
 | `isp_brightness` | Brightness | Picture | number | 0…200 | stock `0_isp.cfg` `brightness` (else 100) | live, with readback |
 | `isp_contrast` | Contrast | Picture | number | 0…200 | stock `0_isp.cfg` `contrast` (else 100) | live, with readback |
 | `isp_saturation` | Saturation | Picture | number | 0…200 | stock `0_isp.cfg` `saturation` (else 100) | live, with readback |
@@ -55,6 +56,21 @@ this table identical to the code).
 
 Cross-field rules: `ir_to_night` > `ir_to_day`; `ptz_start_speed` ≤ `ptz_speed`. A change that breaks
 them is rejected; a file that breaks them loads both fields' defaults.
+
+## 3D noise reduction (`isp_3dnr`)
+
+Off by default and read **once**, when the media graph is built: changing it stores the value and the camera
+uses it after the next reboot. It needs the **2592x1944** main stream: the video processor's temporal noise reduction
+compares each frame with the previous one at the processor's input size, and the main encoder reads that frame
+directly. With another main size the setting is stored and the daemon runs the plain graph (and says so in its log).
+While it runs, a change of `main_resolution` away from 2592x1944 is refused (the stream would stall) and the
+setting snaps back; `main_fps` and `main_bitrate` change live as usual. Night frames carry about 65 % less noise
+at the same bitrate ([hardware/isp-iq.md](hardware/isp-iq.md#3d-noise-reduction-in-the-video-processor-isp_3dnr)).
+
+Safety: a start with the setting on writes the marker `/mnt/para/cam-3dnr.trial` before building the graph and
+deletes it once both streams delivered for 180 s. A start that finds the marker runs the plain graph and logs why,
+because the last attempt never proved healthy. To try again: turn `isp_3dnr` off, reboot (the marker is removed),
+turn it on, reboot. A marker that cannot be written also means no 3D noise reduction.
 
 ## Persistence
 

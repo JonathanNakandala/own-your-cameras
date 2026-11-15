@@ -165,7 +165,7 @@ pub fn probe_videocap<B: Backend>(
     let read = (|| {
         u.hw.common_init()?;
         u.common = true;
-        u.hw.common_mem_init(&cfg.pool)?;
+        u.hw.common_mem_init(&[cfg.pool])?;
         u.mem = true;
         u.hw.videocap_init()?;
         u.videocap = true;

@@ -354,12 +354,12 @@ fn common_teardown_cannot_invalidate_live_audio_or_encoder_mappings() {
 fn initialized_units_hold_common_memory_until_their_cleanup() {
     let mut sys = fixture();
     let pool = crate::ProbeConfig::os05a10().pool;
-    sys.common_mem_init(&pool).unwrap();
+    sys.common_mem_init(&[pool]).unwrap();
     sys.videocap_init().unwrap();
     sys.videoproc_init().unwrap();
     sys.videoenc_init().unwrap();
     let before = DRIVER.with_borrow(|d| d.calls.len());
-    assert!(sys.common_mem_init(&pool).is_err());
+    assert!(sys.common_mem_init(&[pool]).is_err());
     assert!(sys.videocap_init().is_err());
     assert!(sys.videoproc_init().is_err());
     assert!(sys.videoenc_init().is_err());
@@ -387,6 +387,7 @@ fn mapped_encoder_cannot_be_reconfigured_until_its_mapping_is_closed() {
         fps: 10,
         bitrate_bps: 512_000,
         gop: 10,
+        src_fps: None,
     };
     let before = DRIVER.with_borrow(|d| d.calls.len());
     assert!(sys.videoenc_configure(path, &spec, &spec).is_err());
@@ -767,10 +768,10 @@ fn capture_keeps_first_error_and_does_not_leak_into_the_next_adapter_call() {
         })
     );
     assert!(
-        sys.common_mem_init(&MemPool {
+        sys.common_mem_init(&[MemPool {
             blk_size: 4,
             blk_cnt: 1
-        })
+        }])
         .is_ok()
     );
 }

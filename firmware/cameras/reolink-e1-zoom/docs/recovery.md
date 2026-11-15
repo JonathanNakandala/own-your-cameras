@@ -22,6 +22,13 @@ Without `/mnt/para/cam.enabled` the boot runs the untouched vendor block of `sta
 per boot, so removing the flag takes effect on the **next** boot, never in the running one. Create the flag again
 (`touch /mnt/para/cam.enabled`) to go back. Your `cam-*` files and `cam.toml` stay where they are.
 
+## A 3D noise reduction start that never proved healthy
+
+`/mnt/para/cam-3dnr.trial` exists from the moment a start with `isp_3dnr` on builds its graph until both streams
+have delivered for 180 s. While it exists the next start runs the plain graph (the failed attempt costs one
+reset, never the three counted starts that select the vendor stack). Remove it by turning `isp_3dnr` off and
+rebooting, or `rm /mnt/para/cam-3dnr.trial` over SSH. Details: [settings.md](settings.md#3d-noise-reduction-isp_3dnr).
+
 ## Three failed starts
 
 `/mnt/para/cam.crashes` counts unsuccessful attempts plus the running one, `0` to `3`. Each boot with the flag

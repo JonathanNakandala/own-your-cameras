@@ -22,6 +22,10 @@ pub struct EncSpec {
     pub bitrate_bps: u32,
     /// I-frame period in frames.
     pub gop: u32,
+    /// `Some(rate)`: the encoder's input is the compressed `NVX2` frame of the video processor's 3D noise
+    /// reduction reference path, arriving at `rate` fps, of which the encoder takes `fps` (its input frame-rate
+    /// control). `None`: plain YUV420 from a processor output that already runs at `fps`.
+    pub src_fps: Option<u32>,
 }
 
 /// One access unit as the encoder returned it: Annex B, packs concatenated.
@@ -38,12 +42,26 @@ pub trait EncBackend {
     fn videoproc_init(&mut self) -> Result<(), Error>;
     /// Opens `HD_VIDEOPROC_0_CTRL`.
     fn videoproc_open_ctrl(&mut self) -> Result<PathId, Error>;
-    /// `DEV_CONFIG`: the RAW-to-YUV pipe for a sensor frame of `cap_dim`.
-    fn videoproc_set_dev_config(&mut self, ctrl: PathId, cap_dim: Dim) -> Result<(), Error>;
+    /// `DEV_CONFIG`: the RAW-to-YUV pipe for a sensor frame of `cap_dim`. `denoise` allows the 3D noise
+    /// reduction functions (see [`EncBackend::videoproc_enable_3dnr`]) in the control maximum.
+    fn videoproc_set_dev_config(
+        &mut self,
+        ctrl: PathId,
+        cap_dim: Dim,
+        denoise: bool,
+    ) -> Result<(), Error>;
     /// Opens `HD_VIDEOPROC_0_IN_0` → `OUT_<out>`.
     fn videoproc_open_out(&mut self, out: u32) -> Result<PathId, Error>;
     /// `HD_VIDEOPROC_PARAM_OUT`: YUV420 of `dim` at `fps`.
     fn videoproc_set_out(&mut self, path: PathId, dim: Dim, fps: u32) -> Result<(), Error>;
+    /// `PARAM_OUT` of the 3D noise reduction reference path: the whole sensor frame `dim` at the capture
+    /// rate in the compressed NVX2 format, with the output function the vendor stack gives its own. The
+    /// path must feed an encoder with an [`EncSpec::src_fps`] input: a reference path nothing consumes is
+    /// never enabled and every output stalls [V].
+    fn videoproc_set_ref_out(&mut self, path: PathId, dim: Dim) -> Result<(), Error>;
+    /// `PARAM_CTRL`: switches 3D noise reduction on, with `ref_out` (a configured reference path) as its
+    /// reference. Before any path starts.
+    fn videoproc_enable_3dnr(&mut self, ctrl: PathId, ref_out: PathId) -> Result<(), Error>;
     fn videoproc_start(&mut self, path: PathId) -> Result<(), Error>;
     fn videoproc_stop(&mut self, path: PathId) -> Result<(), Error>;
     fn videoproc_close(&mut self, path: PathId) -> Result<(), Error>;

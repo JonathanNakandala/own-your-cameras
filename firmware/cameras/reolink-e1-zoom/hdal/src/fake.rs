@@ -33,6 +33,8 @@ pub struct Fake {
     pub trace: Option<std::sync::Arc<std::sync::Mutex<Vec<&'static str>>>>,
     pub sensor: Option<String>,
     pub pool: Option<MemPool>,
+    /// Every pool `common_mem_init` was given, in order.
+    pub pools: Vec<MemPool>,
     pub input: Option<(Dim, u32)>,
     /// SYSINFO reports `cur_dim` 0x0 until it was read this many times.
     pub ready_after_polls: usize,
@@ -41,6 +43,12 @@ pub struct Fake {
     /// What `videoproc_set_out` was given, by output index.
     pub proc_out: Vec<(u32, Dim, u32)>,
     pub proc_dev_dim: Option<Dim>,
+    /// Whether the device config allowed 3D noise reduction.
+    pub denoise_allowed: bool,
+    /// The reference path's output index and size, once configured.
+    pub ref_out: Option<(u32, Dim)>,
+    /// The output index 3D noise reduction was switched on with.
+    pub denoise_ref: Option<u32>,
     pub cap_out_depth: Option<u32>,
     /// What `videoenc_configure` and `videoenc_retune` were given, by encoder index; the last one runs.
     pub enc_specs: Vec<(u32, EncSpec)>,
@@ -84,6 +92,10 @@ impl Default for Fake {
             polls: 0,
             proc_out: Vec::new(),
             proc_dev_dim: None,
+            denoise_allowed: false,
+            pools: Vec::new(),
+            ref_out: None,
+            denoise_ref: None,
             cap_out_depth: None,
             enc_specs: Vec::new(),
             envelopes: Vec::new(),
@@ -173,9 +185,10 @@ impl Backend for Fake {
     fn common_init(&mut self) -> Result<(), Error> {
         self.enter(Step::CommonInit)
     }
-    fn common_mem_init(&mut self, pool: &MemPool) -> Result<(), Error> {
+    fn common_mem_init(&mut self, pools: &[MemPool]) -> Result<(), Error> {
         self.enter(Step::CommonMemInit)?;
-        self.pool = Some(*pool);
+        self.pool = pools.first().copied();
+        self.pools = pools.to_vec();
         Ok(())
     }
     fn videocap_init(&mut self) -> Result<(), Error> {
@@ -259,9 +272,25 @@ impl EncBackend for Fake {
         self.enter(Step::VideoprocOpen)?;
         Ok(PathId(PROC_CTRL))
     }
-    fn videoproc_set_dev_config(&mut self, _: PathId, cap_dim: Dim) -> Result<(), Error> {
+    fn videoproc_set_dev_config(
+        &mut self,
+        _: PathId,
+        cap_dim: Dim,
+        denoise: bool,
+    ) -> Result<(), Error> {
         self.enter(Step::VideoprocSetDevConfig)?;
         self.proc_dev_dim = Some(cap_dim);
+        self.denoise_allowed = denoise;
+        Ok(())
+    }
+    fn videoproc_set_ref_out(&mut self, path: PathId, dim: Dim) -> Result<(), Error> {
+        self.enter(Step::VideoprocSetRefOut)?;
+        self.ref_out = Some((path.0 - PROC_OUT, dim));
+        Ok(())
+    }
+    fn videoproc_enable_3dnr(&mut self, _: PathId, ref_out: PathId) -> Result<(), Error> {
+        self.enter(Step::VideoprocEnable3dnr)?;
+        self.denoise_ref = Some(ref_out.0 - PROC_OUT);
         Ok(())
     }
     fn videoproc_open_out(&mut self, out: u32) -> Result<PathId, Error> {

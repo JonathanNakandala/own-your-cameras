@@ -3,6 +3,7 @@
 
 // What runs: the subcommands, and the production runtime the launcher starts.
 pub mod cmd;
+pub mod denoise;
 pub mod exclusion;
 pub mod identity;
 pub mod ownership;
