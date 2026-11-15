@@ -31,6 +31,22 @@ fn udp_pacing_spreads_a_frame_over_three_quarters_of_its_interval() {
     assert_eq!(pace(1, Some(66_667)), 6);
 }
 
+#[test]
+fn a_late_slice_is_sent_at_once_and_the_schedule_restarts_instead_of_catching_up() {
+    let base = Instant::now();
+    let due = base + Duration::from_millis(10);
+    // On time: wait out the rest, schedule unchanged.
+    assert_eq!(
+        slice_wait(due, base + Duration::from_millis(4)),
+        (Duration::from_millis(6), due)
+    );
+    // Exactly due: no wait.
+    assert_eq!(slice_wait(due, due), (Duration::ZERO, due));
+    // 25 ms late: no wait, and the next slice is due from now, not from the old schedule.
+    let now = base + Duration::from_millis(35);
+    assert_eq!(slice_wait(due, now), (Duration::ZERO, now));
+}
+
 struct Fixture {
     addr: SocketAddr,
     hub: Arc<Hub>,
